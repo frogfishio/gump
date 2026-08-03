@@ -13,6 +13,6 @@ pub mod pb {
 }
 
 pub use frame::{
-    decode_frame_prefix, encode_frame, FrameError, FrameKind, MAX_CONTROL_FRAME, MAX_ERROR_FRAME,
-    MAX_HELLO_FRAME,
+    FrameError, FrameKind, MAX_CONTROL_FRAME, MAX_ERROR_FRAME, MAX_HELLO_FRAME,
+    decode_frame_prefix, encode_frame,
 };

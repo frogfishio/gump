@@ -4,3 +4,5 @@
 //! This crate is tooling only and must not become a runtime dependency.
 
 #![forbid(unsafe_code)]
+
+pub mod traceability;

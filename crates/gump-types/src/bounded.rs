@@ -173,6 +173,9 @@ mod tests {
     #[test]
     fn bounded_string_enforces_max() {
         assert!(BoundedString::<3>::try_from_str("abcd").is_err());
-        assert_eq!(BoundedString::<3>::try_from_str("abc").unwrap().as_str(), "abc");
+        assert_eq!(
+            BoundedString::<3>::try_from_str("abc").unwrap().as_str(),
+            "abc"
+        );
     }
 }

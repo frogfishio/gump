@@ -72,7 +72,7 @@ pub fn encode_envelope(msg: &EnvelopeV1) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::frame::{encode_frame, split_frame, FrameKind};
+    use crate::frame::{FrameKind, encode_frame, split_frame};
     use std::fs;
     use std::path::{Path, PathBuf};
 
@@ -127,7 +127,10 @@ mod tests {
         let msg = sample_app_identity();
         let encoded = msg.encode_to_vec();
         let golden = read_or_write("app_identity_v1.bin", &encoded);
-        assert_eq!(encoded, golden, "AppIdentityV1 encoding drifted from golden");
+        assert_eq!(
+            encoded, golden,
+            "AppIdentityV1 encoding drifted from golden"
+        );
         let decoded = AppIdentityV1::decode(golden.as_slice()).unwrap();
         assert_eq!(decoded, msg);
     }

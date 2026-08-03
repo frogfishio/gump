@@ -102,7 +102,9 @@ pub fn decode_frame_prefix(buf: &[u8], kind: FrameKind) -> Result<(usize, usize)
     if length > ceiling {
         return Err(FrameError::LengthExceedsCeiling { length, ceiling });
     }
-    let total = prefix_len.checked_add(length).ok_or(FrameError::VarintOverflow)?;
+    let total = prefix_len
+        .checked_add(length)
+        .ok_or(FrameError::VarintOverflow)?;
     if buf.len() < total {
         return Err(FrameError::Truncated);
     }

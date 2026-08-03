@@ -1,8 +1,8 @@
 //! Clocks for production and deterministic simulation (W02 / CONFORMANCE).
 
 use core::fmt;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Milliseconds since an arbitrary epoch (monotonic within one clock instance).

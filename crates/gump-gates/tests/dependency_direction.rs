@@ -126,11 +126,14 @@ fn dependency_direction_holds() {
 
     for name in PRODUCT_CRATES {
         let path = root.join("crates").join(name).join("Cargo.toml");
-        let text = fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let text =
+            fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
         let deps = gump_path_deps(&text);
         for dep in &deps {
             if dep == "gump-gates" {
-                violations.push(format!("{name} must not depend on tooling crate gump-gates"));
+                violations.push(format!(
+                    "{name} must not depend on tooling crate gump-gates"
+                ));
             }
             if !PRODUCT_CRATES.contains(&dep.as_str()) && dep != "gump-gates" {
                 violations.push(format!("{name} depends on unknown gump crate {dep}"));

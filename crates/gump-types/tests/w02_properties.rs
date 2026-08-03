@@ -1,8 +1,8 @@
 //! Property-style coverage for W02 exit criteria.
 
 use gump_types::{
-    BoundedString, CancelToken, Clock, DurationMillis, Label, ManualClock, ReasonCode, SafeError,
-    Secret, ClusterId, IdError,
+    BoundedString, CancelToken, Clock, ClusterId, DurationMillis, IdError, Label, ManualClock,
+    ReasonCode, SafeError, Secret,
 };
 use uuid::Uuid;
 
@@ -33,10 +33,7 @@ fn id_generation_is_v7_and_unique() {
 
 #[test]
 fn rejects_v4_nil_as_id() {
-    assert_eq!(
-        ClusterId::from_uuid(Uuid::nil()),
-        Err(IdError::NotVersion7)
-    );
+    assert_eq!(ClusterId::from_uuid(Uuid::nil()), Err(IdError::NotVersion7));
 }
 
 #[test]

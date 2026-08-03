@@ -1,8 +1,8 @@
 //! Cooperative cancellation without tying foundation types to Tokio.
 
 use core::fmt;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Signal that work should stop.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

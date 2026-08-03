@@ -13,11 +13,11 @@ mod id;
 mod secret;
 
 pub use bounded::{BoundedString, Label, LabelError};
-pub use cancel::{CancelToken, Cancelled, CancellationGuard};
+pub use cancel::{CancelToken, CancellationGuard, Cancelled};
 pub use clock::{Clock, DurationMillis, InstantMillis, ManualClock, SystemClock};
 pub use error::{ReasonCode, SafeError};
 pub use id::{
-    AttemptId, CapsuleId, ClusterId, ExecutionId, IdError, IncarnationId, LeaseId, MessageId,
-    NodeId, OperationId, PlacementGroupId, UnitId, WorkloadId, GumpId,
+    AttemptId, CapsuleId, ClusterId, ExecutionId, GumpId, IdError, IncarnationId, LeaseId,
+    MessageId, NodeId, OperationId, PlacementGroupId, UnitId, WorkloadId,
 };
 pub use secret::Secret;

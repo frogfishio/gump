@@ -39,4 +39,6 @@ spec/v1/                schemas, fixtures, vectors, and conformance data
 Crates communicate through narrow traits and bounded typed channels. Protocol
 types do not leak transport-library types. Drivers and connectors cannot mutate
 cluster state directly. Dependency direction is enforced by
-`cargo test -p gump-gates`.
+`cargo test -p gump-gates`. Traceability ledger checks:
+`cargo run -p gump-gates --bin check-traceability` (structural) and
+`--strict` / `--prove-missing` for release / W04 demonstration.
