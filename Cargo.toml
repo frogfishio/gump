@@ -1,0 +1,43 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/gump-cli",
+    "crates/gump-manifest",
+    "crates/gump-capsule",
+    "crates/gump-crypto",
+    "crates/gump-protocol",
+    "crates/gump-memory",
+    "crates/gump-transport",
+    "crates/gump-scheduler",
+    "crates/gump-agent",
+    "crates/gump-driver",
+    "crates/gump-telemetry",
+    "crates/gump-connectors",
+    "crates/gump-server",
+    "crates/gump-gates",
+]
+default-members = [
+    "crates/gump-cli",
+    "crates/gump-server",
+]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+# Path members — pin early so later tickets share one edge set.
+gump-agent = { path = "crates/gump-agent" }
+gump-capsule = { path = "crates/gump-capsule" }
+gump-cli = { path = "crates/gump-cli" }
+gump-connectors = { path = "crates/gump-connectors" }
+gump-crypto = { path = "crates/gump-crypto" }
+gump-driver = { path = "crates/gump-driver" }
+gump-manifest = { path = "crates/gump-manifest" }
+gump-memory = { path = "crates/gump-memory" }
+gump-protocol = { path = "crates/gump-protocol" }
+gump-scheduler = { path = "crates/gump-scheduler" }
+gump-server = { path = "crates/gump-server" }
+gump-telemetry = { path = "crates/gump-telemetry" }
+gump-transport = { path = "crates/gump-transport" }

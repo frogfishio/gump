@@ -9,3 +9,33 @@ Gump is a zero-footprint workload placer and supervisor for one server or many. 
 - [Application manifest](docs/MANIFEST.md)
 - [CLI and lifecycle](docs/CLI_LIFECYCLE.md)
 - [Telemetry with Ratatouille](docs/TELEMETRY.md)
+
+## Repository shape
+
+One Cargo workspace (MSRV **1.85**, edition **2024**). Product crate boundaries match
+[`docs/v1/README.md`](docs/v1/README.md) §5:
+
+```text
+crates/
+  gump-cli/             command UX and machine output
+  gump-manifest/        parse, normalize, validate
+  gump-capsule/         dialect, deterministic archive, signing transcript
+  gump-crypto/          established primitives and provider traits
+  gump-protocol/        protobuf messages, frame limits, golden vectors
+  gump-memory/          in-memory Raft storage and typed record state machine
+  gump-transport/       authenticated QUIC sessions
+  gump-scheduler/       feasibility, reservations, scoring, gang admission
+  gump-agent/           materialization, secret delivery, driver supervision
+  gump-driver/          stable driver trait and common lifecycle
+  gump-telemetry/       Ratatouille capture, relay, subscription
+  gump-connectors/      object, identity, publication, output adapters
+  gump-server/          role composition and process entry point
+  gump-gates/           workspace quality gates (not a runtime dependency)
+proto/gump/v1/          source-controlled wire schemas
+spec/v1/                schemas, fixtures, vectors, and conformance data
+```
+
+Crates communicate through narrow traits and bounded typed channels. Protocol
+types do not leak transport-library types. Drivers and connectors cannot mutate
+cluster state directly. Dependency direction is enforced by
+`cargo test -p gump-gates`.
