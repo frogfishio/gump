@@ -17,6 +17,7 @@ One Cargo workspace (MSRV **1.85**, edition **2024**). Product crate boundaries 
 
 ```text
 crates/
+  gump-types/           shared bounded types, clock, cancellation, IDs, safe errors
   gump-cli/             command UX and machine output
   gump-manifest/        parse, normalize, validate
   gump-capsule/         dialect, deterministic archive, signing transcript

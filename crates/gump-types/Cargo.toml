@@ -1,0 +1,12 @@
+[package]
+name = "gump-types"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Shared bounded types, clock, cancellation, IDs, and safe errors (W02)."
+
+[dependencies]
+uuid = { version = "1.16", features = ["v7", "std"] }
+zeroize = { version = "1.8", features = ["std", "derive"] }

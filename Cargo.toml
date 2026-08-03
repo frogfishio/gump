@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/gump-types",
     "crates/gump-cli",
     "crates/gump-manifest",
     "crates/gump-capsule",
@@ -41,3 +42,4 @@ gump-scheduler = { path = "crates/gump-scheduler" }
 gump-server = { path = "crates/gump-server" }
 gump-telemetry = { path = "crates/gump-telemetry" }
 gump-transport = { path = "crates/gump-transport" }
+gump-types = { path = "crates/gump-types" }

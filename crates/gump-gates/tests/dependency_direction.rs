@@ -13,6 +13,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 const PRODUCT_CRATES: &[&str] = &[
+    "gump-types",
     "gump-cli",
     "gump-manifest",
     "gump-capsule",
@@ -30,6 +31,7 @@ const PRODUCT_CRATES: &[&str] = &[
 
 /// Ownership layers: a crate may depend on equal/lower layers only.
 const LAYERS: &[(&str, u8)] = &[
+    ("gump-types", 0),
     ("gump-crypto", 0),
     ("gump-protocol", 0),
     ("gump-manifest", 0),
@@ -47,6 +49,9 @@ const LAYERS: &[(&str, u8)] = &[
 
 /// Absolute bans from docs/v1/README.md §5 and DELIVERY ownership boundaries.
 const FORBIDDEN_EDGES: &[(&str, &str)] = &[
+    ("gump-types", "gump-crypto"),
+    ("gump-types", "gump-protocol"),
+    ("gump-types", "gump-manifest"),
     ("gump-protocol", "gump-transport"),
     ("gump-driver", "gump-memory"),
     ("gump-connectors", "gump-memory"),
