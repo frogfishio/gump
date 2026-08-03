@@ -1,0 +1,293 @@
+syntax = "proto3";
+
+package gump.v1;
+
+// Capsule records are canonicalized and byte-compared as specified by
+// docs/v1/FORMATS.md. Do not add maps, floats, Any, or unordered repeated data.
+
+enum ValueClassification {
+  VALUE_CLASSIFICATION_UNSPECIFIED = 0;
+  VALUE_CLASSIFICATION_INTERNAL = 1;
+  VALUE_CLASSIFICATION_SECRET = 2;
+}
+
+enum ValueEncoding {
+  VALUE_ENCODING_UNSPECIFIED = 0;
+  VALUE_ENCODING_UTF8 = 1;
+  VALUE_ENCODING_BYTES = 2;
+}
+
+enum InjectionKind {
+  INJECTION_KIND_UNSPECIFIED = 0;
+  INJECTION_KIND_ENV = 1;
+  INJECTION_KIND_FD = 2;
+}
+
+enum WorkloadLifetime {
+  WORKLOAD_LIFETIME_UNSPECIFIED = 0;
+  WORKLOAD_LIFETIME_FINITE = 1;
+  WORKLOAD_LIFETIME_CONTINUOUS = 2;
+}
+
+enum CoordinationKind {
+  COORDINATION_KIND_UNSPECIFIED = 0;
+  COORDINATION_KIND_INDEPENDENT = 1;
+  COORDINATION_KIND_GANG = 2;
+}
+
+enum SuccessKind {
+  SUCCESS_KIND_UNSPECIFIED = 0;
+  SUCCESS_KIND_NEVER = 1;
+  SUCCESS_KIND_ANY_EXIT_ZERO = 2;
+  SUCCESS_KIND_ALL_EXIT_ZERO = 3;
+}
+
+enum FailureKind {
+  FAILURE_KIND_UNSPECIFIED = 0;
+  FAILURE_KIND_FAIL_UNIT = 1;
+  FAILURE_KIND_RESTART_UNIT = 2;
+  FAILURE_KIND_FAIL_GROUP = 3;
+  FAILURE_KIND_RESTART_GROUP = 4;
+}
+
+enum DriverKind {
+  DRIVER_KIND_UNSPECIFIED = 0;
+  DRIVER_KIND_NATIVE = 1;
+  DRIVER_KIND_SCRIPT = 2;
+  DRIVER_KIND_OCI = 3;
+}
+
+enum CheckKind {
+  CHECK_KIND_UNSPECIFIED = 0;
+  CHECK_KIND_PROCESS = 1;
+  CHECK_KIND_TCP = 2;
+  CHECK_KIND_HTTP = 3;
+  CHECK_KIND_COMMAND = 4;
+  CHECK_KIND_FD = 5;
+  CHECK_KIND_EXTERNAL = 6;
+}
+
+message NamedValueV1 {
+  string name = 1;
+  string value = 2;
+}
+
+message AppIdentityV1 {
+  string namespace = 1;
+  string app_id = 2;
+  optional bytes workload_id = 3; // 16 bytes when present
+  optional string description = 4;
+  optional string version_annotation = 5;
+}
+
+message WorkloadSpecV1 {
+  WorkloadLifetime lifetime = 1;
+  CoordinationKind coordination = 2;
+  SuccessKind success = 3;
+  FailureKind failure = 4;
+  optional uint32 max_attempts = 5;
+  bool stop_on_isolation = 6;
+  uint64 isolation_grace_ms = 7;
+}
+
+message RuntimeVariableV1 {
+  string logical_name = 1;
+  bool required = 2;
+  ValueClassification classification = 3;
+  ValueEncoding encoding = 4;
+  uint64 max_bytes = 5;
+  InjectionKind injection = 6;
+  optional uint32 inherited_fd = 7;
+  optional string reference_env = 8;
+}
+
+message PortSpecV1 {
+  string name = 1;
+  string address = 2;
+  optional uint32 fixed_port = 3;
+  bool allocate_automatically = 4;
+  optional string inject_env = 5;
+}
+
+message IsolationSpecV1 {
+  string profile = 1;
+  bool deny_core_dumps = 2;
+  bool deny_secret_swap = 3;
+  bool restrict_proc = 4;
+  bool deny_ptrace = 5;
+}
+
+message RuntimeSpecV1 {
+  DriverKind driver = 1;
+  repeated string command = 2;
+  repeated string interpreter = 3;
+  string workdir = 4;
+  string stop_signal = 5;
+  uint64 stop_timeout_ms = 6;
+  repeated RuntimeVariableV1 variables = 7; // sorted logical_name
+  repeated PortSpecV1 ports = 8;             // sorted name
+  IsolationSpecV1 isolation = 9;
+}
+
+message CheckSpecV1 {
+  CheckKind kind = 1;
+  optional string port_name = 2;
+  optional string path = 3;
+  repeated string command = 4;
+  uint64 interval_ms = 5;
+  uint64 timeout_ms = 6;
+  uint64 initial_delay_ms = 7;
+  uint32 successes = 8;
+  uint32 failures = 9;
+}
+
+message HealthSpecV1 {
+  optional CheckSpecV1 readiness = 1;
+  optional CheckSpecV1 liveness = 2;
+  optional CheckSpecV1 progress = 3;
+  optional CheckSpecV1 completion = 4;
+}
+
+message ResourceSpecV1 {
+  optional uint64 cpu_request_millis = 1;
+  optional uint64 cpu_limit_millis = 2;
+  optional uint64 memory_request_bytes = 3;
+  optional uint64 memory_limit_bytes = 4;
+  optional uint64 ephemeral_request_bytes = 5;
+  optional uint64 ephemeral_limit_bytes = 6;
+  optional uint32 gpu_count = 7;
+  optional string gpu_vendor = 8;
+  optional string gpu_model = 9;
+  optional uint64 gpu_memory_min_bytes = 10;
+  repeated string capabilities = 11; // sorted
+}
+
+message PlacementSpecV1 {
+  repeated string spread = 1;
+  repeated string require = 2;
+  repeated string prefer = 3;
+}
+
+message RolloutSpecV1 {
+  string strategy = 1;
+  uint32 max_unavailable = 2;
+  uint32 max_surge = 3;
+}
+
+message DeployDefaultsV1 {
+  uint32 units = 1;
+  string priority_request = 2;
+  bool preemptible_request = 3;
+  RolloutSpecV1 rollout = 4;
+  PlacementSpecV1 placement = 5;
+}
+
+message PublicationSpecV1 {
+  string provider = 1;
+  bool required = 2;
+  string service = 3;
+  string port_name = 4;
+  optional string domain = 5;
+  string protocol = 6;
+}
+
+message TelemetrySpecV1 {
+  string producer_protocol = 1;
+  string filter = 2;
+  uint64 relay_capacity_bytes = 3;
+  uint64 max_record_bytes = 4;
+  string overflow = 5;
+}
+
+message ManifestV1 {
+  string schema = 1; // gump/1
+  AppIdentityV1 app = 2;
+  WorkloadSpecV1 workload = 3;
+  RuntimeSpecV1 runtime = 4;
+  HealthSpecV1 health = 5;
+  ResourceSpecV1 resources = 6;
+  DeployDefaultsV1 deploy = 7;
+  optional PublicationSpecV1 publication = 8;
+  TelemetrySpecV1 telemetry = 9;
+}
+
+message ArchiveEntryV1 {
+  string path = 1;
+  string entry_type = 2; // file or directory
+  uint32 mode = 3;
+  uint64 length = 4;
+  optional bytes content_digest = 5; // 32 bytes for files
+}
+
+message ArchiveMetadataV1 {
+  string format = 1; // ustar+zstd/1
+  uint64 uncompressed_length = 2;
+  uint64 compressed_length = 3;
+  bytes archive_digest = 4; // 32 bytes
+  uint64 file_count = 5;
+  repeated ArchiveEntryV1 entries = 6; // sorted path
+}
+
+message BuildProvenanceV1 {
+  string source_kind = 1;
+  optional string vcs_revision = 2;
+  bool dirty = 3;
+  repeated string prepare_command = 4;
+  string gump_version = 5;
+  string target_triple = 6;
+  optional string version_annotation = 7;
+}
+
+message CapabilityV1 {
+  string name = 1;
+  optional string value = 2;
+  bool enforcement_required = 3;
+}
+
+message ReleaseMetadataV1 {
+  string schema = 1; // gump.release/1
+  bytes capsule_id = 2;
+  bytes cluster_id = 3;
+  AppIdentityV1 app = 4;
+  ManifestV1 normalized_manifest = 5;
+  ArchiveMetadataV1 archive = 6;
+  BuildProvenanceV1 build = 7;
+  repeated CapabilityV1 required_capabilities = 8; // sorted name
+  repeated RuntimeVariableV1 runtime_variables = 9; // sorted logical_name
+}
+
+message ProtectedValueV1 {
+  string logical_name = 1;
+  ValueClassification classification = 2;
+  ValueEncoding encoding = 3;
+  InjectionKind injection = 4;
+  bool present = 5;
+  bytes value = 6;
+}
+
+message ProtectedConfigV1 {
+  string schema = 1; // gump.protected/1
+  bytes capsule_id = 2;
+  bytes cluster_id = 3;
+  repeated ProtectedValueV1 values = 4; // sorted logical_name
+}
+
+message KeyEnvelopeV1 {
+  string schema = 1; // gump.key-envelope/1
+  string suite = 2;
+  bytes cluster_id = 3;
+  string cluster_key_id = 4;
+  bytes hpke_encapsulated_key = 5;
+  bytes wrapped_dek = 6;
+  bytes protected_nonce = 7;
+  bytes aad_digest = 8;
+}
+
+message ReleaseSignatureV1 {
+  string schema = 1; // gump.signature/1
+  string suite = 2;  // Ed25519
+  string signer_key_id = 3;
+  bytes signer_public_key = 4;
+  bytes signature = 5;
+}
+

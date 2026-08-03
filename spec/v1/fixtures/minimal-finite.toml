@@ -1,0 +1,53 @@
+schema = "gump/1"
+
+[app]
+id = "hello-job"
+namespace = "default"
+description = "Minimal finite native workload"
+
+[workload]
+lifetime = "finite"
+coordination = "independent"
+success = "all_exit_zero"
+failure = "fail_unit"
+
+[package]
+root = "."
+include = ["bin/hello"]
+exclude = []
+format = "tar+zstd"
+
+[runtime]
+driver = "native"
+command = ["./bin/hello"]
+workdir = "."
+stop_signal = "TERM"
+stop_timeout = "10s"
+
+[runtime.variables.GREETING]
+source = "env:GREETING"
+required = true
+classification = "internal"
+encoding = "utf8"
+max_bytes = "4KiB"
+inject = "env"
+
+[resources]
+cpu_request = "100m"
+memory_request = "64MiB"
+
+[deploy]
+units = 1
+priority = "normal"
+preemptible = false
+
+[telemetry]
+protocol = "ratatouille/0.1"
+format = "ndjson"
+filter = "app/*"
+
+[telemetry.relay]
+capacity = "1MiB"
+max_record = "64KiB"
+overflow = "drop_oldest"
+

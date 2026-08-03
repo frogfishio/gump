@@ -3,18 +3,22 @@
 > Status: working draft 0.1  
 > File name: `gump.toml`  
 > Purpose: define the developer contract shared by local execution and deployment
+>
+> The frozen v1 subset and machine-readable schema are in
+> [`v1/FORMATS.md`](v1/FORMATS.md) and [`../spec/v1/gump.schema.json`](../spec/v1/gump.schema.json).
 
 ## 1. Role of the manifest
 
-`gump.toml` is the committed, declarative description of a Gump application. It tells Gump:
+`gump.toml` is the committed, declarative description of deployable application material and a workload contract. “Application” does not imply a server or web application. The manifest tells Gump:
 
 - Which application files become release material
 - How those files are prepared
-- How the application is started and stopped
+- How execution units are started, coordinated, completed, stopped, and retried
 - Which runtime variables must be supplied
-- How readiness and health are determined
+- Which readiness, health, progress, or completion checks exist, if any
 - Which resources and host capabilities the workload expects
-- What placement, rollout, and Kismet publication behavior is desired by default
+- What placement, rollout, and optional publication behavior is desired by default
+- Which Ratatouille topics and bounded relay behavior are requested by default
 
 The manifest describes value requirements and policies; it does not contain protected runtime values. Environment-variable and secret plaintext is resolved from external sources into Gump's memory during `run` or `deploy`.
 
@@ -34,6 +38,8 @@ The same manifest drives local execution and cluster execution. Differences must
 10. Defaults are versioned as part of the manifest schema; upgrades never silently reinterpret an existing manifest.
 11. Local overrides cannot alter the release that `gump deploy` creates unless the deploy command explicitly selects them as release inputs.
 12. `gump deploy` can show the complete public file list, runtime-variable names, and normalized manifest without exposing protected values.
+13. No port, probe, unit-cardinality model, restart rule, publication, or continuous lifetime is implied merely because a command is deployable.
+14. Workload behavior is expressed as independent lifecycle and capability contracts rather than a closed list of workload types.
 
 ## 3. Three classes of configuration
 
@@ -50,8 +56,8 @@ Examples:
 - Execution driver
 - Entrypoint, arguments, and working directory
 - Runtime-variable schema and injection targets
-- Port contract
-- Health-check definitions
+- Optional endpoint contract
+- Optional readiness, health, progress, and completion checks
 - Required platform capabilities
 
 ### 3.2 Deployment intent
@@ -60,12 +66,13 @@ Deployment-intent fields become defaults in the signed deployment declaration. T
 
 Examples:
 
-- Replica count
+- Execution-unit cardinality, roles, and coordination
+- Continuous or finite lifetime and completion policy
 - Resource request and limit policy
 - Placement constraints
 - Rollout and disruption policy
 - Restart policy
-- Kismet publication intent
+- Optional publication intent and provider selection
 
 The final declaration is always inspectable. A default taken from the manifest is indistinguishable in meaning from the same value supplied through an authorized deployment policy, but its provenance is recorded.
 
@@ -78,7 +85,7 @@ Examples:
 - Source-tree watch paths
 - Local port preference
 - Local-only runtime-variable source mappings
-- Whether local Kismet integration is used
+- Whether a local publication provider, including Kismet, is used
 - Developer convenience commands
 
 ## 4. Proposed top-level shape
@@ -88,7 +95,13 @@ schema = "gump/1"
 
 [app]
 id = "accounts-service"
+namespace = "default"
 description = "Customer account API"
+
+[workload]
+lifetime = "continuous"
+coordination = "independent"
+success = "never"
 
 [package]
 root = "."
@@ -98,7 +111,10 @@ format = "tar+zstd"
 
 [prepare]
 command = ["cargo", "build", "--release", "--locked"]
-outputs = ["target/release/accounts-server"]
+
+[[prepare.outputs]]
+from = "target/release/accounts-server"
+to = "bin/accounts-server"
 
 [runtime]
 driver = "native"
@@ -144,9 +160,13 @@ cpu_request = "250m"
 cpu_limit = "2"
 memory_request = "256MiB"
 memory_limit = "1GiB"
+ephemeral_request = "128MiB"
+ephemeral_limit = "1GiB"
 
 [deploy]
-replicas = 3
+units = 3
+priority = "normal"
+preemptible = true
 
 [deploy.rollout]
 strategy = "rolling"
@@ -157,9 +177,21 @@ max_surge = 1
 spread = ["node", "zone"]
 
 [publish]
+provider = "kismet"
+required = true
 service = "accounts-service"
 port = "http"
 domain = "accounts.example.com"
+
+[telemetry]
+protocol = "ratatouille/0.1"
+format = "ndjson"
+filter = "app:*,-app:noise"
+
+[telemetry.relay]
+capacity = "1MiB"
+max_record = "64KiB"
+overflow = "drop_oldest"
 
 [local]
 watch = ["src/**", "assets/**"]
@@ -171,17 +203,18 @@ http = 8080
 source = "env:LOCAL_DATABASE_URL"
 ```
 
-This example demonstrates the shape, not a frozen schema. Every accepted field still requires precise normalization and validation rules.
+This is deliberately a service-shaped example, not the default workload model. It demonstrates the shape, not a frozen schema. Every accepted field still requires precise normalization and validation rules.
 
 ## 5. Application identity
 
 ```toml
 [app]
 id = "accounts-service"
+namespace = "default"
 description = "Customer account API"
 ```
 
-`app.id` is a stable human-facing identity within a cluster namespace. It is not the release identity and does not change when code or configuration changes.
+`app.id` is a stable human-facing identity within `app.namespace`. It is not the release identity and does not change when code or configuration changes. A one-user cluster supplies an implicit owner namespace; shared clusters require an explicitly authorized namespace or a policy-defined default.
 
 The normalized application identity is included in:
 
@@ -190,11 +223,31 @@ The normalized application identity is included in:
 - Deployment declarations
 - Instance identities
 - Log and event context
-- Kismet publication requests
+- Publication-provider requests, including Kismet requests when selected
 
 Renaming an application is an explicit migration, not an ordinary deployment.
 
 Whether the ultimate identity is the human name alone or a generated immutable ID plus name remains an architectural decision.
+
+### 5.1 Workload lifecycle
+
+The `[workload]` table declares behavior Gump must never guess from a command:
+
+```toml
+[workload]
+lifetime = "finite"          # finite | continuous
+coordination = "gang"        # independent | ordered | gang
+success = "all_exit_zero"
+failure = "restart_group"
+max_attempts = 3
+
+[deploy]
+units = 64
+```
+
+These fields are orthogonal. A finite workload may have one or many units; a continuous workload may use coordinated launch; either may omit ports and health checks. Role-specific units, ranks, launch ordering, and completion aggregation require a normalized representation that remains to be refined.
+
+For finite executions, Gump records authorization, attempts, and completion in its distributed K/V memory. That prevents accidental repetition while the live cluster retains quorum, without creating a disk ledger. If the entire K/V memory is lost, the capsule remains inert in S3; an authorized actor must explicitly decide whether to launch a new execution or resume from an external checkpoint.
 
 ## 6. File selection and preparation
 
@@ -246,14 +299,17 @@ Preparation is an optional developer-side command used to produce package inputs
 ```toml
 [prepare]
 command = ["cargo", "build", "--release", "--locked"]
-outputs = ["target/release/accounts-server"]
+
+[[prepare.outputs]]
+from = "target/release/accounts-server"
+to = "bin/accounts-server"
 ```
 
 Gump executes the command directly without an implicit shell. A shell can be selected explicitly as an interpreter when genuinely required, making shell semantics visible in the manifest.
 
-Preparation output is not trusted merely because the command exits successfully. Declared output paths must exist, must remain inside the workspace, and are hashed during capture. The preparation command and relevant provenance are recorded, but Gump does not claim that arbitrary builds are reproducible.
+Preparation output is not trusted merely because the command exits successfully. Each declared `from` path must exist and remain inside the workspace. Its normalized contents are copied into a deterministic virtual package tree at `to`; destination collisions, traversal, and undeclared type changes are errors. Package include/exclude rules evaluate that virtual tree together with ordinary workspace inputs. The preparation command and relevant provenance are recorded, but Gump does not claim that arbitrary builds are reproducible.
 
-The relationship between `prepare.outputs` and `package.include` must be made unambiguous before the schema is frozen. The likely rule is that preparation produces files while package rules alone determine what enters the Capsule.
+The mapping is explicit so build layout does not leak into runtime layout. In the example, Cargo produces `target/release/accounts-server`, Gump stages it as `bin/accounts-server`, `package.include` selects that destination, and the runtime command executes `./bin/accounts-server`.
 
 ## 7. Runtime contract
 
@@ -289,6 +345,20 @@ stop_timeout = "30s"
 ```
 
 The runtime contract defines graceful signal, drain interaction, grace period, and eventual forced termination. Local execution uses the same sequence when interrupted.
+
+### 7.4 Isolation and ephemeral execution
+
+```toml
+[runtime.isolation]
+profile = "sandboxed"
+core_dumps = "deny"
+swap_secrets = "deny"
+proc_visibility = "restricted"
+```
+
+Isolation fields declare required outcomes, not Linux implementation trivia. Nodes report each outcome as enforced, observed, or unavailable. A required `deny` cannot silently become best effort. Profiles provide versioned bundles for convenience, while explicit fields make security-sensitive deviations visible.
+
+Every attempt receives a private writable execution root and complete process-tree ownership. Files created there are ephemeral and swept with the attempt. Anything that must survive must use an explicit external output connector; Gump does not infer persistence from a path an application happened to write.
 
 ## 8. Runtime variables
 
@@ -384,7 +454,9 @@ For `gump deploy`:
 
 A change to any resolved runtime value produces a different protected segment and therefore a new Capsule, even when application files are unchanged.
 
-## 9. Ports and local networking
+## 9. Optional endpoints and local networking
+
+The entire endpoint contract is optional. A training process, batch command, queue consumer, or filesystem-producing workload need not allocate or listen on any port.
 
 Named ports decouple health and publication policy from a particular allocated number:
 
@@ -399,9 +471,9 @@ The cluster agent allocates an available loopback port and injects it into `PORT
 
 Multiple ports use additional named tables such as `[runtime.ports.metrics]`. Publication and health checks refer to port names, never duplicated numeric literals.
 
-## 10. Health and declared tests
+## 10. Optional checks and declared tests
 
-Readiness and liveness are separate named checks. Supported check types may include:
+Checks exist only when declared. Readiness, liveness, progress, completion, and test checks have distinct meanings. Supported check mechanisms may include:
 
 - HTTP request
 - TCP connection
@@ -409,9 +481,9 @@ Readiness and liveness are separate named checks. Supported check types may incl
 - Driver-native health signal
 - Explicit executable check from the release
 
-Checks define startup grace, interval, timeout, success threshold, and failure threshold. HTTP checks name a runtime port and use loopback directly; they do not traverse public Kismet ingress.
+Checks define startup grace, interval, timeout, success threshold, and failure threshold. HTTP checks name a runtime port and use loopback directly; they do not traverse any public ingress or publication provider.
 
-`gump test` starts the local workload using the runtime contract, waits for readiness, executes checks marked as local tests, and shuts down through the declared termination sequence. It is not a replacement for an application's own unit-test framework.
+`gump test` starts the local workload using the runtime contract, waits for any prerequisite condition actually declared, executes checks marked as local tests, and shuts down through the declared termination sequence. It is not a replacement for an application's own unit-test framework.
 
 Executable health checks run with a deliberately restricted runtime-variable view. They do not automatically inherit every application secret.
 
@@ -425,11 +497,49 @@ memory_request = "256MiB"
 memory_limit = "1GiB"
 ```
 
+Resources are an extensible typed capability set rather than four universal scalar fields. Accelerator-aware declarations may additionally constrain device count, model or capability, device memory, partitioning, exclusivity, runtime/driver compatibility, NUMA locality, and interconnect topology. The normalized schema must allow vendors to contribute capability vocabulary without allowing unknown vendor fields to weaken admission safety.
+
+`ephemeral_request` reserves node-local writable capacity for the execution root; `ephemeral_limit` bounds it where enforcement is available. Temporary files, shared-memory use, extracted runtime artifacts, and other driver-defined writable consumption are accounted according to a documented profile. External data and output mounts are not charged as ephemeral storage unless their connector declares otherwise.
+
 Resource values become deployment defaults. The declaration records whether each value came from the manifest, cluster policy, an authorized override, or Gump's conservative inference.
 
 Local execution observes the same resource dimensions where the host permits. Local observations can be shown before deployment and attached as advisory evidence, but the cluster treats them as untrusted because developer hardware and load differ from production.
 
 Omitting a request does not mean zero. It invokes the cluster's explicit unknown-workload policy. Omitting a limit means unbounded only if cluster policy permits it and the selected node reports that enforcement is optional.
+
+### 11.1 External data and outputs
+
+Application release material belongs in the Capsule. Large datasets, model checkpoints, caches, and produced artifacts usually do not. The manifest may declare named external inputs and outputs through capability-based connectors:
+
+```toml
+[data.inputs.training]
+connector = "cluster:training-data"
+mount = "/data/train"
+access = "read"
+locality = "prefer"
+
+[data.outputs.checkpoints]
+connector = "cluster:model-store"
+mount = "/output"
+persistence = "required"
+```
+
+Connector credentials are runtime values and follow the same memory-only plaintext rules as every other secret. A connector declaration describes the required capability and destination, not embedded credentials. Gump may verify that required outputs or checkpoints were committed before accepting finite completion, but it does not invent dataset, model, or checkpoint semantics.
+
+### 11.2 Connectivity requirements
+
+Distributed workloads may declare properties of an existing network or accelerator fabric without asking Gump to create one:
+
+```toml
+[connectivity.collective]
+scope = "execution"
+require = ["rdma=true", "fabric=high-bandwidth"]
+minimum_bandwidth = "200Gbps"
+same_domain = true
+rendezvous = "gump"
+```
+
+`rendezvous = "gump"` asks Gump to deliver authenticated rank, peer-address, and rendezvous material in memory. It does not ask Gump to implement routes, RDMA, MPI, NCCL, or the collective protocol. Nodes must advertise the required capabilities, and cluster policy decides which vocabulary and probes are trusted.
 
 ## 12. Placement, rollout, and publication defaults
 
@@ -437,7 +547,7 @@ These sections contribute defaults to deployment intent rather than changing rel
 
 ```toml
 [deploy]
-replicas = 3
+units = 3
 
 [deploy.rollout]
 strategy = "rolling"
@@ -449,14 +559,57 @@ require = ["os=linux", "arch=x86_64"]
 spread = ["node", "zone"]
 
 [publish]
+provider = "kismet"
+required = true
 service = "accounts-service"
 port = "http"
 domain = "accounts.example.com"
 ```
 
-Gump carries publication intent, but Kismet decides whether and how it becomes reachable. A domain in the manifest is not a request for Gump to issue a certificate or implement ingress.
+The entire `[publish]` section is optional. Its absence means that Gump is responsible only for running and supervising the workload; readiness and deployment convergence do not require an external publication system.
+
+`provider` selects the product responsible for reachability. `kismet` activates Gump's first-class Kismet integration, and Kismet decides whether and how the endpoint becomes reachable. `required = true` means the deployment remains visibly unconverged if the workload is ready but the selected provider cannot publish it; the workload is not killed merely because publication is unavailable. A domain in the manifest is never a request for Gump itself to issue a certificate or implement ingress.
+
+Provider selection must be explicit in the normalized deployment declaration. Friendly discovery may suggest or prefill Kismet when both products are present, but installation detection cannot silently change the meaning of a committed manifest.
 
 Authorized deployment flags or policy may override these defaults without rebuilding the Capsule. The resulting declaration records the final effective values and their provenance.
+
+Namespace quota, allowed priority classes, preemption permission, signing authority, secret scope, connector access, and node-management authority are cluster policy. A manifest may request `priority` or `preemptible`, but it cannot grant itself either. `gump deploy --plan` shows the requested, policy-adjusted, and effective values separately.
+
+### 12.1 Coordinated accelerator example
+
+A training deployment can use the same packaging and secret model without pretending to be a service:
+
+```toml
+[app]
+id = "foundation-model-training"
+
+[workload]
+lifetime = "finite"
+coordination = "gang"
+success = "all_exit_zero"
+failure = "restart_group"
+max_attempts = 2
+
+[deploy]
+units = 64
+
+[resources]
+cpu_request = "16"
+memory_request = "128GiB"
+
+[resources.accelerators.trainer]
+kind = "gpu"
+count = 8
+memory_min = "80GiB"
+exclusive = true
+
+[deploy.placement]
+require = ["accelerator.fabric=high-bandwidth"]
+co_locate_by = ["fabric-domain"]
+```
+
+There is no endpoint, HTTP probe, rolling rollout, or publication section. Gump admits all units as a fenced group, supplies role/rank and rendezvous context in memory, supervises the declared group failure policy, and records successful completion in distributed cluster memory. Exact accelerator and topology field names remain subject to schema refinement.
 
 ## 13. Local execution
 
@@ -466,16 +619,18 @@ Authorized deployment flags or policy may override these defaults without rebuil
 2. Resolve local runtime-variable sources.
 3. Run preparation if requested by the selected local mode.
 4. Materialize or select application files.
-5. Allocate ports.
+5. Allocate declared endpoints, if any.
 6. Apply available local isolation and resource controls.
 7. Start the workload using the selected execution driver.
-8. Evaluate readiness and liveness.
+8. Evaluate only the lifecycle checks declared for the workload.
 9. Stream logs and resource observations.
-10. On interruption, drain and terminate using the declared contract.
+10. On interruption or finite completion, terminate using the declared contract.
 
 Local execution does not need to create a Capsule. A `--sealed` or equivalent verification mode may deliberately build the exact Capsule and then execute its public material and in-memory-decrypted runtime material locally, providing a higher-fidelity pre-deployment test.
 
 Watch/reload is a local orchestration loop: changes trigger a fresh prepare/materialize/start attempt. Gump does not inject changed files into a running process unless the execution driver explicitly supports that behavior.
+
+Local execution uses the same Ratatouille topic model as cluster execution. It may render live topics directly in the terminal. Gump always drains child stdout and stderr and emits them as `process:stdout` and `process:stderr`; this behavior is part of supervision rather than an application-controlled manifest option.
 
 ## 14. Deployment transaction
 
@@ -493,7 +648,7 @@ Watch/reload is a local orchestration loop: changes trigger a fresh prepare/mate
 10. Construct the proposed deployment declaration from manifest defaults and authorized overrides.
 11. Present a non-secret deployment summary according to interaction policy.
 12. Stream the exact Capsule and declaration to cluster ingress.
-13. Await durable commit of Capsule, declaration, and application head.
+13. Await durable commit of the raw Capsule and accepted live intent in the distributed K/V store.
 14. Follow reconciliation until the deployment reaches its requested success condition or fails with actionable diagnostics.
 15. Zeroize local plaintext and key material as soon as their final use completes.
 
@@ -502,12 +657,12 @@ The command's exit status distinguishes at least:
 - Local preparation or validation failure
 - Packaging or sealing failure
 - Authentication or authorization failure
-- Durable upload/commit failure
+- Capsule upload or K/V intent-acceptance failure
 - Accepted but unschedulable deployment
-- Started but unhealthy deployment
+- Started execution whose declared lifecycle condition remains unsatisfied
 - Successful convergence
 
-Interruption after durable commit does not roll back the deployment. Re-running the command with the same transaction identity safely resumes observation or retries idempotently.
+Interruption after Capsule commit and K/V intent acceptance does not roll back the live deployment. Re-running the command with the same transaction identity safely resumes observation or retries idempotently while that cluster memory survives.
 
 ## 15. Stamping and release identity
 
@@ -566,7 +721,11 @@ Validation happens in layers:
 
 Errors identify the phase, manifest path, violated rule, and safe remediation without printing protected values.
 
-## 18. Open questions
+## 18. Design questions resolved for v1
+
+The frozen answers are indexed in
+[`v1/RESOLUTION_MAP.md`](v1/RESOLUTION_MAP.md). These questions remain as the
+design history and as candidates for later schema versions.
 
 1. Should `prepare` be a first-class manifest section or an explicitly separate build integration?
 2. Should package inclusion be an allowlist-only model, or may `include = ["."]` opt into a denylist-based workspace capture?
@@ -584,6 +743,10 @@ Errors identify the phase, manifest path, violated rule, and safe remediation wi
 14. What provenance is required when the workspace is not a Git repository?
 15. How does Gump freeze a consistent workspace snapshot while a build or editor may still be changing files?
 16. Which local behavior belongs in committed `gump.toml` versus ignored `gump.local.toml`?
-17. What does `gump deploy` wait for by default: durable acceptance, minimum readiness, or complete convergence?
-18. How are multiple processes or sidecars represented without turning one application manifest into a general pod specification?
+17. What exact declared workload contracts map to each default wait condition defined in `CLI_LIFECYCLE.md`?
+18. Are cooperating local processes supported in schema version 1, and if so, how are they represented without recreating a general pod specification?
 19. Is best-effort secret scanning built into core packaging, delegated to connectors, or only a cluster policy hook?
+20. Which Ratatouille settings are release capability requirements versus deployment defaults or local overrides?
+21. Which connectivity capability vocabulary is portable core schema and which belongs to typed providers?
+22. Which isolation profiles and ephemeral-storage accounting rules are mandatory for schema version 1?
+23. Which governance requests belong in the manifest, and which remain cluster-policy-only?

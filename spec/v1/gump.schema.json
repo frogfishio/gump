@@ -1,0 +1,304 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gump.invalid/spec/v1/gump.schema.json",
+  "title": "Gump application manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "app", "workload", "package", "runtime"],
+  "properties": {
+    "schema": { "const": "gump/1" },
+    "app": { "$ref": "#/$defs/app" },
+    "workload": { "$ref": "#/$defs/workload" },
+    "package": { "$ref": "#/$defs/package" },
+    "prepare": { "$ref": "#/$defs/prepare" },
+    "runtime": { "$ref": "#/$defs/runtime" },
+    "health": { "$ref": "#/$defs/health" },
+    "resources": { "$ref": "#/$defs/resources" },
+    "deploy": { "$ref": "#/$defs/deploy" },
+    "publish": { "$ref": "#/$defs/publish" },
+    "telemetry": { "$ref": "#/$defs/telemetry" },
+    "local": { "$ref": "#/$defs/local" }
+  },
+  "$defs": {
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$",
+      "maxLength": 63
+    },
+    "duration": {
+      "type": "string",
+      "pattern": "^(?:0|[1-9][0-9]*)(?:ms|s|m|h)$"
+    },
+    "bytes": {
+      "type": "string",
+      "pattern": "^(?:0|[1-9][0-9]*)(?:KiB|MiB|GiB)?$"
+    },
+    "command": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 256,
+      "items": { "type": "string", "maxLength": 4096 }
+    },
+    "app": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "namespace"],
+      "properties": {
+        "id": { "$ref": "#/$defs/name" },
+        "namespace": { "$ref": "#/$defs/name" },
+        "description": { "type": "string", "maxLength": 1024 },
+        "version": { "type": "string", "maxLength": 128 }
+      }
+    },
+    "workload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lifetime", "coordination", "success"],
+      "properties": {
+        "lifetime": { "enum": ["finite", "continuous"] },
+        "coordination": { "enum": ["independent", "gang"] },
+        "success": { "enum": ["never", "any_exit_zero", "all_exit_zero"] },
+        "failure": { "enum": ["fail_unit", "restart_unit", "fail_group", "restart_group"] },
+        "max_attempts": { "type": "integer", "minimum": 1, "maximum": 1000000 },
+        "isolation": { "enum": ["continue_existing", "stop_on_isolation"] },
+        "isolation_grace": { "$ref": "#/$defs/duration" }
+      }
+    },
+    "package": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["root", "include"],
+      "properties": {
+        "root": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "include": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4096,
+          "items": { "type": "string", "minLength": 1, "maxLength": 4096 }
+        },
+        "exclude": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": { "type": "string", "minLength": 1, "maxLength": 4096 }
+        },
+        "format": { "const": "tar+zstd" },
+        "allow_workspace_root": { "type": "boolean" },
+        "allow_sensitive_files": { "type": "boolean" }
+      }
+    },
+    "prepare": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command", "outputs"],
+      "properties": {
+        "command": { "$ref": "#/$defs/command" },
+        "outputs": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4096,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["from", "to"],
+            "properties": {
+              "from": { "type": "string", "minLength": 1, "maxLength": 4096 },
+              "to": { "type": "string", "minLength": 1, "maxLength": 4096 }
+            }
+          }
+        }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["driver", "command"],
+      "properties": {
+        "driver": { "enum": ["native", "script", "oci"] },
+        "command": { "$ref": "#/$defs/command" },
+        "interpreter": { "$ref": "#/$defs/command" },
+        "workdir": { "type": "string", "maxLength": 4096 },
+        "stop_signal": { "enum": ["TERM", "INT", "QUIT", "HUP", "USR1", "USR2"] },
+        "stop_timeout": { "$ref": "#/$defs/duration" },
+        "variables": {
+          "type": "object",
+          "maxProperties": 1024,
+          "propertyNames": { "pattern": "^[A-Z_][A-Z0-9_]{0,127}$" },
+          "additionalProperties": { "$ref": "#/$defs/variable" }
+        },
+        "ports": {
+          "type": "object",
+          "maxProperties": 128,
+          "propertyNames": { "$ref": "#/$defs/name" },
+          "additionalProperties": { "$ref": "#/$defs/port" }
+        },
+        "isolation": { "$ref": "#/$defs/isolation" }
+      }
+    },
+    "variable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "required", "classification", "inject"],
+      "properties": {
+        "source": { "type": "string", "pattern": "^(?:env:[A-Za-z_][A-Za-z0-9_]*|prompt|stdin|connector:[^\\s]+)$" },
+        "required": { "type": "boolean" },
+        "classification": { "enum": ["internal", "secret"] },
+        "encoding": { "enum": ["utf8", "bytes"] },
+        "max_bytes": { "$ref": "#/$defs/bytes" },
+        "inject": { "enum": ["env", "fd"] },
+        "fd": { "type": "integer", "minimum": 3, "maximum": 1023 },
+        "reference_env": { "type": "string", "pattern": "^[A-Z_][A-Z0-9_]{0,127}$" }
+      }
+    },
+    "port": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["address", "value"],
+      "properties": {
+        "address": { "type": "string", "maxLength": 253 },
+        "value": {
+          "oneOf": [
+            { "const": "auto" },
+            { "type": "integer", "minimum": 1, "maximum": 65535 }
+          ]
+        },
+        "inject": { "type": "string", "pattern": "^env:[A-Z_][A-Z0-9_]{0,127}$" }
+      }
+    },
+    "isolation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "profile": { "enum": ["none", "observed", "sandboxed", "strict"] },
+        "core_dumps": { "enum": ["allow", "deny"] },
+        "swap_secrets": { "enum": ["allow", "deny"] },
+        "proc_visibility": { "enum": ["host", "restricted"] },
+        "ptrace": { "enum": ["allow", "deny"] }
+      }
+    },
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "interval", "timeout"],
+      "properties": {
+        "type": { "enum": ["process", "tcp", "http", "command", "fd", "external"] },
+        "port": { "$ref": "#/$defs/name" },
+        "path": { "type": "string", "maxLength": 4096 },
+        "command": { "$ref": "#/$defs/command" },
+        "interval": { "$ref": "#/$defs/duration" },
+        "timeout": { "$ref": "#/$defs/duration" },
+        "initial_delay": { "$ref": "#/$defs/duration" },
+        "successes": { "type": "integer", "minimum": 1, "maximum": 1000 },
+        "failures": { "type": "integer", "minimum": 1, "maximum": 1000 }
+      }
+    },
+    "health": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "readiness": { "$ref": "#/$defs/check" },
+        "liveness": { "$ref": "#/$defs/check" },
+        "progress": { "$ref": "#/$defs/check" },
+        "completion": { "$ref": "#/$defs/check" }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cpu_request": { "type": "string", "pattern": "^(?:[1-9][0-9]*m|[1-9][0-9]*)$" },
+        "cpu_limit": { "type": "string", "pattern": "^(?:[1-9][0-9]*m|[1-9][0-9]*)$" },
+        "memory_request": { "$ref": "#/$defs/bytes" },
+        "memory_limit": { "$ref": "#/$defs/bytes" },
+        "ephemeral_request": { "$ref": "#/$defs/bytes" },
+        "ephemeral_limit": { "$ref": "#/$defs/bytes" },
+        "gpu_count": { "type": "integer", "minimum": 0, "maximum": 65535 },
+        "gpu_vendor": { "type": "string", "maxLength": 128 },
+        "gpu_model": { "type": "string", "maxLength": 128 },
+        "gpu_memory_min": { "$ref": "#/$defs/bytes" },
+        "capabilities": {
+          "type": "array",
+          "maxItems": 1024,
+          "items": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "uniqueItems": true
+        }
+      }
+    },
+    "deploy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "units": { "type": "integer", "minimum": 1, "maximum": 1000000 },
+        "priority": { "enum": ["low", "normal", "high", "critical"] },
+        "preemptible": { "type": "boolean" },
+        "rollout": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "strategy": { "enum": ["replace", "rolling"] },
+            "max_unavailable": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+            "max_surge": { "type": "integer", "minimum": 0, "maximum": 1000000 }
+          }
+        },
+        "placement": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "spread": { "type": "array", "maxItems": 32, "items": { "type": "string", "maxLength": 128 }, "uniqueItems": true },
+            "require": { "type": "array", "maxItems": 256, "items": { "type": "string", "maxLength": 256 }, "uniqueItems": true },
+            "prefer": { "type": "array", "maxItems": 256, "items": { "type": "string", "maxLength": 256 }, "uniqueItems": true }
+          }
+        }
+      }
+    },
+    "publish": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "required", "service", "port"],
+      "properties": {
+        "provider": { "$ref": "#/$defs/name" },
+        "required": { "type": "boolean" },
+        "service": { "$ref": "#/$defs/name" },
+        "port": { "$ref": "#/$defs/name" },
+        "domain": { "type": "string", "maxLength": 253 },
+        "protocol": { "enum": ["tcp", "http", "https"] }
+      }
+    },
+    "telemetry": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "protocol": { "const": "ratatouille/0.1" },
+        "format": { "const": "ndjson" },
+        "filter": { "type": "string", "maxLength": 4096 },
+        "relay": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "capacity": { "$ref": "#/$defs/bytes" },
+            "max_record": { "$ref": "#/$defs/bytes" },
+            "overflow": { "enum": ["drop_oldest", "drop_newest"] }
+          }
+        }
+      }
+    },
+    "local": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "watch": { "type": "array", "maxItems": 4096, "items": { "type": "string", "maxLength": 4096 } },
+        "ports": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 1, "maximum": 65535 } },
+        "variables": {
+          "type": "object",
+          "propertyNames": { "pattern": "^[A-Z_][A-Z0-9_]{0,127}$" },
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["source"],
+            "properties": { "source": { "type": "string", "minLength": 1, "maxLength": 4096 } }
+          }
+        }
+      }
+    }
+  }
+}
+

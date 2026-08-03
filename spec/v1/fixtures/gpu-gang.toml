@@ -1,0 +1,74 @@
+schema = "gump/1"
+
+[app]
+id = "foundation-trainer"
+namespace = "research"
+version = "experiment-042"
+
+[workload]
+lifetime = "finite"
+coordination = "gang"
+success = "all_exit_zero"
+failure = "restart_group"
+max_attempts = 3
+isolation = "stop_on_isolation"
+isolation_grace = "30s"
+
+[package]
+root = "."
+include = ["bin/train", "models/config.json"]
+exclude = []
+format = "tar+zstd"
+
+[runtime]
+driver = "native"
+command = ["./bin/train", "--config", "models/config.json"]
+workdir = "."
+stop_signal = "TERM"
+stop_timeout = "5m"
+
+[runtime.variables.DATASET_TOKEN]
+source = "env:DATASET_TOKEN"
+required = true
+classification = "secret"
+encoding = "utf8"
+max_bytes = "64KiB"
+inject = "fd"
+fd = 7
+reference_env = "DATASET_TOKEN_FILE"
+
+[runtime.isolation]
+profile = "strict"
+core_dumps = "deny"
+swap_secrets = "deny"
+proc_visibility = "restricted"
+ptrace = "deny"
+
+[resources]
+cpu_request = "8"
+memory_request = "64GiB"
+gpu_count = 8
+gpu_vendor = "nvidia"
+gpu_memory_min = "80GiB"
+capabilities = ["accelerator/nvlink", "network/rdma"]
+
+[deploy]
+units = 64
+priority = "high"
+preemptible = false
+
+[deploy.placement]
+spread = ["rack"]
+require = ["network/rdma"]
+prefer = ["dataset/cache-local"]
+
+[telemetry]
+protocol = "ratatouille/0.1"
+format = "ndjson"
+filter = "app/*,-app/debug-noise"
+
+[telemetry.relay]
+capacity = "8MiB"
+max_record = "64KiB"
+overflow = "drop_oldest"
+
