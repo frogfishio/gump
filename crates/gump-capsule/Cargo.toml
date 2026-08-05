@@ -5,6 +5,11 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
+description = "gump/deployment/1 Capsule dialect: streaming R/W over capsule-lib v0001 (F04)."
 
-[lib]
-path = "src/lib.rs"
+[dependencies]
+gump-types = { workspace = true }
+capsule-lib = "1.0"
+blake3 = "1.5"
+
+[dev-dependencies]
