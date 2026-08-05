@@ -5,10 +5,13 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
-description = "Object, identity, publication, and output connector contracts (D01–D02+)."
+description = "Object store (D01–D02) and streamed Capsule ingress verification (D03)."
 
 [dependencies]
 gump-types = { workspace = true }
+gump-capsule = { workspace = true }
+gump-crypto = { workspace = true }
 blake3 = { workspace = true }
 
 [dev-dependencies]
+rand_core = { workspace = true }

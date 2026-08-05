@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
-description = "Capsule seal/sign/verify primitives and transcripts (F05)."
+description = "Capsule seal/sign/verify (F05) and release-signer trust policy (S02)."
 
 [dependencies]
 blake3 = { workspace = true }

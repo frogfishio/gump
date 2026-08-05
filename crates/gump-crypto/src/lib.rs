@@ -1,6 +1,7 @@
-//! Cryptographic primitives for Capsule seal / sign / verify (DELIVERY F05).
+//! Cryptographic primitives for Capsule seal / sign / verify (DELIVERY F05)
+//! and release-signer trust (DELIVERY S02).
 //!
-//! Authority: docs/v1/FORMATS.md §7–§9, docs/v1/SECURITY.md §5, DECISIONS D004.
+//! Authority: docs/v1/FORMATS.md §7–§9, docs/v1/SECURITY.md §4–§5, DECISIONS D004.
 
 #![forbid(unsafe_code)]
 
@@ -10,6 +11,7 @@ mod fingerprint;
 mod hpke_wrap;
 mod sign;
 mod transcript;
+mod trust;
 
 pub use aead::{open_protected, seal_protected, DEK_LEN, NONCE_LEN, TAG_LEN};
 pub use error::{CryptoError, CryptoErrorKind};
@@ -25,4 +27,7 @@ pub use sign::{
 pub use transcript::{
     build_protected_aad, build_release_signing_transcript, hpke_info, SegmentDigestRef,
     PROTECTED_AAD_PREFIX, RELEASE_SIG_PREFIX,
+};
+pub use trust::{
+    SignerEnrollment, SignerTrustPolicy, TrustCheck, TrustDecision, TrustError,
 };

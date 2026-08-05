@@ -840,7 +840,10 @@ name = "gump-connectors"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "gump-capsule",
+ "gump-crypto",
  "gump-types",
+ "rand_core 0.10.1",
 ]
 
 [[package]]
