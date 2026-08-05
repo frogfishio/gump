@@ -1,3 +1,13 @@
-//! Ownership boundary for `gump-connectors` (see docs/v1/README.md §5).
-//! Implementation lands in later delivery tickets; this crate exists so the
-//! workspace and dependency-direction gates are enforceable from W01.
+//! Connector contracts (DELIVERY D01+).
+//!
+//! Object-store connectors hold Capsule bytes only. They never own desired
+//! cluster state (RUNTIME.md §13 / DECISIONS D008).
+
+#![forbid(unsafe_code)]
+
+pub mod object;
+
+pub use object::{
+    final_capsule_key, quarantine_key, ByteRange, FakeObjectStore, ObjectEvidence, ObjectKey,
+    ObjectStore, ObjectStoreError, ObjectStoreErrorKind, UploadId, UploadProgress,
+};

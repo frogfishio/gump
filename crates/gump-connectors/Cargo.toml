@@ -5,6 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
+description = "Object, identity, publication, and output connector contracts (D01+)."
 
-[lib]
-path = "src/lib.rs"
+[dependencies]
+gump-types = { workspace = true }
+blake3 = { workspace = true }
+
+[dev-dependencies]

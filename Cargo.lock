@@ -221,6 +221,10 @@ version = "0.1.0"
 [[package]]
 name = "gump-connectors"
 version = "0.1.0"
+dependencies = [
+ "blake3",
+ "gump-types",
+]
 
 [[package]]
 name = "gump-crypto"
