@@ -9,6 +9,7 @@ description = "gump/deployment/1 Capsule dialect: streaming R/W over capsule-lib
 
 [dependencies]
 gump-types = { workspace = true }
+gump-crypto = { workspace = true }
 capsule-lib = "1.0"
 blake3 = { workspace = true }
 zstd = { workspace = true }

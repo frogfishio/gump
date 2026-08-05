@@ -13,6 +13,7 @@ mod error;
 mod header;
 mod segment;
 mod stream;
+mod verify;
 
 pub use error::{CapsuleDialectError, CapsuleDialectErrorKind};
 pub use header::{GumpCapsuleHeader, DIALECT, PAYLOAD_LAYOUT};
@@ -23,3 +24,4 @@ pub use stream::{
     read_gump_capsule, write_gump_capsule, GumpCapsuleView, StreamingCapsuleReader,
     StreamingCapsuleWriter,
 };
+pub use verify::{release_signing_transcript, verify_release_signature};

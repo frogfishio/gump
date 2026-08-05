@@ -53,3 +53,8 @@ blake3 = "1.5"
 ratatouille = "0.1"
 zstd = { version = "0.13", default-features = false }
 unicode-normalization = "0.1"
+ed25519-dalek = { version = "3", features = ["rand_core"] }
+chacha20poly1305 = "0.11"
+hpke = { version = "0.14", default-features = false, features = ["x25519", "chacha", "alloc", "getrandom"] }
+zeroize = { version = "1.8", features = ["derive"] }
+rand_core = "0.10"
