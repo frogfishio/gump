@@ -1,0 +1,14 @@
+schema = "gump/1"
+
+[workload]
+lifetime = "finite"
+coordination = "independent"
+success = "all_exit_zero"
+
+[package]
+root = "."
+include = ["bin/hello"]
+
+[runtime]
+driver = "native"
+command = ["./bin/hello"]

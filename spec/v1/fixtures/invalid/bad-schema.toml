@@ -1,0 +1,18 @@
+schema = "gump/9"
+
+[app]
+id = "hello-job"
+namespace = "default"
+
+[workload]
+lifetime = "finite"
+coordination = "independent"
+success = "all_exit_zero"
+
+[package]
+root = "."
+include = ["bin/hello"]
+
+[runtime]
+driver = "native"
+command = ["./bin/hello"]

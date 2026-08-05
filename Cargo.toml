@@ -43,3 +43,6 @@ gump-server = { path = "crates/gump-server" }
 gump-telemetry = { path = "crates/gump-telemetry" }
 gump-transport = { path = "crates/gump-transport" }
 gump-types = { path = "crates/gump-types" }
+
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"

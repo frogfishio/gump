@@ -1,0 +1,22 @@
+schema = "gump/1"
+
+[app]
+id = "kismet"
+namespace = "system"
+
+[workload]
+lifetime = "continuous"
+coordination = "independent"
+success = "never"
+
+[package]
+root = "."
+include = ["bin/kismet"]
+
+[runtime]
+driver = "native"
+command = ["./bin/kismet"]
+
+[deploy]
+coverage = "all_nodes"
+units = 3
