@@ -1,0 +1,14 @@
+{
+  "schema": "gump.local.machine.v1",
+  "protocol_major": 1,
+  "protocol_minor": 0,
+  "body": {
+    "kind": "status",
+    "cluster_id": "00000000-0000-4000-8000-000000000001",
+    "incarnation": 1,
+    "controller_epoch": 3,
+    "controller_holder": 1,
+    "memory_voters": 1,
+    "durability_note": "1 memory member; live intent has zero failure tolerance"
+  }
+}

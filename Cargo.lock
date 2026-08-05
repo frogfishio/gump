@@ -908,6 +908,12 @@ version = "0.1.0"
 [[package]]
 name = "gump-server"
 version = "0.1.0"
+dependencies = [
+ "gump-memory",
+ "libc",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "gump-telemetry"

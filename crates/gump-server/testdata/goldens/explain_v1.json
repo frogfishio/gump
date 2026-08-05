@@ -1,0 +1,11 @@
+{
+  "schema": "gump.local.machine.v1",
+  "protocol_major": 1,
+  "protocol_minor": 0,
+  "body": {
+    "kind": "explain",
+    "subject": "unit/1",
+    "reason_code": "placement.hard_filter",
+    "message": "no eligible node matched hard requirements"
+  }
+}

@@ -5,7 +5,19 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
+description = "Local Unix-domain CLI↔daemon API with peer-credential auth (C08)."
+
+[lib]
+path = "src/lib.rs"
 
 [[bin]]
 name = "server"
 path = "src/main.rs"
+
+[dependencies]
+gump-memory = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+libc = "0.2"
+
+[dev-dependencies]

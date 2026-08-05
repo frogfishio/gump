@@ -1,0 +1,10 @@
+{
+  "schema": "gump.local.machine.v1",
+  "protocol_major": 1,
+  "protocol_minor": 0,
+  "body": {
+    "kind": "hello",
+    "daemon": "gump-server",
+    "controller_epoch": 3
+  }
+}

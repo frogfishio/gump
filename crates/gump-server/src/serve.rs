@@ -1,0 +1,146 @@
+//! Local daemon request handling over an authenticated Unix connection.
+
+use std::io::{Read, Write};
+
+use gump_memory::{ControllerAuthority, LeaseTable};
+
+use crate::framing::{read_frame, write_frame, FrameError};
+use crate::machine::{
+    unauthorized_error, ErrorBody, LocalRequest, LocalResponse, MachineOutputV1, StatusBody,
+};
+use crate::peer::{PeerAllowlist, PeerAuthError, PeerCred};
+
+#[derive(Clone, Debug)]
+pub struct LocalDaemon {
+    pub cluster_id: String,
+    pub incarnation: u64,
+    pub memory_voters: u32,
+    pub allowlist: PeerAllowlist,
+    /// In-memory controller view for status (C07).
+    pub controller_epoch: u64,
+    pub controller_holder: Option<u64>,
+}
+
+impl LocalDaemon {
+    pub fn new(allowlist: PeerAllowlist) -> Self {
+        Self {
+            cluster_id: "local".into(),
+            incarnation: 1,
+            memory_voters: 1,
+            allowlist,
+            controller_epoch: 0,
+            controller_holder: None,
+        }
+    }
+
+    /// Sync controller fields from an authority record.
+    pub fn sync_controller(&mut self, auth: &ControllerAuthority) {
+        self.controller_epoch = auth.epoch();
+        self.controller_holder = auth.holder();
+    }
+
+    pub fn authorize_peer(&self, peer: PeerCred) -> Result<(), PeerAuthError> {
+        self.allowlist.authorize(peer)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ServeError {
+    Frame(FrameError),
+    Auth(PeerAuthError),
+    Json(String),
+}
+
+impl std::fmt::Display for ServeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Frame(e) => write!(f, "{e}"),
+            Self::Auth(e) => write!(f, "{e}"),
+            Self::Json(e) => write!(f, "json: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for ServeError {}
+
+impl From<FrameError> for ServeError {
+    fn from(e: FrameError) -> Self {
+        Self::Frame(e)
+    }
+}
+
+impl From<PeerAuthError> for ServeError {
+    fn from(e: PeerAuthError) -> Self {
+        Self::Auth(e)
+    }
+}
+
+pub fn handle_request(daemon: &LocalDaemon, req: LocalRequest) -> LocalResponse {
+    match req {
+        LocalRequest::Hello => LocalResponse::Hello {
+            daemon: "gump-server".into(),
+            controller_epoch: daemon.controller_epoch,
+        },
+        LocalRequest::Status => LocalResponse::Status(StatusBody {
+            cluster_id: daemon.cluster_id.clone(),
+            incarnation: daemon.incarnation,
+            controller_epoch: daemon.controller_epoch,
+            controller_holder: daemon.controller_holder,
+            memory_voters: daemon.memory_voters,
+            durability_note: if daemon.memory_voters <= 1 {
+                "1 memory member; live intent has zero failure tolerance".into()
+            } else {
+                format!(
+                    "{} memory voters; majority required for new commits",
+                    daemon.memory_voters
+                )
+            },
+        }),
+        LocalRequest::Explain { subject } => LocalResponse::Explain {
+            subject,
+            reason_code: "status.ok".into(),
+            message: "no outstanding explainable fault".into(),
+        },
+    }
+}
+
+/// Authenticate peer, then serve one request/response exchange.
+pub fn serve_connection(
+    daemon: &LocalDaemon,
+    peer: PeerCred,
+    stream: &mut (impl Read + Write),
+) -> Result<LocalResponse, ServeError> {
+    if daemon.authorize_peer(peer).is_err() {
+        let body = unauthorized_error();
+        let out = MachineOutputV1::wrap(body.clone());
+        let bytes = serde_json::to_vec(&out).map_err(|e| ServeError::Json(e.to_string()))?;
+        write_frame(stream, &bytes)?;
+        return Ok(body);
+    }
+
+    let payload = read_frame(stream)?;
+    let req: LocalRequest =
+        serde_json::from_slice(&payload).map_err(|e| ServeError::Json(e.to_string()))?;
+    let body = handle_request(daemon, req);
+    let out = MachineOutputV1::wrap(body.clone());
+    let bytes = serde_json::to_vec(&out).map_err(|e| ServeError::Json(e.to_string()))?;
+    write_frame(stream, &bytes)?;
+    Ok(body)
+}
+
+/// Helper used by tests: acquire controller once and sync into daemon status.
+pub fn bootstrap_controller(daemon: &mut LocalDaemon, holder: u64, now_ms: u64) {
+    let mut auth = ControllerAuthority::new();
+    let mut leases = LeaseTable::default();
+    let _ = auth.acquire(holder, now_ms, &mut leases);
+    daemon.sync_controller(&auth);
+}
+
+/// Map auth denial into a stable error body (for goldens without I/O).
+pub fn peer_denied_response() -> LocalResponse {
+    LocalResponse::Error(ErrorBody {
+        code: "UNAUTHORIZED".into(),
+        reason: "peer.uid_denied".into(),
+        safe_message: "local peer credentials rejected".into(),
+    })
+}
