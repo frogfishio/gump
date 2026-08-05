@@ -1,4 +1,4 @@
-//! `gump test --sealed` local Capsule build/verify/unseal-then-run (D014).
+//! `gump test --sealed` local Capsule build/verify/unseal-then-run (D014 / X01).
 
 use std::path::PathBuf;
 
@@ -11,10 +11,10 @@ use gump_crypto::{
     sign_transcript, signer_fingerprint, verifying_key, SegmentDigestRef, DEK_LEN, NONCE_LEN,
 };
 use gump_types::{CapsuleId, ClusterId};
-use rand_core::{TryCryptoRng, TryRng};
+use rand_core::{CryptoRng, TryCryptoRng, TryRng};
 
 use crate::error::{CliError, CliErrorKind};
-use crate::local::{execute_plan, local_parity_plan, LocalRunReport};
+use crate::local::{execute_plan, local_parity_plan, LocalParityPlan, LocalRunReport};
 
 /// OS CSPRNG adapter for rand_core 0.10 / HPKE / ed25519-dalek.
 struct SysRng;
@@ -45,13 +45,29 @@ pub struct SealedTestOptions {
     pub state_root: Option<PathBuf>,
 }
 
-pub fn run_sealed_test(opts: SealedTestOptions) -> Result<LocalRunReport, CliError> {
-    let plan = local_parity_plan(&opts.workspace, &opts.manifest_path)?;
-    let mut rng = SysRng;
+/// Exact sealed Capsule bytes plus verification material (X01 / D014).
+#[derive(Clone, Debug)]
+pub struct BuiltSealedCapsule {
+    pub bytes: Vec<u8>,
+    pub verifying_key: [u8; 32],
+    pub signature: [u8; 64],
+    pub header_cbor: Vec<u8>,
+    pub capsule_id: CapsuleId,
+    pub cluster_id: ClusterId,
+    pub archive_digest: [u8; 32],
+}
 
-    let capsule_id = CapsuleId::new();
-    let cluster_id = ClusterId::new();
-    let signing = generate_signing_key(&mut rng);
+/// Build a sealed Capsule from a local parity plan with caller-controlled IDs/RNG.
+///
+/// Identical `(plan, capsule_id, cluster_id, rng stream)` yields identical Capsule
+/// bytes — the deterministic Capsule half of DELIVERY slice X01.
+pub fn build_sealed_capsule<R: CryptoRng>(
+    plan: &LocalParityPlan,
+    capsule_id: CapsuleId,
+    cluster_id: ClusterId,
+    rng: &mut R,
+) -> Result<BuiltSealedCapsule, CliError> {
+    let signing = generate_signing_key(rng);
     let verifying = verifying_key(&signing);
     let fp = signer_fingerprint(&signing);
     let release_signer = fp
@@ -78,9 +94,9 @@ pub fn run_sealed_test(opts: SealedTestOptions) -> Result<LocalRunReport, CliErr
     let protected = seal_protected(&dek, &nonce, &aad, plaintext)
         .map_err(|e| CliError::new(CliErrorKind::Crypto, e.to_string()))?;
 
-    let (cluster_sk, cluster_pk) = generate_x25519_keypair(&mut rng);
+    let (cluster_sk, cluster_pk) = generate_x25519_keypair(rng);
     let info = hpke_info(capsule_id.as_bytes(), cluster_id.as_bytes());
-    let sealed_dek = seal_dek(&mut rng, &cluster_pk, &info, &aad, &dek)
+    let sealed_dek = seal_dek(rng, &cluster_pk, &info, &aad, &dek)
         .map_err(|e| CliError::new(CliErrorKind::Crypto, e.to_string()))?;
 
     // Prove local unseal before trusting the archive for execution.
@@ -190,12 +206,49 @@ pub fn run_sealed_test(opts: SealedTestOptions) -> Result<LocalRunReport, CliErr
     verify_release_signature(&header_cbor, &sealed_view.table, &verifying.0, &signature)
         .map_err(|e| CliError::new(CliErrorKind::Capsule, e.to_string()))?;
 
-    let archive_seg = sealed_view.segment(SegmentType::ApplicationArchive);
-    execute_plan(
-        &opts.workspace,
-        opts.state_root,
-        "test-sealed",
-        &plan,
-        archive_seg,
+    Ok(BuiltSealedCapsule {
+        bytes: sealed_bytes,
+        verifying_key: verifying.0,
+        signature,
+        header_cbor,
+        capsule_id,
+        cluster_id,
+        archive_digest: arch_digest,
+    })
+}
+
+/// Verify release signature before any materialization/execution (INV-002 local).
+pub fn verify_sealed_capsule(built: &BuiltSealedCapsule) -> Result<(), CliError> {
+    use gump_capsule::read_gump_capsule;
+    let view = read_gump_capsule(&built.bytes)
+        .map_err(|e| CliError::new(CliErrorKind::Capsule, e.to_string()))?;
+    verify_release_signature(
+        &built.header_cbor,
+        &view.table,
+        &built.verifying_key,
+        &built.signature,
     )
+    .map_err(|e| CliError::new(CliErrorKind::Capsule, e.to_string()))
+}
+
+/// Verify the sealed Capsule, then materialize/run the application archive.
+pub fn run_verified_sealed(
+    workspace: &std::path::Path,
+    state_root: Option<PathBuf>,
+    plan: &LocalParityPlan,
+    built: &BuiltSealedCapsule,
+) -> Result<LocalRunReport, CliError> {
+    verify_sealed_capsule(built)?;
+    use gump_capsule::read_gump_capsule;
+    let view = read_gump_capsule(&built.bytes)
+        .map_err(|e| CliError::new(CliErrorKind::Capsule, e.to_string()))?;
+    let archive_seg = view.segment(SegmentType::ApplicationArchive);
+    execute_plan(workspace, state_root, "test-sealed", plan, archive_seg)
+}
+
+pub fn run_sealed_test(opts: SealedTestOptions) -> Result<LocalRunReport, CliError> {
+    let plan = local_parity_plan(&opts.workspace, &opts.manifest_path)?;
+    let mut rng = SysRng;
+    let built = build_sealed_capsule(&plan, CapsuleId::new(), ClusterId::new(), &mut rng)?;
+    run_verified_sealed(&opts.workspace, opts.state_root, &plan, &built)
 }

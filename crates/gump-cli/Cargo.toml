@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
-description = "gump run / gump test local parity CLI (F07)."
+description = "gump run / gump test local parity CLI (F07) and X01 sealed Capsule E2E."
 
 [[bin]]
 name = "gump"

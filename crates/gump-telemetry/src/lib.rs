@@ -7,6 +7,7 @@
 
 mod adapter;
 mod identity;
+mod ring;
 mod stream;
 mod topic;
 
@@ -19,5 +20,9 @@ pub use stream::{
     BoundedRecordQueue, ChunkFlags, EmitOutcome, StreamCaptureError, StreamCaptureErrorKind,
     StreamDrain, StreamEmitter, StreamKind, StreamRecord, MAX_READ_CHUNK, MAX_STREAM_RECORD_BYTES,
     TOPIC_STDERR, TOPIC_STDOUT,
+};
+pub use ring::{
+    GapMarker, GapReason, LocalRing, RingConfig, RingEvent, Subscriber, TopicFilter,
+    DEFAULT_RING_MAX_AGE, DEFAULT_RING_MAX_BYTES,
 };
 pub use topic::{validate_topic, TopicError, MAX_TOPIC_LEN};
