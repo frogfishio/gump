@@ -5,9 +5,11 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
-description = "Parse, normalize, and validate gump/1 manifests (F01)."
+description = "Parse, normalize, validate gump/1 manifests (F01) and source capture (F02)."
 
 [dependencies]
 gump-types = { workspace = true }
 serde = { workspace = true }
 toml = { workspace = true }
+globset = { workspace = true }
+blake3 = { workspace = true }

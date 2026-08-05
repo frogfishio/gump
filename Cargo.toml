@@ -48,5 +48,6 @@ serde = { version = "1.0", features = ["derive"] }
 toml = "0.8"
 serde_json = "1.0"
 capsule-lib = "1.0"
+globset = "=0.4.16" # MSRV 1.85; 0.4.20+ needs rustc 1.88
 blake3 = "1.5"
 ratatouille = "0.1"

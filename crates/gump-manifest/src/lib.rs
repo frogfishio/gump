@@ -1,10 +1,12 @@
-//! Parse, normalize, and validate `gump/1` manifests (DELIVERY F01).
+//! Parse, normalize, and validate `gump/1` manifests (DELIVERY F01) plus
+//! workspace capture / prepare virtual trees (F02).
 //!
-//! Authority: `docs/v1/FORMATS.md` §1/§10, `spec/v1/gump.schema.json`.
-//! Unknown keys are errors. Durations and byte sizes are normalized on parse.
+//! Authority: `docs/v1/FORMATS.md` §1/§10/§11, `spec/v1/gump.schema.json`,
+//! DECISIONS D009.
 
 #![forbid(unsafe_code)]
 
+pub mod capture;
 mod error;
 mod model;
 mod normalize;
