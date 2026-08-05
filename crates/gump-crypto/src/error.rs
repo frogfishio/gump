@@ -9,6 +9,8 @@ pub enum CryptoErrorKind {
     Signature,
     Encoding,
     Length,
+    Share,
+    Unseal,
 }
 
 impl fmt::Display for CryptoErrorKind {
@@ -19,6 +21,8 @@ impl fmt::Display for CryptoErrorKind {
             Self::Signature => "signature",
             Self::Encoding => "encoding",
             Self::Length => "length",
+            Self::Share => "share",
+            Self::Unseal => "unseal",
         })
     }
 }

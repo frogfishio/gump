@@ -1,7 +1,7 @@
-//! Cryptographic primitives for Capsule seal / sign / verify (DELIVERY F05)
-//! and release-signer trust (DELIVERY S02).
+//! Cryptographic primitives for Capsule seal / sign / verify (DELIVERY F05),
+//! release-signer trust (S02), and software unseal/share ceremony (S03).
 //!
-//! Authority: docs/v1/FORMATS.md §7–§9, docs/v1/SECURITY.md §4–§5, DECISIONS D004.
+//! Authority: docs/v1/FORMATS.md §7–§9, docs/v1/SECURITY.md §4–§6, DECISIONS D004–D005.
 
 #![forbid(unsafe_code)]
 
@@ -12,6 +12,7 @@ mod hpke_wrap;
 mod sign;
 mod transcript;
 mod trust;
+mod unseal;
 
 pub use aead::{open_protected, seal_protected, DEK_LEN, NONCE_LEN, TAG_LEN};
 pub use error::{CryptoError, CryptoErrorKind};
@@ -30,4 +31,9 @@ pub use transcript::{
 };
 pub use trust::{
     SignerEnrollment, SignerTrustPolicy, TrustCheck, TrustDecision, TrustError,
+};
+pub use unseal::{
+    combine_recovery_shares, derive_cluster_unseal_keypair, generate_recovery_secret,
+    split_recovery_secret, OperatorShare, RecoverySecret, CLUSTER_UNSEAL_INFO,
+    DEFAULT_SHARE_COUNT, DEFAULT_THRESHOLD, RECOVERY_SECRET_LEN,
 };

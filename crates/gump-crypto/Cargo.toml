@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
-description = "Capsule seal/sign/verify (F05) and release-signer trust policy (S02)."
+description = "Capsule seal/sign/verify (F05), signer trust (S02), and software unseal ceremony (S03)."
 
 [dependencies]
 blake3 = { workspace = true }
@@ -14,8 +14,14 @@ chacha20poly1305 = { workspace = true }
 hpke = { workspace = true }
 zeroize = { workspace = true }
 rand_core = { workspace = true }
+sharks = { version = "0.5", default-features = false, features = ["std", "zeroize_memory"] }
+hkdf = "0.13"
+sha2 = "0.11"
+rand_chacha = "0.3"
+rand = { version = "0.8", default-features = false }
 
 [dev-dependencies]
 serde_json = { workspace = true }
 blake3 = { workspace = true }
 rand_core = { workspace = true }
+rand_chacha = "0.3"
