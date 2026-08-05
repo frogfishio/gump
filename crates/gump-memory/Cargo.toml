@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
-description = "RAM-only OpenRaft adapter (C03) and typed record state machine/budgets (C04)."
+description = "RAM-only OpenRaft adapter (C03) and typed record SM with watches/leases (C04–C05)."
 
 [lib]
 path = "src/lib.rs"

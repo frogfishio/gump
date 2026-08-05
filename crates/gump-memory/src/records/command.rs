@@ -1,6 +1,7 @@
-//! State-machine commands (PROTOCOL.md §6).
+//! State-machine commands (PROTOCOL.md §6, §8).
 
 use crate::records::key::RecordKey;
+use crate::records::lease::LeasePurpose;
 
 /// Compare precondition for Put/Delete/Txn.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -56,4 +57,19 @@ pub enum Command {
         expected: Expected,
     },
     Txn(Txn),
+    /// Raise watch compaction floor through `through` (inclusive).
+    Compact {
+        through: u64,
+    },
+    LeaseGrant {
+        purpose: LeasePurpose,
+    },
+    LeaseRenew {
+        lease_id: u64,
+    },
+    LeaseRevoke {
+        lease_id: u64,
+    },
+    /// Commit revocation for all leases due at the machine's monotonic clock.
+    ExpireLeases,
 }

@@ -1,7 +1,7 @@
-//! `gump-memory`: RAM OpenRaft adapter (C03) and typed record SM (C04).
+//! `gump-memory`: RAM OpenRaft adapter (C03) and typed record SM (C04–C05).
 //!
 //! Log, vote, membership, snapshots, and application buffers live only in RAM.
-//! Typed records enforce PROTOCOL.md §6–§7 commands and budgets.
+//! Typed records enforce PROTOCOL.md §6–§8 commands, budgets, watches, and leases.
 
 #![forbid(unsafe_code)]
 
@@ -16,6 +16,7 @@ pub use ram_store::{
 };
 pub use records::{
     comparisons_hold, ApplyError, ApplyResult, BudgetClass, BudgetError, BudgetUsage, Command,
-    Comparison, Expected, KeyPrefix, MemoryBudgets, MutateOp, RecordKey, RecordValue, Txn,
-    TypedRecordMachine,
+    Compacted, Comparison, Expected, KeyPrefix, Lease, LeaseError, LeasePurpose, MemoryBudgets,
+    MutateOp, RecordKey, RecordValue, Txn, TypedRecordMachine, WatchBatch, WatchChange,
+    MAX_WATCH_AGE_MS, MAX_WATCH_REVISIONS,
 };
