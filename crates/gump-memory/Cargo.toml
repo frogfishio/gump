@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
-description = "RAM-only OpenRaft log/state/snapshot adapter (C03)."
+description = "RAM-only OpenRaft adapter (C03) and typed record state machine/budgets (C04)."
 
 [lib]
 path = "src/lib.rs"
@@ -17,6 +17,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+blake3 = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync"] }
