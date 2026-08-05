@@ -1,0 +1,65 @@
+syntax = "proto3";
+
+package gump.v1;
+
+// Internal agent/keeper schema. Applications see only the minimal JSON binding
+// in docs/v1/HICCUP.md and spec/v1/hiccup/http.schema.json.
+
+message HiccupSenderV1 {
+  bytes cluster_id = 1;
+  string namespace = 2;
+  string app_id = 3;
+  bytes workload_id = 4;
+  bytes capsule_id = 5;
+  bytes execution_id = 6;
+  bytes unit_id = 7;
+  optional string role = 8;
+  optional uint32 rank = 9;
+  bytes attempt_id = 10;
+  bytes node_id = 11;
+  uint64 agent_incarnation = 12;
+  bytes placement_fence_digest = 13;
+  bool health_eligible = 14;
+}
+
+message HiccupPresenceV1 {
+  string canonical_topic = 1;
+  HiccupSenderV1 sender = 2;
+  optional string receiver_reachable_ip = 3;
+  bytes public_json_utf8 = 4;
+  optional string secret_data = 5;
+  uint64 expires_in_ms = 6;
+  bytes content_digest = 7;
+}
+
+message HiccupPublishV1 {
+  bytes publish_id = 1;
+  HiccupPresenceV1 presence = 2;
+  bytes authorization_decision_id = 3;
+}
+
+message HiccupRemoveAttemptV1 {
+  bytes attempt_id = 1;
+  bytes placement_fence_digest = 2;
+}
+
+message HiccupListenV1 {
+  bytes receiving_attempt_id = 1;
+  repeated string canonical_topics = 2;
+  uint32 maximum_entries = 3;
+  uint32 maximum_bytes = 4;
+  bytes authorization_decision_id = 5;
+}
+
+message HiccupDeliveryV1 {
+  repeated HiccupPresenceV1 current_presence = 1;
+  bool more = 2;
+}
+
+message HiccupKeeperTransferV1 {
+  string canonical_topic = 1;
+  bytes transfer_id = 2;
+  repeated HiccupPresenceV1 current_presence = 3;
+  bytes final_digest = 4;
+}
+

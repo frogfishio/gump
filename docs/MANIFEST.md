@@ -155,6 +155,10 @@ interval = "10s"
 timeout = "2s"
 failures = 3
 
+[discovery.hiccup]
+required_for_eligibility = false
+health_binding = "readiness"
+
 [resources]
 cpu_request = "250m"
 cpu_limit = "2"
@@ -487,6 +491,33 @@ Checks define startup grace, interval, timeout, success threshold, and failure t
 
 Executable health checks run with a deliberately restricted runtime-variable view. They do not automatically inherit every application secret.
 
+### 10.1 Hiccup discovery
+
+An HTTP health endpoint can opt into Gump's Hiccup discovery exchange at
+runtime. No manifest section is required for optional discovery: Gump offers
+Hiccup during the normal probe, and an application activates it through the
+exact media type and `{ "hiccup": 1 }` response defined in
+[`v1/HICCUP.md`](v1/HICCUP.md).
+
+The optional release contract controls only stronger requirements:
+
+```toml
+[discovery.hiccup]
+required_for_eligibility = true
+health_binding = "readiness"
+```
+
+`required_for_eligibility` means a persistent Hiccup protocol failure prevents
+the unit becoming eligible or published. It does not redefine liveness or make
+discovery traffic durable. `health_binding` selects the named readiness or
+liveness HTTP check when both exist; otherwise Gump offers on readiness first,
+then liveness.
+
+The application declares one current topic, listened topics, and optional data
+in its health response. Gump stamps identity and receiver-reachable private IP,
+distributes current presence in bounded memory, and does not relay application
+traffic after peers meet.
+
 ## 11. Resources and observed behavior
 
 ```toml
@@ -573,6 +604,26 @@ The entire `[publish]` section is optional. Its absence means that Gump is respo
 Provider selection must be explicit in the normalized deployment declaration. Friendly discovery may suggest or prefill Kismet when both products are present, but installation detection cannot silently change the meaning of a committed manifest.
 
 Authorized deployment flags or policy may override these defaults without rebuilding the Capsule. The resulting declaration records the final effective values and their provenance.
+
+Deployment cardinality has two forms:
+
+```toml
+[deploy]
+coverage = "fixed"
+units = 3
+```
+
+or:
+
+```toml
+[deploy]
+coverage = "all_nodes"
+```
+
+`all_nodes` continuously maintains one unit on every current and future
+eligible node. It is not expanded into a fixed count at deployment time and
+cannot be combined with `units`. The CLI equivalent for an existing Capsule is
+`gump deploy <capsule> --nodes=all`.
 
 Namespace quota, allowed priority classes, preemption permission, signing authority, secret scope, connector access, and node-management authority are cluster policy. A manifest may request `priority` or `preemptible`, but it cannot grant itself either. `gump deploy --plan` shows the requested, policy-adjusted, and effective values separately.
 

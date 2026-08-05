@@ -1,0 +1,84 @@
+schema = "gump/1"
+
+[app]
+id = "kismet"
+namespace = "system"
+description = "Kismet deployed as an ordinary native Gump workload"
+
+[workload]
+lifetime = "continuous"
+coordination = "independent"
+success = "never"
+failure = "restart_unit"
+isolation = "continue_existing"
+isolation_grace = "15m"
+
+[package]
+root = "."
+include = ["bin/kismet"]
+exclude = []
+format = "tar+zstd"
+
+[runtime]
+driver = "native"
+command = ["./bin/kismet"]
+workdir = "."
+stop_signal = "TERM"
+stop_timeout = "30s"
+
+[runtime.ports.health]
+address = "127.0.0.1"
+value = "auto"
+
+[runtime.ports.cluster]
+address = "0.0.0.0"
+value = 9400
+
+[runtime.variables.KISMET_CLUSTER_KEY]
+source = "env:KISMET_CLUSTER_KEY"
+required = true
+classification = "secret"
+encoding = "bytes"
+max_bytes = "64KiB"
+inject = "fd"
+fd = 7
+reference_env = "KISMET_CLUSTER_KEY_FILE"
+
+[health.readiness]
+type = "http"
+port = "health"
+path = "/health"
+interval = "5s"
+timeout = "2s"
+successes = 1
+failures = 3
+
+[resources]
+cpu_request = "100m"
+memory_request = "128MiB"
+capabilities = ["network/node-private", "network/host-ports"]
+
+[deploy]
+coverage = "all_nodes"
+priority = "high"
+preemptible = false
+
+[deploy.rollout]
+strategy = "rolling"
+max_unavailable = 1
+max_surge = 0
+
+[discovery.hiccup]
+required_for_eligibility = true
+health_binding = "readiness"
+
+[telemetry]
+protocol = "ratatouille/0.1"
+format = "ndjson"
+filter = "app/*"
+
+[telemetry.relay]
+capacity = "1MiB"
+max_record = "64KiB"
+overflow = "drop_oldest"
+

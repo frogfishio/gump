@@ -624,6 +624,25 @@ Before opening a coordinated launch barrier, agents may verify declared prerequi
 
 Gump does not implement the underlying fabric, routes, NCCL, MPI, collective algorithms, or a service mesh. A cluster may provide ordinary networking, specialist AI/HPC fabric, Kismet, or another system. The scheduler's responsibility is to avoid placements that cannot satisfy the declared connectivity contract and to explain why.
 
+#### 11.5.1 Hiccup peer introduction
+
+Hiccup is Gump's optional, health-driven discovery facility. An application can
+extend an ordinary HTTP health response to advertise Hiccup support. Gump then
+uses authenticated POST exchanges on that endpoint to receive one current
+declaration and deliver current matching peer presence.
+
+Gump stamps stable workload/unit identity, exact attempt incarnation, and the
+receiver-reachable private IP. `@self` introduces instances of the same
+workload without a configured topic; authorized named topics support broader
+discovery. Applications may attach public JSON and opaque application-encrypted
+data whose keys Gump does not manage as part of Hiccup.
+
+Hiccup is a speed-dating venue, not a relationship participant. It does not
+proxy application traffic, replicate application state, establish consensus,
+provide complete membership, or persist a registry. After introduction,
+applications connect over their private network and run their own protocols.
+The normative v1 contract is [`v1/HICCUP.md`](v1/HICCUP.md).
+
 ### 11.6 Enforcement is independent of packaging
 
 Containers provide a portable filesystem/process envelope and an opportunity for stronger isolation, but CPU and memory governance come from host mechanisms such as Linux cgroups. A sufficiently privileged Gump agent can place native executables, scripts, and OCI workloads into cgroups and enforce CPU, memory, process, and I/O policy for all three.
@@ -967,6 +986,7 @@ Changing cryptographic profiles, canonical serialization, or signing transcripts
 28. Every ended attempt eventually loses its Gump-managed process tree and ephemeral writable root.
 29. A manifest cannot grant itself namespace authority, quota, priority, preemption, connector access, or secret scope.
 30. Capsule bytes obtained from a peer receive the same complete verification as bytes obtained from S3.
+31. Hiccup introductions never become application traffic relay, authoritative membership, durable state, or input to Gump consensus.
 
 ## 22. Design questions resolved for v1
 

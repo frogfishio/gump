@@ -57,6 +57,12 @@ enum DriverKind {
   DRIVER_KIND_OCI = 3;
 }
 
+enum CoverageKind {
+  COVERAGE_KIND_UNSPECIFIED = 0;
+  COVERAGE_KIND_FIXED = 1;
+  COVERAGE_KIND_ALL_NODES = 2;
+}
+
 enum CheckKind {
   CHECK_KIND_UNSPECIFIED = 0;
   CHECK_KIND_PROCESS = 1;
@@ -175,11 +181,17 @@ message RolloutSpecV1 {
 }
 
 message DeployDefaultsV1 {
-  uint32 units = 1;
+  optional uint32 units = 1;
   string priority_request = 2;
   bool preemptible_request = 3;
   RolloutSpecV1 rollout = 4;
   PlacementSpecV1 placement = 5;
+  CoverageKind coverage = 6;
+}
+
+message HiccupDiscoverySpecV1 {
+  bool required_for_eligibility = 1;
+  optional string health_binding = 2; // readiness or liveness
 }
 
 message PublicationSpecV1 {
@@ -209,6 +221,7 @@ message ManifestV1 {
   DeployDefaultsV1 deploy = 7;
   optional PublicationSpecV1 publication = 8;
   TelemetrySpecV1 telemetry = 9;
+  optional HiccupDiscoverySpecV1 hiccup = 10;
 }
 
 message ArchiveEntryV1 {
@@ -290,4 +303,3 @@ message ReleaseSignatureV1 {
   bytes signer_public_key = 4;
   bytes signature = 5;
 }
-

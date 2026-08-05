@@ -35,6 +35,15 @@ gump telemetry
 
 `gump deploy` prepares, packages, seals, signs, uploads, creates live intent, and follows the requested convergence condition as one user action.
 
+An existing Capsule can be deployed directly without its source manifest:
+
+```text
+gump deploy kismet.capsule --nodes=all
+```
+
+`--nodes=all` is continuous coverage: one eligible unit on every current and
+future matching node. It is not expanded into a one-time fixed unit count.
+
 ## 3. Deployment receipt
 
 Successful deployment prints a stable, machine-readable and human-readable receipt:
@@ -57,7 +66,7 @@ An S3 upload followed by K/V failure leaves an inert orphan Capsule and reports 
 
 ### 4.1 `gump status`
 
-Shows current desired and observed state by logical workload identity. It includes generation, Capsule, execution, units, attempts, placement, declared lifecycle condition, publication state when applicable, and the current memory-survival guarantee.
+Shows current desired and observed state by logical workload identity. It includes generation, Capsule, execution, units, attempts, placement, declared lifecycle condition, publication state when applicable, Hiccup active/degraded status and safe counts when detected, and the current memory-survival guarantee. It does not print Hiccup `data` or `secretData` by default.
 
 ### 4.2 `gump explain`
 
@@ -69,6 +78,7 @@ Answers “why?” using stable reason codes and human explanations:
 - Why is a gang waiting?
 - Why did a unit restart or move?
 - Why is a workload ready but unpublished?
+- Why is Hiccup undetected, degraded, incomplete, overloaded, or unauthorized?
 - Which policy, quota, or priority decision applied?
 - Which value came from the manifest, an override, or cluster policy?
 
@@ -153,6 +163,7 @@ Checks the live cluster without mutating it:
 - S3 read/write/verify capability using safe probes
 - Capsule integrity and unseal readiness when explicitly selected
 - Publication and data connectors
+- Hiccup health binding, token injection, keeper reachability, quotas, and safe topic counts
 - Scheduler feasibility for a selected manifest or Capsule
 
 Every result distinguishes required failure, degraded guarantee, optional integration absence, and advisory warning.

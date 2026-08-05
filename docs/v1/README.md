@@ -16,10 +16,11 @@ The documents have this precedence when they disagree:
 2. [`FORMATS.md`](FORMATS.md) — serialized Capsule and manifest contracts.
 3. [`PROTOCOL.md`](PROTOCOL.md) — cluster transport, records, RPCs, and state machines.
 4. [`RUNTIME.md`](RUNTIME.md) — placement, drivers, supervision, telemetry, and connectors.
-5. [`SECURITY.md`](SECURITY.md) — identity, authorization, cryptography, and secret custody.
-6. [`CONFORMANCE.md`](CONFORMANCE.md) — required tests and release gates.
-7. [`DELIVERY.md`](DELIVERY.md) — work decomposition and dependency order only.
-8. The parent design documents — product intent where this pack is silent.
+5. [`HICCUP.md`](HICCUP.md) — health-driven, ephemeral workload discovery.
+6. [`SECURITY.md`](SECURITY.md) — identity, authorization, cryptography, and secret custody.
+7. [`CONFORMANCE.md`](CONFORMANCE.md) — required tests and release gates.
+8. [`DELIVERY.md`](DELIVERY.md) — work decomposition and dependency order only.
+9. The parent design documents — product intent where this pack is silent.
 
 [`RESOLUTION_MAP.md`](RESOLUTION_MAP.md) maps every formerly open parent-design
 question to its frozen v1 answer.
@@ -28,6 +29,8 @@ Machine-readable handoff artifacts are the
 [`gump.toml` JSON Schema](../../spec/v1/gump.schema.json),
 [`formats.proto`](../../proto/gump/v1/formats.proto),
 [`cluster.proto`](../../proto/gump/v1/cluster.proto),
+[`hiccup.proto`](../../proto/gump/v1/hiccup.proto),
+the [Hiccup HTTP JSON Schema](../../spec/v1/hiccup/http.schema.json),
 the [`manifest fixtures`](../../spec/v1/fixtures), and the
 [`traceability ledger`](../../spec/v1/traceability.tsv).
 
@@ -41,6 +44,8 @@ server, control-plane member, workload agent, or a combination of those roles.
 It deploys arbitrary finite or continuous workloads from immutable sealed
 Capsules, remembers live intent in replicated memory, places and supervises
 execution, and emits diskless Ratatouille telemetry.
+Hiccup optionally lets supervised applications discover current peers through
+their existing health exchange without becoming an application data plane.
 
 The four kernel responsibilities are:
 
@@ -75,6 +80,8 @@ and publication systems are typed integrations. None is part of the kernel.
   file.
 - Kismet is optional. Its absence affects only declarations that explicitly
   require the Kismet publication provider.
+- Hiccup introduces authorized workload attempts and then leaves their direct
+  communication, membership, consistency, and state entirely to them.
 
 ## 4. v1 compatibility unit
 
@@ -87,6 +94,7 @@ wire protocol:         gump.cluster.v1, major 1
 record schemas:        gump.record/*/1
 driver ABI:            gump.driver/1
 telemetry profile:     gump.ratatouille/1
+discovery profile:     gump.hiccup/1
 ```
 
 Additive wire changes increment the protocol minor version. Any change to
@@ -112,6 +120,7 @@ crates/
   gump-agent/           materialization, secret delivery, driver supervision
   gump-driver/          stable driver trait and common lifecycle
   gump-telemetry/       Ratatouille capture, relay, subscription
+  gump-hiccup/          health upgrade, discovery board, keepers, SDK corpus
   gump-connectors/      object, identity, publication, output adapters
   gump-server/          role composition and process entry point
 proto/gump/v1/          source-controlled wire schemas

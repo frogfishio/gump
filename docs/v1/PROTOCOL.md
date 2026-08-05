@@ -74,6 +74,7 @@ authenticated principal context. Required v1 operations are:
 | Secrets | `UnsealStatus`, `AuthorizeRelease`, `Deliver`, `RevokeDelivery` |
 | Agent | `Prepare`, `Start`, `Signal`, `Terminate`, `Cleanup`, `InspectAttempt` |
 | Telemetry | `PublishBatch`, `Subscribe`, `AckWindow`, `KeeperTransfer` |
+| Hiccup | `PublishView`, `FetchView`, `KeeperTransfer`, `RevokeAttempt` |
 | Publication | local connector calls only; no provider receives cluster RPC authority |
 
 These are protocol operations, not necessarily one network request each. Raft
@@ -96,7 +97,8 @@ CAPABILITY_UNAVAILABLE ISOLATION_UNAVAILABLE   CAPSULE_INVALID
 SIGNATURE_INVALID      UNSEAL_REQUIRED          SECRET_DELIVERY_DENIED
 OBJECT_STORE_FAILED    PUBLICATION_FAILED       TELEMETRY_OVERLOADED
 RESOURCE_EXHAUSTED     DEADLINE_EXCEEDED        RETRY_LATER
-INTERNAL
+INTERNAL               HICCUP_INVALID           HICCUP_UNAUTHORIZED
+HICCUP_OVERLOADED
 ```
 
 Errors expose a safe reason code, message capped at 1 KiB, field path, retry
@@ -160,6 +162,10 @@ a versioned protobuf with a maximum size and authorized writer.
 Capsule bytes, protected values, DEKs, unseal keys, raw telemetry, application
 outputs, and checkpoints are invalid record content. State-machine validation
 rejects them by type; callers cannot invent key prefixes.
+
+Hiccup declarations and delivered presence are also absent from
+this keyspace. They use separately bounded keeper RAM and the schema in
+[`HICCUP.md`](HICCUP.md) and `proto/gump/v1/hiccup.proto`.
 
 Initial budgets are 64 MiB authoritative records, 32 MiB leased records, and
 32 MiB bounded history. Budget exhaustion rejects growth; authoritative state
@@ -309,3 +315,20 @@ Automatic retry is allowed only for errors marked `SAME_OPERATION`. Redirects
 and leader changes preserve the operation ID. Deadlines cancel waiting, not a
 mutation already accepted by consensus.
 
+## 16. Hiccup keeper transport
+
+Hiccup agents and keepers use authenticated QUIC streams carrying bounded
+`HiccupPublishV1`, `HiccupListenV1`, `HiccupDeliveryV1`, and transfer messages. These
+streams have an independent capacity class below health, supervision, secret,
+Raft, and authoritative control traffic. Their success never creates a Raft
+revision or Gump effect fence.
+
+The sender agent derives stable unit identity, attempt identity, and the
+receiver-reachable private IP from current placement state before forwarding
+presence. A keeper revalidates the sender session, attempt/fence digest, topic
+authorization evidence, health-derived expiry, and bounds. Delivery is scoped
+to the receiving attempt's listened topics and authorization.
+
+Keepers retain only each live attempt's latest declaration. Duplicate,
+missing, reordered, or rotated introductions are normal protocol outcomes;
+there are no cursors, acknowledgements, or durable offsets.

@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gump.invalid/spec/v1/hiccup/http.schema.json",
+  "title": "Gump Hiccup HTTP discovery v1",
+  "oneOf": [
+    { "$ref": "#/$defs/declaration" },
+    { "$ref": "#/$defs/delivery" }
+  ],
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "topic": {
+      "type": "string",
+      "oneOf": [
+        { "const": "@self" },
+        {
+          "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?(?:/[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?)*$",
+          "maxLength": 128
+        }
+      ]
+    },
+    "from": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "attempt"],
+      "properties": {
+        "id": { "$ref": "#/$defs/uuid" },
+        "attempt": { "$ref": "#/$defs/uuid" },
+        "ip": {
+          "oneOf": [
+            { "type": "string", "format": "ipv4" },
+            { "type": "string", "format": "ipv6" }
+          ]
+        }
+      }
+    },
+    "message": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["topic", "from"],
+      "properties": {
+        "topic": { "$ref": "#/$defs/topic" },
+        "from": { "$ref": "#/$defs/from" },
+        "data": { "type": "object", "maxProperties": 256 },
+        "secretData": { "type": "string", "maxLength": 32768 }
+      }
+    },
+    "declaration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hiccup"],
+      "allOf": [
+        {
+          "if": {
+            "required": ["topic"],
+            "properties": { "topic": { "type": "null" } }
+          },
+          "then": {
+            "required": ["listen"],
+            "properties": { "listen": { "minItems": 1 } }
+          }
+        }
+      ],
+      "properties": {
+        "hiccup": { "const": 1 },
+        "topic": {
+          "oneOf": [
+            { "$ref": "#/$defs/topic" },
+            { "type": "null" }
+          ]
+        },
+        "listen": {
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/topic" }
+        },
+        "data": { "type": "object", "maxProperties": 256 },
+        "secretData": { "type": "string", "maxLength": 32768 }
+      }
+    },
+    "delivery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hiccup", "messages", "more"],
+      "properties": {
+        "hiccup": { "const": 1 },
+        "messages": {
+          "type": "array",
+          "maxItems": 256,
+          "items": { "$ref": "#/$defs/message" }
+        },
+        "more": { "type": "boolean" }
+      }
+    }
+  }
+}

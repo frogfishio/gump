@@ -1,0 +1,10 @@
+{
+  "hiccup": 1,
+  "topic": "banana",
+  "listen": ["banana"],
+  "data": {
+    "protocol": "banana/1"
+  },
+  "secretData": "b3BhcXVlLWFwcGxpY2F0aW9uLWNpcGhlcnRleHQ"
+}
+

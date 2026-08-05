@@ -114,7 +114,8 @@ runtime, deployment, or operational dependency on Kismet.
 ## D007 — transport and trust
 
 - Cluster traffic uses mutually authenticated QUIC. Datagrams are limited to
-  discovery/liveness hints; every authoritative operation uses a stream.
+  Gump membership/liveness hints; every authoritative operation and Hiccup
+  keeper exchange uses a stream.
 - Initial control-frame maximum is 1 MiB. Bulk data uses 1 MiB chunks with
   per-chunk length bounds and a final BLAKE3 digest.
 - Client-to-ingress deployment uses HTTPS with TLS 1.3 and a streamed body. The
@@ -240,3 +241,42 @@ and optional local publication; they cannot change release semantics.
 - Assuming a workload is an HTTP service, stateless, containerized, restartable,
   independently placeable, or safe to move.
 - Treating Kismet, an HSM, S3, OCI, GPUs, or three servers as mandatory.
+- Turning Hiccup into an application relay, durable registry, consensus input,
+  state-replication protocol, health oracle, or general message broker.
+
+## D016 — Hiccup discovery
+
+- Hiccup profile `gump.hiccup/1` is an optional, health-detected workload
+  discovery facility specified in `HICCUP.md`.
+- The exact Hiccup media type and `{ "hiccup": 1 }` upgrade an ordinary GET
+  health probe to authenticated POST exchanges on the same endpoint.
+- `@self` discovers current attempts of the same stable workload without topic
+  configuration. Named topics are namespace-scoped and policy-authorized.
+- Gump stamps stable unit identity, attempt identity, and receiver-reachable
+  private IP. Applications cannot claim them through their declaration.
+- `data` is bounded public JSON. `secretData` is opaque application ciphertext;
+  Gump never decrypts it or manages its group keys.
+- Hiccup is stored only in bounded keeper RAM, never Raft or S3. One/two/three
+  keepers follow topology; loss rebuilds from application refresh.
+- Each attempt has one current declaration, replaced by each successful health
+  response. There are no generations, cursors, acknowledgements, withdrawals,
+  or history. Discovery is incomplete, duplicate-prone, expiring soft state. It cannot
+  establish exclusive membership, consensus, locks, durable delivery, or
+  health truth.
+- Gump never proxies application traffic after an introduction.
+
+## D017 — continuous node coverage
+
+- Deployment cardinality is either `fixed` units or `all_nodes` coverage.
+- Omitted coverage defaults to `fixed`; omitted fixed units default to one.
+  `all_nodes` and a numeric unit count are mutually exclusive.
+- `gump deploy <capsule> --nodes=all` creates `all_nodes` live intent for an
+  already-built Capsule; no source manifest is required at deployment time.
+- `all_nodes` means one unit on every current and future eligible node matching
+  placement/capability policy, not a snapshot of the current node list.
+- Unit identity is stable for `(workload, node)` while retained. A replacement
+  attempt on that node receives a new attempt ID. Removal or ineligibility of a
+  node withdraws its desired unit.
+- Native execution may use declared host networking and capabilities, but it
+  never implies unrestricted root authority. Capsule requirements and cluster
+  policy remain explicit.

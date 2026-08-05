@@ -35,7 +35,8 @@ capsule.inspect_protected_metadata             capsule.reintroduce
 capsule.purge            secret.resolve        secret.deliver
 telemetry.subscribe      publication.use:<provider>
 connector.use:<name>     policy.read            policy.manage
-audit.read
+audit.read               hiccup.use
+hiccup.publish:<topic>   hiccup.listen:<topic>
 ```
 
 Authorization input includes principal, cluster/incarnation, namespace,
@@ -202,6 +203,23 @@ Availability failure must not weaken authorization or encryption. A one-server
 cluster may lose everything; it never becomes permitted to persist secrets or
 accept stale authority to avoid that consequence.
 
+## 13.1 Hiccup discovery
+
+Hiccup POST requests use a random per-attempt bearer token injected through a
+sealed descriptor and compared in constant time by the SDK. The token is not a
+general workload credential and expires with the attempt.
+
+Gump derives sender identity and receiver-reachable private IP from accepted placement state.
+Application JSON cannot override them. Topic publication, listening, and
+delivery are independently authorized and quota-bound. `@self` is
+resolved by workload ID and cannot be named to cross that boundary.
+
+Public Hiccup content is untrusted and potentially visible to every authorized
+listener. Opaque `secretData` is never logged, inspected, or decrypted by
+Gump. Hiccup metadata still exposes topic, participation, timing, identities,
+network information, and sizes. Applications authenticate direct peer
+connections independently; a Hiccup introduction is not a session credential.
+
 ## 14. Required external review
 
 Before a production security claim, independent reviewers must examine Capsule
@@ -209,4 +227,3 @@ transcripts and vectors, software/HSM unseal, custody replication and delivery,
 certificate enrollment, authorization coverage, archive extraction, process
 isolation, memory/core-dump behavior, S3 promotion, dependency provenance,
 fuzzing results, and the limitations stated here.
-

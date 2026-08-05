@@ -24,6 +24,11 @@ enforcement rejects `OBSERVED` and `UNAVAILABLE`.
 
 ## 2. Scheduler pipeline
 
+Deployment cardinality is either a fixed unit count or continuous `all_nodes`
+coverage. For `all_nodes`, reconciliation creates exactly one desired unit for
+every current eligible node and reacts to later joins, drains, capability
+changes, and removals. It does not freeze the node set at deploy time.
+
 Placement always executes these stages in order:
 
 1. Validate declaration and authority.
@@ -188,6 +193,11 @@ Readiness controls eligibility, not process liveness. Liveness can trigger the
 declared failure policy. Progress is diagnostic unless a deadline explicitly
 makes it terminal. Completion is only evaluated for a declared finite contract.
 
+Gump adds `Hiccup-Offer: 1` to the selected HTTP check. Exact opt-in upgrades
+later exchanges as specified by [`HICCUP.md`](HICCUP.md). Health evaluation and
+Hiccup parsing remain separate; Hiccup may be required for eligibility but
+cannot silently redefine liveness.
+
 ## 12. Publication provider ABI
 
 ```text
@@ -284,4 +294,3 @@ On terminal attempt or revoked placement the agent:
 Orphan reconciliation only deletes paths beneath the configured Gump state root
 whose validated ownership marker matches the local process incarnation and no
 current attempt. It never scans the machine to infer live desired state.
-

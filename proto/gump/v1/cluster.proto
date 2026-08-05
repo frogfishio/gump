@@ -12,6 +12,7 @@ enum MessageType {
   MESSAGE_TYPE_WATCH_EVENT = 4;
   MESSAGE_TYPE_TELEMETRY_BATCH = 5;
   MESSAGE_TYPE_BULK_OPEN = 6;
+  MESSAGE_TYPE_HICCUP = 7;
 }
 
 enum RetryClass {
@@ -54,6 +55,9 @@ enum ErrorCode {
   ERROR_CODE_DEADLINE_EXCEEDED = 29;
   ERROR_CODE_RETRY_LATER = 30;
   ERROR_CODE_INTERNAL = 31;
+  ERROR_CODE_HICCUP_INVALID = 32;
+  ERROR_CODE_HICCUP_UNAUTHORIZED = 33;
+  ERROR_CODE_HICCUP_OVERLOADED = 34;
 }
 
 message EnvelopeV1 {
@@ -351,4 +355,3 @@ message BulkOpenV1 {
   uint32 chunk_length = 4;
   bytes final_digest = 5;
 }
-

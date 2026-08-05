@@ -9,6 +9,7 @@ Gump is a zero-footprint workload placer and supervisor for one server or many. 
 - [Application manifest](docs/MANIFEST.md)
 - [CLI and lifecycle](docs/CLI_LIFECYCLE.md)
 - [Telemetry with Ratatouille](docs/TELEMETRY.md)
+- [Hiccup workload discovery](docs/v1/HICCUP.md)
 
 ## Repository shape
 

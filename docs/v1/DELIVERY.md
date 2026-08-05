@@ -96,6 +96,17 @@ W01–W05 unlock all other work. They contain no persistence substitute.
 | I02 | optional Kismet adapter | I01 | absent/present/lease/fence suite |
 | I03 | output/checkpoint connector capability hooks | S01,R06 | no-hidden-persistence tests |
 
+## 7.1 Hiccup discovery workstream
+
+| ID | Deliverable | Depends | Exit evidence |
+|---|---|---|---|
+| H01 | health GET declaration, authenticated POST delivery, and bounded JSON codec | R09,C01 | legacy-health and strict-detection corpus |
+| H02 | latest-presence replacement and health-derived expiry | W02,W05 | property and deterministic expiry tests |
+| H03 | agent identity/IP stamping, token, and topic authorization | R04,S01,H01 | spoofing/scope/fence matrix |
+| H04 | keeper selection, replication, transfer, and quotas | H02,H03,C02 | loss/partition/overload simulation |
+| H05 | bounded rotating POST delivery and health-independent degradation | H01,H04 | churn, omission, and health-isolation suite |
+| H06 | language-neutral corpus and Rust reference SDK | H05 | request/response goldens and adversarial codec tests |
+
 ## 8. Integration slices
 
 These slices continuously combine the final components; none authorizes a
@@ -108,8 +119,9 @@ throwaway architecture:
 5. Three agents → independent spread and rolling replacement.
 6. Gang admission → rank delivery → member failure → group policy.
 7. Total memory loss → empty init → explicit Capsule reintroduction.
-8. Optional Kismet publish/withdraw with identical non-Kismet core behavior.
-9. OCI and GPU-capability fixtures through the same placement/driver contracts.
+8. Hiccup `@self` discovery → direct peer connection → movement and restart reconciliation.
+9. Kismet all-node deployment → Hiccup formation → optional publish/withdraw.
+10. OCI and GPU-capability fixtures through the same placement/driver contracts.
 
 Every slice adds evidence to the same contracts and remains in CI.
 
@@ -132,7 +144,7 @@ cross-component evidence.
 The first mergeable tickets are W01–W05, F01, F04, C01, T01, and D01. Their
 interfaces should be reviewed together before code lands. The first end-to-end
 milestone is integration slice 1; the first server milestone is slice 2; the
-release candidate requires all nine slices and all gates in `CONFORMANCE.md`.
+release candidate requires all ten slices and all gates in `CONFORMANCE.md`.
 
 This order minimizes late protocol discovery. It is not permission to ship a
 SQLite-backed, file-backed, service-only, container-only, or Kismet-dependent

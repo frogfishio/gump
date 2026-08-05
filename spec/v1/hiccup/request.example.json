@@ -1,0 +1,19 @@
+{
+  "hiccup": 1,
+  "messages": [
+    {
+      "topic": "banana",
+      "from": {
+        "id": "0198c6ef-5d5a-7d80-9ca0-54dc88879a35",
+        "attempt": "0198c6ef-5d5a-7d80-9ca0-54dc88879a36",
+        "ip": "10.20.4.12"
+      },
+      "data": {
+        "protocol": "banana/1"
+      },
+      "secretData": "b3BhcXVlLWFwcGxpY2F0aW9uLWNpcGhlcnRleHQ"
+    }
+  ],
+  "more": false
+}
+

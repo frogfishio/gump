@@ -273,6 +273,8 @@ The normalized schema also supports:
   policy, restart limits, rollout, and placement constraints;
 - provider-neutral publication intent;
 - Ratatouille filter and bounded relay requests;
+- optional Hiccup eligibility/binding requirements;
+- fixed-unit or continuous all-node deployment coverage;
 - local ports, watch paths, and variable-source overrides.
 
 Manifest governance fields are requests only. Namespace, quota, priority,
@@ -300,7 +302,7 @@ canonical signed `DeploymentDeclarationV1` in cluster memory containing:
 - workload ID, generation, namespace, and app name;
 - Capsule ID and exact Capsule digest;
 - effective lifecycle, units, coordination, retry, rollout, resources,
-  placement, isolation, publication, and telemetry policy;
+  coverage, placement, isolation, publication, Hiccup, and telemetry policy;
 - provenance of every override: manifest, deployer, or cluster policy;
 - deployer principal, operation ID, authorization decision ID, and signature.
 
