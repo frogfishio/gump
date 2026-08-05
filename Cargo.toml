@@ -67,3 +67,7 @@ rcgen = "0.13"
 x509-parser = "0.16"
 # Pin for MSRV 1.85 (newer time requires rustc 1.88+).
 time = "=0.3.41"
+openraft = { version = "=0.9.25", features = ["serde", "storage-v2"] }
+tracing = "0.1"
+# Pin for MSRV 1.85 (openraft pulls newer validit needing rustc 1.88).
+validit = "=0.2.4"
