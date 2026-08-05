@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
-description = "RAM OpenRaft (C03), typed records/watches/leases (C04–C05), membership lifecycle (C06)."
+description = "RAM OpenRaft, typed records, membership lifecycle, and controller fencing (C03–C07)."
 
 [lib]
 path = "src/lib.rs"
