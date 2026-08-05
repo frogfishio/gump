@@ -8,6 +8,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod archive;
 mod error;
 mod header;
 mod segment;
