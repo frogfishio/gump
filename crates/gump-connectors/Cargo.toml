@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
-description = "Object, identity, publication, and output connector contracts (D01+)."
+description = "Object, identity, publication, and output connector contracts (D01–D02+)."
 
 [dependencies]
 gump-types = { workspace = true }
