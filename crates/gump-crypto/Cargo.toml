@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
-description = "Capsule seal/sign/verify (F05), signer trust (S02), and software unseal ceremony (S03)."
+description = "Capsule crypto (F05), signer trust (S02), software unseal (S03), HSM/KMS provider trait (S04)."
 
 [dependencies]
 blake3 = { workspace = true }

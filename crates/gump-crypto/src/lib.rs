@@ -1,5 +1,6 @@
 //! Cryptographic primitives for Capsule seal / sign / verify (DELIVERY F05),
-//! release-signer trust (S02), and software unseal/share ceremony (S03).
+//! release-signer trust (S02), software unseal/share ceremony (S03), and
+//! HSM/KMS unseal provider trait (S04).
 //!
 //! Authority: docs/v1/FORMATS.md §7–§9, docs/v1/SECURITY.md §4–§6, DECISIONS D004–D005.
 
@@ -9,6 +10,7 @@ mod aead;
 mod error;
 mod fingerprint;
 mod hpke_wrap;
+mod provider;
 mod sign;
 mod transcript;
 mod trust;
@@ -20,6 +22,10 @@ pub use fingerprint::{ed25519_fingerprint, format_blake3_hex, parse_blake3_hex};
 pub use hpke_wrap::{
     generate_x25519_keypair, open_dek, seal_dek, ClusterX25519Public, ClusterX25519Secret,
     SealedDek, HPKE_SUITE_ID,
+};
+pub use provider::{
+    seal_and_unwrap_via_provider, FakeHsmUnsealProvider, SoftwareUnsealProvider, UnsealProvider,
+    UnsealProviderDescriptor, UnsealProviderError,
 };
 pub use sign::{
     generate_signing_key, sign_transcript, signer_fingerprint, verifying_key, verify_transcript,
