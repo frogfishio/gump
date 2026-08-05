@@ -1,4 +1,4 @@
-//! Exact encode/decode fixtures for W03.
+//! Exact encode/decode fixtures for W03 / C01.
 //!
 //! Fixtures live under `testdata/goldens/`. Set `GUMP_WRITE_GOLDENS=1` when
 //! regenerating after an intentional schema change.
@@ -6,7 +6,7 @@
 use prost::Message;
 
 use crate::pb::{
-    AppIdentityV1, EnvelopeV1, ErrorCode, ErrorV1, MessageType, NamedValueV1, RetryClass,
+    AppIdentityV1, EnvelopeV1, ErrorCode, ErrorV1, HelloV1, MessageType, NamedValueV1, RetryClass,
 };
 
 /// Deterministic ErrorV1 used as the primary RPC golden.
@@ -53,6 +53,24 @@ pub fn sample_app_identity() -> AppIdentityV1 {
     }
 }
 
+/// Deterministic HelloV1 for session-establishment goldens (C01).
+pub fn sample_hello() -> HelloV1 {
+    HelloV1 {
+        node_id: bytes16(0x10),
+        node_incarnation: 3,
+        minimum_major: 1,
+        maximum_major: 1,
+        minimum_minor: 0,
+        maximum_minor: 0,
+        roles: vec!["agent".into(), "memory".into()],
+        capabilities: vec!["driver/native".into()],
+        maximum_control_frame: crate::frame::MAX_CONTROL_FRAME as u32,
+        maximum_bulk_chunk: 4 * 1024 * 1024,
+        raft_node_id: Some(7),
+        connection_nonce: bytes16(0x20),
+    }
+}
+
 fn bytes16(seed: u8) -> Vec<u8> {
     let mut out = vec![0u8; 16];
     out[0] = seed;
@@ -69,10 +87,14 @@ pub fn encode_envelope(msg: &EnvelopeV1) -> Vec<u8> {
     msg.encode_to_vec()
 }
 
+pub fn encode_hello(msg: &HelloV1) -> Vec<u8> {
+    msg.encode_to_vec()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::frame::{FrameKind, encode_frame, split_frame};
+    use crate::frame::{encode_frame, split_frame, FrameKind};
     use std::fs;
     use std::path::{Path, PathBuf};
 
@@ -133,6 +155,24 @@ mod tests {
         );
         let decoded = AppIdentityV1::decode(golden.as_slice()).unwrap();
         assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn hello_v1_golden_round_trip() {
+        let msg = sample_hello();
+        let encoded = encode_hello(&msg);
+        let golden = read_or_write("hello_v1.bin", &encoded);
+        assert_eq!(encoded, golden, "HelloV1 encoding drifted from golden");
+        let decoded = HelloV1::decode(golden.as_slice()).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn framed_hello_respects_hello_ceiling() {
+        let payload = encode_hello(&sample_hello());
+        let frame = encode_frame(&payload, FrameKind::Hello).unwrap();
+        let (got, _) = split_frame(&frame, FrameKind::Hello).unwrap();
+        assert_eq!(got, payload.as_slice());
     }
 
     #[test]

@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
-description = "Protobuf messages, frame limits, and golden vectors (W03)."
+description = "Protobuf messages, frame limits, goldens, and session negotiation (W03/C01)."
 
 [dependencies]
 prost = "0.14"
