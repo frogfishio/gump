@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
-description = "Ratatouille callback adapter and gump.ratatouille/1 identity (T01)."
+description = "Ratatouille adapter, identity (T01), and stdout/stderr capture (T02)."
 
 [dependencies]
 gump-types = { workspace = true }
