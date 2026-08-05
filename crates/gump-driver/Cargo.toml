@@ -5,6 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
+description = "gump.driver/1 trait, native/script lifecycle (F06)."
 
-[lib]
-path = "src/lib.rs"
+[dependencies]
+gump-types = { workspace = true }
+
+[dev-dependencies]
