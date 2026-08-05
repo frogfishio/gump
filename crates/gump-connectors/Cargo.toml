@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
-description = "Object store (D01–D02) and streamed Capsule ingress verification (D03)."
+description = "Object store (D01–D02), streamed ingress (D03), and declaration accept (D04)."
 
 [dependencies]
 gump-types = { workspace = true }
