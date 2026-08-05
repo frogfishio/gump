@@ -59,3 +59,11 @@ hpke = { version = "0.14", default-features = false, features = ["x25519", "chac
 zeroize = { version = "1.8", features = ["derive"] }
 rand_core = "0.10"
 getrandom = "0.3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net", "sync", "io-util"] }
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
+rustls-pki-types = "1.11"
+rcgen = "0.13"
+x509-parser = "0.16"
+# Pin for MSRV 1.85 (newer time requires rustc 1.88+).
+time = "=0.3.41"

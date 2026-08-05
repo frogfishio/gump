@@ -5,6 +5,20 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
+description = "Authenticated QUIC sessions (C02): rustls/Quinn, limits, reconnect, rotation."
 
 [lib]
 path = "src/lib.rs"
+
+[dependencies]
+gump-types = { workspace = true }
+gump-protocol = { workspace = true }
+tokio = { workspace = true }
+quinn = { workspace = true }
+rustls = { workspace = true }
+rustls-pki-types = { workspace = true }
+rcgen = { workspace = true }
+x509-parser = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "net"] }
