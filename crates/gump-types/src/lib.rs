@@ -2,6 +2,9 @@
 //!
 //! Product crates depend inward on this layer. It must not depend on transport,
 //! memory, CLI, or vendor protocol SDKs.
+//!
+//! The [`sim`] module is the W05 deterministic simulation harness (clocks,
+//! network faults, crash/restart) used by later workstreams.
 
 #![forbid(unsafe_code)]
 
@@ -11,6 +14,7 @@ mod clock;
 mod error;
 mod id;
 mod secret;
+pub mod sim;
 
 pub use bounded::{BoundedString, Label, LabelError};
 pub use cancel::{CancelToken, CancellationGuard, Cancelled};

@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
-description = "Shared bounded types, clock, cancellation, IDs, and safe errors (W02)."
+description = "Shared bounded types, clock, cancellation, IDs, safe errors (W02), and deterministic simulation harness (W05)."
 
 [dependencies]
 uuid = { version = "1.16", features = ["v7", "std"] }
