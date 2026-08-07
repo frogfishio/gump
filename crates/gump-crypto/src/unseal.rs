@@ -33,8 +33,8 @@ pub const CLUSTER_UNSEAL_INFO: &[u8] = b"gump.cluster-unseal-x25519/1\0";
 
 type KemSuite = X25519HkdfSha256;
 
-/// 32-byte recovery secret (zeroized on drop; never Debug-printed).
-#[derive(Clone, Zeroize, ZeroizeOnDrop)]
+/// 32-byte recovery secret (zeroized on drop; never Debug-printed; not Clone).
+#[derive(Zeroize, ZeroizeOnDrop)]
 pub struct RecoverySecret([u8; RECOVERY_SECRET_LEN]);
 
 impl RecoverySecret {
@@ -53,8 +53,8 @@ impl fmt::Debug for RecoverySecret {
     }
 }
 
-/// One operator-held Shamir share (index + share body).
-#[derive(Clone, Zeroize, ZeroizeOnDrop)]
+/// One operator-held Shamir share (index + share body) — not Clone (SECURITY §8).
+#[derive(Zeroize, ZeroizeOnDrop)]
 pub struct OperatorShare {
     raw: Vec<u8>,
 }
@@ -212,7 +212,10 @@ pub fn derive_cluster_unseal_keypair(
     let mut pk_arr = [0u8; 32];
     sk_arr.copy_from_slice(sk_bytes.as_slice());
     pk_arr.copy_from_slice(pk_bytes.as_slice());
-    Ok((ClusterX25519Secret(sk_arr), ClusterX25519Public(pk_arr)))
+    Ok((
+        ClusterX25519Secret::from_bytes(sk_arr),
+        ClusterX25519Public(pk_arr),
+    ))
 }
 
 fn validate_params(n: u8, t: u8) -> Result<(), CryptoError> {

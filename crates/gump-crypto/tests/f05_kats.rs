@@ -153,7 +153,7 @@ fn compute_vectors(inputs: &Value) -> Value {
         &dek
     );
 
-    let signing = SigningKeyBytes(ed_seed);
+    let signing = SigningKeyBytes::from_bytes(ed_seed);
     let verifying = verifying_key(&signing);
     let mut segs = [SegmentDigestRef {
         segment_type: 0,

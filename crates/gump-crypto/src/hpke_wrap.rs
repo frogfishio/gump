@@ -1,5 +1,7 @@
 //! HPKE DEK seal to cluster X25519 unseal key (FORMATS.md §8 / SECURITY §5).
 
+use core::fmt;
+
 use hpke::aead::ChaCha20Poly1305;
 use hpke::kdf::HkdfSha256;
 use hpke::kem::X25519HkdfSha256;
@@ -16,8 +18,25 @@ type AeadSuite = ChaCha20Poly1305;
 type Kdf = HkdfSha256;
 type KemSuite = X25519HkdfSha256;
 
-#[derive(Clone, Zeroize, ZeroizeOnDrop)]
-pub struct ClusterX25519Secret(pub [u8; 32]);
+/// Cluster unseal private key — zeroizing, non-Clone (SECURITY §8).
+#[derive(Zeroize, ZeroizeOnDrop)]
+pub struct ClusterX25519Secret([u8; 32]);
+
+impl ClusterX25519Secret {
+    pub(crate) fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    pub fn expose(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+impl fmt::Debug for ClusterX25519Secret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("ClusterX25519Secret(***)")
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ClusterX25519Public(pub [u8; 32]);
@@ -39,7 +58,10 @@ pub fn generate_x25519_keypair<R: CryptoRng>(
     let mut pk_arr = [0u8; 32];
     sk_arr.copy_from_slice(sk_bytes.as_slice());
     pk_arr.copy_from_slice(pk_bytes.as_slice());
-    (ClusterX25519Secret(sk_arr), ClusterX25519Public(pk_arr))
+    (
+        ClusterX25519Secret::from_bytes(sk_arr),
+        ClusterX25519Public(pk_arr),
+    )
 }
 
 /// Seal the 32-byte DEK with HPKE base mode.
@@ -88,7 +110,7 @@ pub fn open_dek(
     aad: &[u8],
     wrapped_dek: &[u8],
 ) -> Result<Dek, CryptoError> {
-    let sk = <KemSuite as Kem>::PrivateKey::from_bytes(&recipient_secret.0).map_err(|e| {
+    let sk = <KemSuite as Kem>::PrivateKey::from_bytes(recipient_secret.expose()).map_err(|e| {
         CryptoError::new(
             CryptoErrorKind::Hpke,
             format!("invalid recipient secret: {e}"),

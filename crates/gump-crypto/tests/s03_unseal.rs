@@ -89,7 +89,12 @@ fn three_of_five_any_threshold_subset_recovers() {
     for i in 0..5 {
         for j in (i + 1)..5 {
             for k in (j + 1)..5 {
-                let subset = [shares[i].clone(), shares[j].clone(), shares[k].clone()];
+                // Rematerialize from operator-held bytes (shares are not Clone).
+                let subset = [
+                    OperatorShare::from_bytes(shares[i].as_bytes().to_vec()).unwrap(),
+                    OperatorShare::from_bytes(shares[j].as_bytes().to_vec()).unwrap(),
+                    OperatorShare::from_bytes(shares[k].as_bytes().to_vec()).unwrap(),
+                ];
                 let recovered = combine_recovery_shares(&subset, DEFAULT_THRESHOLD).unwrap();
                 assert_eq!(recovered.as_bytes(), secret.as_bytes());
             }
@@ -149,6 +154,23 @@ fn secrets_redacted_in_debug() {
     let dbg = format!("{secret:?}");
     assert!(dbg.contains("REDACTED"));
     assert!(!dbg.contains("99"));
+
+    let (sk, _) = derive_cluster_unseal_keypair(&secret, &cluster_id()).unwrap();
+    let sk_dbg = format!("{sk:?}");
+    assert_eq!(sk_dbg, "ClusterX25519Secret(***)");
+    assert!(!sk_dbg.contains("07") && !sk_dbg.contains("99"));
+
+    let share = OperatorShare::from_bytes({
+        let mut rng = SeedRng::new(9);
+        split_recovery_secret(&secret, 1, 1, &mut rng).unwrap()[0]
+            .as_bytes()
+            .to_vec()
+    })
+    .unwrap();
+    let share_dbg = format!("{share:?}");
+    assert!(share_dbg.starts_with("OperatorShare"));
+    // Debug may show x/len metadata but never the share body hex.
+    assert!(!share_dbg.contains("raw"));
 }
 
 #[test]

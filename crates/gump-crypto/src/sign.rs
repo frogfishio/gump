@@ -1,5 +1,7 @@
 //! Ed25519 release signatures over the FORMATS.md §9 transcript.
 
+use core::fmt;
+
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use rand_core::CryptoRng;
 use zeroize::{Zeroize, ZeroizeOnDrop};
@@ -10,19 +12,36 @@ use crate::fingerprint::ed25519_fingerprint;
 pub const SIGNATURE_LEN: usize = 64;
 pub const SIGNING_SUITE: &str = "Ed25519";
 
-#[derive(Clone, Zeroize, ZeroizeOnDrop)]
-pub struct SigningKeyBytes(pub [u8; 32]);
+/// Ed25519 signing seed — zeroizing, non-Clone (SECURITY §8).
+#[derive(Zeroize, ZeroizeOnDrop)]
+pub struct SigningKeyBytes([u8; 32]);
+
+impl SigningKeyBytes {
+    pub fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    pub fn expose(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+impl fmt::Debug for SigningKeyBytes {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("SigningKeyBytes(***)")
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct VerifyingKeyBytes(pub [u8; 32]);
 
 pub fn generate_signing_key<R: CryptoRng>(rng: &mut R) -> SigningKeyBytes {
     let sk = SigningKey::generate(rng);
-    SigningKeyBytes(sk.to_bytes())
+    SigningKeyBytes::from_bytes(sk.to_bytes())
 }
 
 pub fn verifying_key(secret: &SigningKeyBytes) -> VerifyingKeyBytes {
-    let sk = SigningKey::from_bytes(&secret.0);
+    let sk = SigningKey::from_bytes(secret.expose());
     VerifyingKeyBytes(sk.verifying_key().to_bytes())
 }
 
@@ -35,7 +54,7 @@ pub fn sign_transcript(
     secret: &SigningKeyBytes,
     transcript: &[u8],
 ) -> Result<[u8; SIGNATURE_LEN], CryptoError> {
-    let sk = SigningKey::from_bytes(&secret.0);
+    let sk = SigningKey::from_bytes(secret.expose());
     let sig = sk.sign(transcript);
     Ok(sig.to_bytes())
 }

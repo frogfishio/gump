@@ -11,6 +11,9 @@ static PANIC_HOOK: Once = Once::new();
 
 /// Outcome of [`prepare_for_custody`] — every field is observational, not a
 /// guarantee that an attacker with host-root cannot recover RAM.
+///
+/// `memory_locked` and `dumpable_or_attach_restricted` often stay `false` without
+/// elevated privilege; callers must treat the report as telemetry, not a hard gate.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProcessHardenReport {
     pub core_dumps_disabled: bool,
