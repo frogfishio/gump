@@ -1,8 +1,10 @@
 //! Local Capsule application materialization (DELIVERY F06 / FORMATS.md §6).
 //!
-//! Target layout: `<state-root>/apps/<capsule-id>/` via staging + atomic rename.
+//! Target layout: `<state-root>/apps/<capsule-id>/` via exclusive staging +
+//! atomic no-replace rename (STL-06).
 
 use std::fs;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use gump_types::CapsuleId;
@@ -21,9 +23,9 @@ pub struct MaterializedRelease {
 
 /// Materialize `ustar+zstd/1` bytes under `state_root/apps/<capsule-id>/`.
 ///
-/// Extraction happens in a private staging directory beside the target, then an
-/// atomic rename publishes the tree. Symlink escapes and bomb ceilings are
-/// enforced by the archive extractor.
+/// Extraction happens in an exclusive random staging directory beside the
+/// target, then an atomic rename publishes the tree. On failure only this
+/// operation's staging dir is removed — never the published target (STL-06).
 pub fn materialize_application_archive(
     state_root: &Path,
     capsule_id: CapsuleId,
@@ -40,25 +42,12 @@ pub fn materialize_application_archive(
         ));
     }
 
-    let staging_name = format!(
-        ".staging-{}-{}",
-        capsule_id.to_hyphenated(),
-        std::process::id()
-    );
-    let staging = apps.join(&staging_name);
-    let _ = fs::remove_dir_all(&staging);
-    fs::create_dir_all(&staging)?;
-
+    let staging = create_exclusive_staging(&apps)?;
     let result = (|| {
         let entries = unpack_archive(archive_zst, limits)?;
         extract_entries(&staging, &entries, limits)?;
-        // Publish: rename staging → target (atomic on same filesystem).
-        fs::rename(&staging, &target).map_err(|e| {
-            ArchiveError::new(
-                ArchiveErrorKind::Io,
-                format!("atomic materialize rename failed: {e}"),
-            )
-        })?;
+        // No-replace publish: rename fails if another winner already occupies target.
+        publish_no_replace(&staging, &target)?;
         Ok(MaterializedRelease {
             root: target.clone(),
             capsule_id,
@@ -67,8 +56,43 @@ pub fn materialize_application_archive(
     })();
 
     if result.is_err() {
+        // STL-06: cleanup only dirs owned by this op — never unlink `target`.
         let _ = fs::remove_dir_all(&staging);
-        let _ = fs::remove_dir_all(&target);
     }
     result
+}
+
+/// Create a unique staging directory under `apps` (create-new; no shared name).
+fn create_exclusive_staging(apps: &Path) -> Result<PathBuf, ArchiveError> {
+    for _ in 0..64 {
+        // Random v7 id — not derivable from capsule id + pid (STL-06).
+        let name = format!(".staging-{}", CapsuleId::new().to_hyphenated());
+        let staging = apps.join(&name);
+        match fs::create_dir(&staging) {
+            Ok(()) => return Ok(staging),
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Err(ArchiveError::new(
+        ArchiveErrorKind::Io,
+        "exhausted exclusive staging directory attempts",
+    ))
+}
+
+/// Atomically publish `staging` → `target` without replacing an existing tree.
+fn publish_no_replace(staging: &Path, target: &Path) -> Result<(), ArchiveError> {
+    if target.exists() {
+        return Err(ArchiveError::new(
+            ArchiveErrorKind::Io,
+            format!("materialization already exists at {}", target.display()),
+        ));
+    }
+    fs::rename(staging, target).map_err(|e| {
+        // Concurrent winner: destination appeared between exists() and rename.
+        ArchiveError::new(
+            ArchiveErrorKind::Io,
+            format!("atomic materialize rename failed: {e}"),
+        )
+    })
 }
