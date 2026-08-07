@@ -2,6 +2,7 @@
 //!
 //! Authority: docs/v1/DELIVERY.md D02, DECISIONS D008, RUNTIME.md §13.
 //! Speaks real path-style HTTP S3 verbs against an in-process compatible server.
+#![allow(clippy::let_unit_value)]
 
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -125,6 +126,40 @@ fn handle_conn(store: &MockS3, stream: &mut TcpStream) -> std::io::Result<()> {
             };
             let digest = parse_hex32(&digest_hex).unwrap_or([0u8; 32]);
             let mut objs = store.objects.lock().unwrap();
+            // Server-side COPY: empty body + x-amz-copy-source (STL-03b).
+            if let Some(copy_src) = headers.get("x-amz-copy-source") {
+                let src_key = copy_src
+                    .trim_start_matches('/')
+                    .split_once('/')
+                    .map(|(_, k)| k)
+                    .unwrap_or(copy_src.as_str());
+                let Some(src) = objs.get(src_key).cloned() else {
+                    write_raw(stream, 404, "copy source missing", &[])?;
+                    return Ok(());
+                };
+                if src.digest != digest {
+                    write_raw(stream, 400, "copy digest mismatch", &[])?;
+                    return Ok(());
+                }
+                if if_none {
+                    if let Some(existing) = objs.get(key) {
+                        if existing.digest == digest && existing.bytes.len() == src.bytes.len() {
+                            // absent-only: still 412 when occupied
+                        }
+                        write_raw(stream, 412, "precondition failed", &[])?;
+                        return Ok(());
+                    }
+                }
+                objs.insert(
+                    key.to_string(),
+                    Stored {
+                        bytes: src.bytes,
+                        digest,
+                    },
+                );
+                write_raw(stream, 200, "OK", &[])?;
+                return Ok(());
+            }
             if if_none {
                 if let Some(existing) = objs.get(key) {
                     if existing.digest == digest && existing.bytes.len() == body.len() {

@@ -1,7 +1,12 @@
-//! In-memory fake object store for D01 overwrite/conflict/fault suite.
+//! Disk-spilling fake object store for D01 overwrite/conflict/fault suite (STL-03b).
+//!
+//! Quarantine uploads and stored Capsule bodies live as spill files under a private
+//! temp directory — not `Vec<u8>` — so large-object tests do not OOM the fake.
 
 use std::collections::BTreeMap;
-use std::io::{Cursor, Read};
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
 
 use gump_types::{CapsuleId, ClusterId};
 
@@ -11,18 +16,19 @@ use super::types::{
     UploadId, UploadProgress,
 };
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct StoredObject {
-    bytes: Vec<u8>,
+    path: PathBuf,
+    length: u64,
     digest: [u8; 32],
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct OpenUpload {
-    cluster: ClusterId,
-    capsule: CapsuleId,
     expected_len: u64,
-    buffer: Vec<u8>,
+    written: u64,
+    path: PathBuf,
+    file: File,
     quarantine: ObjectKey,
 }
 
@@ -34,18 +40,46 @@ pub struct FakeFaults {
     pub fail_next_head: bool,
 }
 
-/// In-memory object store. Holds Capsule bytes only — no desired-state map.
-#[derive(Clone, Debug, Default)]
+/// Object store for tests. Capsule bytes spill to disk (no desired-state map).
+#[derive(Debug)]
 pub struct FakeObjectStore {
+    root: PathBuf,
     objects: BTreeMap<ObjectKey, StoredObject>,
     uploads: BTreeMap<UploadId, OpenUpload>,
     next_upload: u64,
     pub faults: FakeFaults,
 }
 
+impl Default for FakeObjectStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for FakeObjectStore {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
+    }
+}
+
 impl FakeObjectStore {
     pub fn new() -> Self {
-        Self::default()
+        let root = std::env::temp_dir().join(format!(
+            "gump-fake-store-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = fs::create_dir_all(&root);
+        Self {
+            root,
+            objects: BTreeMap::new(),
+            uploads: BTreeMap::new(),
+            next_upload: 0,
+            faults: FakeFaults::default(),
+        }
     }
 
     pub fn object_count(&self) -> usize {
@@ -59,6 +93,24 @@ impl FakeObjectStore {
     /// Test helper: assert the store has no workload/desired-state keys.
     pub fn keys(&self) -> Vec<ObjectKey> {
         self.objects.keys().cloned().collect()
+    }
+
+    fn spill_path(&self, tag: &str) -> PathBuf {
+        self.root.join(tag)
+    }
+
+    fn map_io(e: std::io::Error) -> ObjectStoreError {
+        ObjectStoreError::new(ObjectStoreErrorKind::FaultInjected, e.to_string())
+    }
+
+    fn open_rw(path: &Path) -> Result<File, ObjectStoreError> {
+        OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .read(true)
+            .write(true)
+            .open(path)
+            .map_err(Self::map_io)
     }
 }
 
@@ -78,13 +130,15 @@ impl ObjectStore for FakeObjectStore {
         self.next_upload = self.next_upload.saturating_add(1);
         let id = UploadId::from_raw(self.next_upload);
         let quarantine = quarantine_key(cluster, capsule, id.as_raw())?;
+        let path = self.spill_path(&format!("upload-{}.capsule", id.as_raw()));
+        let file = Self::open_rw(&path)?;
         self.uploads.insert(
             id,
             OpenUpload {
-                cluster,
-                capsule,
                 expected_len,
-                buffer: Vec::with_capacity(expected_len.min(1024 * 1024) as usize),
+                written: 0,
+                path,
+                file,
                 quarantine,
             },
         );
@@ -106,16 +160,17 @@ impl ObjectStore for FakeObjectStore {
         let entry = self.uploads.get_mut(&upload).ok_or_else(|| {
             ObjectStoreError::new(ObjectStoreErrorKind::NotFound, "unknown upload")
         })?;
-        let next = entry.buffer.len() as u64 + chunk.len() as u64;
+        let next = entry.written.saturating_add(chunk.len() as u64);
         if next > entry.expected_len {
             return Err(ObjectStoreError::new(
                 ObjectStoreErrorKind::InvalidArgument,
                 "write would exceed expected_len",
             ));
         }
-        entry.buffer.extend_from_slice(chunk);
+        entry.file.write_all(chunk).map_err(Self::map_io)?;
+        entry.written = next;
         Ok(UploadProgress {
-            bytes_written: entry.buffer.len() as u64,
+            bytes_written: entry.written,
             expected_len: entry.expected_len,
         })
     }
@@ -125,26 +180,44 @@ impl ObjectStore for FakeObjectStore {
         upload: UploadId,
         digest: [u8; 32],
     ) -> Result<ObjectEvidence, ObjectStoreError> {
-        let entry = self.uploads.remove(&upload).ok_or_else(|| {
+        let mut entry = self.uploads.remove(&upload).ok_or_else(|| {
             ObjectStoreError::new(ObjectStoreErrorKind::NotFound, "unknown upload")
         })?;
-        if entry.buffer.len() as u64 != entry.expected_len {
+        if entry.written != entry.expected_len {
+            let _ = fs::remove_file(&entry.path);
             return Err(ObjectStoreError::new(
                 ObjectStoreErrorKind::PreconditionFailed,
                 format!(
                     "length {} != expected {}",
-                    entry.buffer.len(),
-                    entry.expected_len
+                    entry.written, entry.expected_len
                 ),
             ));
         }
-        let got = blake3::hash(&entry.buffer);
-        if got.as_bytes() != &digest {
+        entry.file.flush().map_err(Self::map_io)?;
+        entry.file.seek(SeekFrom::Start(0)).map_err(Self::map_io)?;
+        let mut hasher = blake3::Hasher::new();
+        let mut buf = [0u8; 64 * 1024];
+        loop {
+            let n = entry.file.read(&mut buf).map_err(Self::map_io)?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+        }
+        let got = *hasher.finalize().as_bytes();
+        if got != digest {
+            let _ = fs::remove_file(&entry.path);
             return Err(ObjectStoreError::new(
                 ObjectStoreErrorKind::PreconditionFailed,
                 "quarantine digest mismatch",
             ));
         }
+        drop(entry.file);
+        let final_path = self.spill_path(&format!(
+            "obj-{}.capsule",
+            entry.quarantine.as_str().replace('/', "_")
+        ));
+        fs::rename(&entry.path, &final_path).map_err(Self::map_io)?;
         let evidence = ObjectEvidence {
             key: entry.quarantine.clone(),
             length: entry.expected_len,
@@ -153,21 +226,22 @@ impl ObjectStore for FakeObjectStore {
         self.objects.insert(
             entry.quarantine,
             StoredObject {
-                bytes: entry.buffer,
+                path: final_path,
+                length: entry.expected_len,
                 digest,
             },
         );
-        let _ = (entry.cluster, entry.capsule);
         Ok(evidence)
     }
 
     fn abort(&mut self, upload: UploadId) -> Result<(), ObjectStoreError> {
-        if self.uploads.remove(&upload).is_none() {
+        let Some(entry) = self.uploads.remove(&upload) else {
             return Err(ObjectStoreError::new(
                 ObjectStoreErrorKind::NotFound,
                 "unknown upload",
             ));
-        }
+        };
+        let _ = fs::remove_file(&entry.path);
         Ok(())
     }
 
@@ -182,7 +256,6 @@ impl ObjectStore for FakeObjectStore {
     }
 
     fn head(&self, key: &ObjectKey) -> Result<ObjectEvidence, ObjectStoreError> {
-        // Sticky until the test clears `faults.fail_next_head` (head is &self).
         if self.faults.fail_next_head {
             return Err(ObjectStoreError::new(
                 ObjectStoreErrorKind::FaultInjected,
@@ -194,7 +267,7 @@ impl ObjectStore for FakeObjectStore {
         })?;
         Ok(ObjectEvidence {
             key: key.clone(),
-            length: obj.bytes.len() as u64,
+            length: obj.length,
             digest: obj.digest,
         })
     }
@@ -207,30 +280,28 @@ impl ObjectStore for FakeObjectStore {
         let obj = self.objects.get(key).ok_or_else(|| {
             ObjectStoreError::new(ObjectStoreErrorKind::NotFound, "object not found")
         })?;
-        let bytes = match range {
-            None => obj.bytes.clone(),
+        let mut file = File::open(&obj.path).map_err(Self::map_io)?;
+        let (start, end) = match range {
+            None => (0, obj.length),
             Some(range) => {
-                let start = range.start as usize;
-                if start > obj.bytes.len() {
+                if range.start > obj.length {
                     return Err(ObjectStoreError::new(
                         ObjectStoreErrorKind::InvalidArgument,
                         "range start past EOF",
                     ));
                 }
-                let end = match range.end {
-                    Some(e) => e as usize,
-                    None => obj.bytes.len(),
-                };
-                if end < start || end > obj.bytes.len() {
+                let end = range.end.unwrap_or(obj.length);
+                if end < range.start || end > obj.length {
                     return Err(ObjectStoreError::new(
                         ObjectStoreErrorKind::InvalidArgument,
                         "invalid byte range",
                     ));
                 }
-                obj.bytes[start..end].to_vec()
+                (range.start, end)
             }
         };
-        Ok(Box::new(Cursor::new(bytes)))
+        file.seek(SeekFrom::Start(start)).map_err(Self::map_io)?;
+        Ok(Box::new(file.take(end.saturating_sub(start))))
     }
 
     fn copy_if_absent(
@@ -250,14 +321,14 @@ impl ObjectStore for FakeObjectStore {
         let q = self.objects.get(source).ok_or_else(|| {
             ObjectStoreError::new(ObjectStoreErrorKind::NotFound, "quarantine object missing")
         })?;
-        if q.digest != digest || q.bytes.len() as u64 != len {
+        if q.digest != digest || q.length != len {
             return Err(ObjectStoreError::new(
                 ObjectStoreErrorKind::PreconditionFailed,
                 "quarantine evidence does not match publish args",
             ));
         }
         if let Some(existing) = self.objects.get(dest) {
-            if existing.digest == digest && existing.bytes.len() as u64 == len {
+            if existing.digest == digest && existing.length == len {
                 return Ok(ObjectEvidence {
                     key: dest.clone(),
                     length: len,
@@ -269,11 +340,17 @@ impl ObjectStore for FakeObjectStore {
                 "final key occupied by different object",
             ));
         }
-        let stored = StoredObject {
-            bytes: q.bytes.clone(),
-            digest,
-        };
-        self.objects.insert(dest.clone(), stored);
+        let dest_path =
+            self.spill_path(&format!("obj-{}.capsule", dest.as_str().replace('/', "_")));
+        fs::copy(&q.path, &dest_path).map_err(Self::map_io)?;
+        self.objects.insert(
+            dest.clone(),
+            StoredObject {
+                path: dest_path,
+                length: len,
+                digest,
+            },
+        );
         Ok(ObjectEvidence {
             key: dest.clone(),
             length: len,
@@ -282,12 +359,13 @@ impl ObjectStore for FakeObjectStore {
     }
 
     fn delete(&mut self, key: &ObjectKey) -> Result<(), ObjectStoreError> {
-        if self.objects.remove(key).is_none() {
+        let Some(obj) = self.objects.remove(key) else {
             return Err(ObjectStoreError::new(
                 ObjectStoreErrorKind::NotFound,
                 "object not found",
             ));
-        }
+        };
+        let _ = fs::remove_file(&obj.path);
         Ok(())
     }
 }

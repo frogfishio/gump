@@ -205,7 +205,7 @@ fn happy_path_streams_and_publishes() {
     assert_eq!(receipt.stats.bytes_received, fix.bytes.len() as u64);
     // Ingest chunk (64) or streaming-verify table/scratch — never full Capsule.
     assert!(receipt.stats.peak_buffer_bytes < fix.bytes.len());
-    assert!(receipt.stats.peak_buffer_bytes <= 64.max(336));
+    assert!(receipt.stats.peak_buffer_bytes <= 336);
     assert_eq!(store.get(&receipt.evidence.key, None).unwrap(), fix.bytes);
 }
 

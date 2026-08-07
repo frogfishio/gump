@@ -42,7 +42,7 @@ struct OpenUpload {
 }
 
 /// S3-compatible connector: quarantine streams to a spill file then PUT;
-/// promote uses streaming copy (no full-object Vec) (STL-03 / D008).
+/// promote uses server-side COPY (`x-amz-copy-source`) (STL-03b / D008).
 #[derive(Debug)]
 pub struct S3ObjectStore {
     endpoint: S3Endpoint,
@@ -257,13 +257,9 @@ impl ObjectStore for S3ObjectStore {
                 "quarantine evidence does not match publish args",
             ));
         }
-        let mut reader = self
-            .endpoint
-            .get_reader(source.as_str(), None)
-            .map_err(map_http)?;
         match self
             .endpoint
-            .put_from_reader(dest.as_str(), &mut reader, len, digest, true)
+            .copy_object(source.as_str(), dest.as_str(), digest, true)
         {
             Ok(()) => Ok(ObjectEvidence {
                 key: dest.clone(),

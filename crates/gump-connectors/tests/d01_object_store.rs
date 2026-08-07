@@ -3,6 +3,8 @@
 //! Authority: docs/v1/DELIVERY.md D01, docs/v1/RUNTIME.md §13, DECISIONS D008.
 //! Capsules remain inert objects — the connector never stores desired state.
 
+use std::io::Read;
+
 use gump_connectors::{
     ByteRange, FakeObjectStore, ObjectStore, ObjectStoreErrorKind, final_capsule_key,
 };
@@ -190,4 +192,46 @@ fn finish_rejects_length_or_digest_mismatch() {
             .kind(),
         ObjectStoreErrorKind::PreconditionFailed
     );
+}
+
+/// STL-03b: multi-MiB quarantine spills to disk; finish/get/copy never hold OpenUpload as Vec.
+#[test]
+fn multi_mib_disk_spill_finish_get_copy() {
+    let (cluster, capsule) = ids();
+    const LEN: usize = 2 * 1024 * 1024;
+    let chunk = [0x5Au8; 64 * 1024];
+    let mut hasher = blake3::Hasher::new();
+    let mut store = FakeObjectStore::new();
+    let upload = store
+        .begin_quarantine(cluster, capsule, LEN as u64)
+        .unwrap();
+    let mut written = 0usize;
+    while written < LEN {
+        let n = (LEN - written).min(chunk.len());
+        store.write(upload, &chunk[..n]).unwrap();
+        hasher.update(&chunk[..n]);
+        written += n;
+    }
+    assert_eq!(store.open_upload_count(), 1);
+    let dig = *hasher.finalize().as_bytes();
+    let q = store.finish_quarantine(upload, dig).unwrap();
+    assert_eq!(store.open_upload_count(), 0);
+    assert_eq!(q.length, LEN as u64);
+    assert_eq!(q.digest, dig);
+
+    let mut got = Vec::new();
+    store
+        .get_reader(&q.key, None)
+        .unwrap()
+        .read_to_end(&mut got)
+        .unwrap();
+    assert_eq!(got.len(), LEN);
+    assert_eq!(*blake3::hash(&got).as_bytes(), dig);
+
+    let final_key = final_capsule_key(cluster, capsule).unwrap();
+    let pubd = store
+        .publish_if_absent(&q.key, &final_key, dig, LEN as u64)
+        .unwrap();
+    assert_eq!(pubd.key, final_key);
+    assert_eq!(store.object_count(), 2);
 }

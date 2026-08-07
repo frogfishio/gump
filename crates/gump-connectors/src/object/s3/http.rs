@@ -110,6 +110,39 @@ impl S3Endpoint {
         }
     }
 
+    /// Server-side COPY via `x-amz-copy-source` (empty body). No object bytes cross the client (STL-03b).
+    pub fn copy_object(
+        &self,
+        source_key: &str,
+        dest_key: &str,
+        digest: [u8; 32],
+        if_none_match: bool,
+    ) -> Result<(), S3HttpError> {
+        let mut stream = self.connect()?;
+        let path = format!("/{}/{}", self.bucket, dest_key);
+        let copy_source = format!("/{}/{}", self.bucket, source_key);
+        let digest_hex = bytes_to_hex(&digest);
+        let mut req = format!(
+            "PUT {path} HTTP/1.1\r\nHost: {}:{}\r\nContent-Length: 0\r\nx-amz-copy-source: {copy_source}\r\n{META_BLAKE3}: {digest_hex}\r\nConnection: close\r\n",
+            self.host, self.port,
+        );
+        if if_none_match {
+            req.push_str("If-None-Match: *\r\n");
+        }
+        req.push_str("\r\n");
+        stream.write_all(req.as_bytes())?;
+        stream.flush()?;
+        let (status, _headers, resp_body) = read_response(&mut stream, false)?;
+        if (200..300).contains(&status) {
+            Ok(())
+        } else {
+            Err(S3HttpError::Http {
+                status,
+                body: String::from_utf8_lossy(&resp_body).into_owned(),
+            })
+        }
+    }
+
     pub fn head(&self, key: &str) -> Result<S3ObjectMeta, S3HttpError> {
         let mut stream = self.connect()?;
         let path = format!("/{}/{}", self.bucket, key);
