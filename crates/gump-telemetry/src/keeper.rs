@@ -31,7 +31,7 @@ pub fn select_keepers(shard_key: &[u8], nodes: &[NodeId]) -> Vec<NodeId> {
         .copied()
         .map(|n| (n, rendezvous_score(shard_key, n)))
         .collect();
-    scored.sort_by(|a, b| cmp_score_desc(a, b));
+    scored.sort_by(cmp_score_desc);
     scored
         .into_iter()
         .take(TARGET_KEEPER_REPLICAS)

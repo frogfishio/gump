@@ -217,7 +217,7 @@ impl Driver for CommonDriver {
             .spawn()
             .map_err(|e| DriverError::new(DriverErrorKind::Start, format!("spawn failed: {e}")))?;
         // RUNTIME §9: start drains before the child can fill pipe buffers.
-        let drains = PipeDrains::start(&mut child);
+        let drains = PipeDrains::start_with(&mut child, io.pipe_sink.clone());
         Ok(RunningHandle {
             prepared: admission.prepared,
             child: Some(child),

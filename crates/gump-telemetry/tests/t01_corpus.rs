@@ -4,12 +4,10 @@
 //! docs/TELEMETRY.md §3.
 
 use gump_telemetry::{
-    validate_topic, CallbackAdapter, CanonicalIdentity, ProducerHint, RecordOutcome,
-    TELEMETRY_PROFILE, MAX_RECORD_BYTES,
+    CallbackAdapter, CanonicalIdentity, MAX_RECORD_BYTES, ProducerHint, RecordOutcome,
+    TELEMETRY_PROFILE, validate_topic,
 };
-use gump_types::{
-    AttemptId, CapsuleId, ClusterId, ExecutionId, Label, NodeId, UnitId, WorkloadId,
-};
+use gump_types::{AttemptId, CapsuleId, ClusterId, ExecutionId, Label, NodeId, UnitId, WorkloadId};
 use ratatouille::{EmitResult, Format, Logger, LoggerConfig, SourceIdentity};
 
 /// Deterministic UUIDv7-shaped bytes for fixtures.
@@ -50,10 +48,7 @@ fn upstream_ndjson_callback_corpus() {
     };
 
     let mut logger = Logger::with_sink(config, shared.as_fn_sink());
-    assert_eq!(
-        logger.log("app/stdout", "hello"),
-        EmitResult::Emitted
-    );
+    assert_eq!(logger.log("app/stdout", "hello"), EmitResult::Emitted);
     assert_eq!(logger.log("noise", "nope"), EmitResult::Filtered);
 
     let records = shared.records();
@@ -87,10 +82,7 @@ fn source_forgery_cannot_replace_canonical_identity() {
     assert_eq!(rec.identity.app_id.as_str(), "accounts");
     assert_eq!(rec.identity.namespace.as_str(), "default");
     assert_eq!(rec.identity.agent_incarnation, 9);
-    assert_eq!(
-        rec.identity.cluster_id.as_bytes(),
-        &v7(1)
-    );
+    assert_eq!(rec.identity.cluster_id.as_bytes(), &v7(1));
     // Forged source retained only as producer hint.
     assert_eq!(
         rec.producer,

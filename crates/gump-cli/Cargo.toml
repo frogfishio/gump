@@ -17,6 +17,7 @@ gump-manifest = { workspace = true }
 gump-capsule = { workspace = true }
 gump-crypto = { workspace = true }
 gump-driver = { workspace = true }
+gump-telemetry = { workspace = true }
 blake3 = { workspace = true }
 rand_core = { workspace = true }
 getrandom = { workspace = true }

@@ -76,6 +76,7 @@ fn run_contract<D: Driver>(
             &IoEndpoints {
                 capture_stdout: false,
                 capture_stderr: false,
+                pipe_sink: None,
             },
         )
         .unwrap();

@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use crate::keeper::{select_keepers, NodeId, TARGET_KEEPER_REPLICAS};
+use crate::keeper::{NodeId, TARGET_KEEPER_REPLICAS, select_keepers};
 
 /// Maximum records per authenticated batch.
 pub const MAX_BATCH_RECORDS: usize = 256;
@@ -179,8 +179,7 @@ impl KeeperStore {
     }
 
     fn evict_until(&mut self, needed: usize) {
-        while self.total_bytes.saturating_add(needed) > self.max_bytes && !self.entries.is_empty()
-        {
+        while self.total_bytes.saturating_add(needed) > self.max_bytes && !self.entries.is_empty() {
             if let Some(old) = self.entries.pop_front() {
                 self.total_bytes = self.total_bytes.saturating_sub(old.bytes);
                 self.seen.remove(&old.record.dedup);

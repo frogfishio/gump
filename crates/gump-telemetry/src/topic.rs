@@ -24,7 +24,10 @@ impl fmt::Display for TopicError {
             }
             Self::EmptySegment => write!(f, "topic has empty slash segment"),
             Self::ReservedImpersonation => {
-                write!(f, "application cannot emit reserved gump/ topics via forgery path")
+                write!(
+                    f,
+                    "application cannot emit reserved gump/ topics via forgery path"
+                )
             }
         }
     }

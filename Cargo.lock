@@ -897,6 +897,7 @@ dependencies = [
  "gump-crypto",
  "gump-driver",
  "gump-manifest",
+ "gump-telemetry",
  "gump-types",
  "rand_core 0.10.1",
 ]
@@ -999,6 +1000,7 @@ name = "gump-telemetry"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "gump-driver",
  "gump-types",
  "ratatouille",
  "serde",

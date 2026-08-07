@@ -3,9 +3,12 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use std::sync::Arc;
+
 use gump_types::AttemptId;
 
 use crate::error::DriverError;
+use crate::supervisor::PipeChunkSink;
 
 /// Semantic driver ABI version string.
 pub const DRIVER_ABI: &str = "gump.driver/1";
@@ -81,10 +84,12 @@ pub struct StartFence {
     pub generation: u64,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Default)]
 pub struct IoEndpoints {
     pub capture_stdout: bool,
     pub capture_stderr: bool,
+    /// Optional fan-out into the bounded telemetry path (STL-09 / D011).
+    pub pipe_sink: Option<Arc<dyn PipeChunkSink>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]

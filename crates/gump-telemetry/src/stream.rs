@@ -137,9 +137,8 @@ pub struct StreamDrain {
 
 impl StreamDrain {
     pub fn new(kind: StreamKind) -> Result<Self, StreamCaptureError> {
-        validate_topic(kind.topic()).map_err(|e| {
-            StreamCaptureError::new(StreamCaptureErrorKind::Topic, e.to_string())
-        })?;
+        validate_topic(kind.topic())
+            .map_err(|e| StreamCaptureError::new(StreamCaptureErrorKind::Topic, e.to_string()))?;
         Ok(Self {
             kind,
             stream_sequence: 0,

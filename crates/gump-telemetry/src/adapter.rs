@@ -1,12 +1,14 @@
 //! Ratatouille callback `Sink` adapter that stamps canonical identity.
 
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use ratatouille::Sink;
 use serde::Deserialize;
 
 use crate::identity::{CanonicalIdentity, NormalizedRecord, ProducerHint, TELEMETRY_PROFILE};
-use crate::topic::{validate_topic, TopicError};
+use crate::ring::{DEFAULT_RING_MAX_BYTES, RingConfig};
+use crate::topic::{TopicError, validate_topic};
 
 /// Maximum formatted Ratatouille line accepted into the adapter (D011: 64 KiB).
 pub const MAX_RECORD_BYTES: usize = 64 * 1024;
@@ -58,6 +60,8 @@ impl From<TopicError> for TelemetryError {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RecordOutcome {
     Accepted,
+    /// Accepted after dropping one or more older retained records (D011).
+    AcceptedDropOldest,
     RejectedOversize,
     RejectedTopic,
 }
@@ -92,7 +96,10 @@ struct NdjsonSource {
     instance: Option<String>,
 }
 
-/// Collects Ratatouille lines and attaches authoritative Gump identity.
+/// **Test-only** unbounded collector for Ratatouille corpus / forgery fixtures.
+///
+/// Production paths must use [`BoundedCallbackAdapter`] (D011 drop-oldest).
+/// Do not wire this type into `gump-server` or agent supervision.
 ///
 /// Application `src` fields are retained as [`ProducerHint`] only — they never
 /// replace [`CanonicalIdentity`] (TELEMETRY.md §3 / RUNTIME.md §14).
@@ -177,6 +184,207 @@ impl CallbackAdapter {
 impl Sink for CallbackAdapter {
     fn write_line(&mut self, line: &str) {
         let _ = self.ingest_line(line);
+    }
+}
+
+fn record_retained_bytes(rec: &NormalizedRecord) -> usize {
+    rec.topic
+        .len()
+        .saturating_add(rec.message.len())
+        .saturating_add(256)
+}
+
+/// Production Ratatouille callback sink: D011 bounded window, drop-oldest.
+pub struct BoundedCallbackAdapter {
+    identity: CanonicalIdentity,
+    local_sequence: u64,
+    records: VecDeque<NormalizedRecord>,
+    total_bytes: usize,
+    max_bytes: usize,
+    max_records: Option<usize>,
+    accepted: u64,
+    dropped_oldest: u64,
+    rejected_oversize: u64,
+    rejected_topic: u64,
+}
+
+impl BoundedCallbackAdapter {
+    pub fn new(identity: CanonicalIdentity) -> Self {
+        Self::with_config(identity, RingConfig::default())
+    }
+
+    pub fn with_config(identity: CanonicalIdentity, config: RingConfig) -> Self {
+        Self {
+            identity,
+            local_sequence: 0,
+            records: VecDeque::new(),
+            total_bytes: 0,
+            max_bytes: config.max_bytes.max(1),
+            // Prefer explicit test ceilings; production defaults to byte/age via max_bytes.
+            max_records: config.max_records.map(|n| n.max(1)),
+            accepted: 0,
+            dropped_oldest: 0,
+            rejected_oversize: 0,
+            rejected_topic: 0,
+        }
+    }
+
+    /// Convenience: bound by record count (overflow tests).
+    pub fn with_max_records(identity: CanonicalIdentity, max_records: usize) -> Self {
+        Self::with_config(
+            identity,
+            RingConfig {
+                max_bytes: DEFAULT_RING_MAX_BYTES,
+                max_age: crate::ring::DEFAULT_RING_MAX_AGE,
+                max_records: Some(max_records),
+            },
+        )
+    }
+
+    pub fn identity(&self) -> &CanonicalIdentity {
+        &self.identity
+    }
+
+    pub fn records(&self) -> &VecDeque<NormalizedRecord> {
+        &self.records
+    }
+
+    pub fn total_bytes(&self) -> usize {
+        self.total_bytes
+    }
+
+    pub fn accepted(&self) -> u64 {
+        self.accepted
+    }
+
+    pub fn dropped_oldest(&self) -> u64 {
+        self.dropped_oldest
+    }
+
+    pub fn ingest_line(&mut self, line: &str) -> RecordOutcome {
+        if line.len() > MAX_RECORD_BYTES {
+            self.rejected_oversize = self.rejected_oversize.saturating_add(1);
+            return RecordOutcome::RejectedOversize;
+        }
+
+        let (topic, topic_sequence, message, producer) = match parse_line(line) {
+            ParsedLine::Ndjson {
+                topic,
+                seq,
+                message,
+                producer,
+            } => (topic, seq, message, producer),
+            ParsedLine::Text { topic, message } => (topic, None, message, ProducerHint::default()),
+            ParsedLine::Unusable => {
+                self.rejected_topic = self.rejected_topic.saturating_add(1);
+                return RecordOutcome::RejectedTopic;
+            }
+        };
+
+        if validate_topic(&topic).is_err() {
+            self.rejected_topic = self.rejected_topic.saturating_add(1);
+            return RecordOutcome::RejectedTopic;
+        }
+
+        self.local_sequence = self.local_sequence.saturating_add(1);
+        let record = NormalizedRecord {
+            profile: TELEMETRY_PROFILE,
+            topic,
+            topic_sequence,
+            message,
+            identity: self.identity.clone(),
+            producer,
+            local_sequence: self.local_sequence,
+        };
+        let incoming = record_retained_bytes(&record);
+        let mut dropped = false;
+        while self.needs_evict(incoming) {
+            if let Some(old) = self.records.pop_front() {
+                self.total_bytes = self.total_bytes.saturating_sub(record_retained_bytes(&old));
+                self.dropped_oldest = self.dropped_oldest.saturating_add(1);
+                dropped = true;
+            } else {
+                break;
+            }
+        }
+
+        self.records.push_back(record);
+        self.total_bytes = self.total_bytes.saturating_add(incoming);
+        self.accepted = self.accepted.saturating_add(1);
+        if dropped {
+            RecordOutcome::AcceptedDropOldest
+        } else {
+            RecordOutcome::Accepted
+        }
+    }
+
+    fn needs_evict(&self, incoming: usize) -> bool {
+        if self.records.is_empty() {
+            return false;
+        }
+        if self.total_bytes.saturating_add(incoming) > self.max_bytes {
+            return true;
+        }
+        if let Some(max) = self.max_records {
+            if self.records.len() >= max {
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn into_shared(self) -> SharedBoundedCallbackAdapter {
+        SharedBoundedCallbackAdapter {
+            inner: Arc::new(Mutex::new(self)),
+        }
+    }
+}
+
+impl Sink for BoundedCallbackAdapter {
+    fn write_line(&mut self, line: &str) {
+        let _ = self.ingest_line(line);
+    }
+}
+
+/// Shared production adapter for Ratatouille `Logger` sinks.
+#[derive(Clone)]
+pub struct SharedBoundedCallbackAdapter {
+    inner: Arc<Mutex<BoundedCallbackAdapter>>,
+}
+
+impl SharedBoundedCallbackAdapter {
+    pub fn records(&self) -> Vec<NormalizedRecord> {
+        self.inner
+            .lock()
+            .expect("adapter lock")
+            .records()
+            .iter()
+            .cloned()
+            .collect()
+    }
+
+    pub fn dropped_oldest(&self) -> u64 {
+        self.inner.lock().expect("adapter lock").dropped_oldest()
+    }
+
+    pub fn accepted(&self) -> u64 {
+        self.inner.lock().expect("adapter lock").accepted()
+    }
+
+    pub fn as_fn_sink(&self) -> SharedBoundedFnSink {
+        SharedBoundedFnSink {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+pub struct SharedBoundedFnSink {
+    inner: Arc<Mutex<BoundedCallbackAdapter>>,
+}
+
+impl Sink for SharedBoundedFnSink {
+    fn write_line(&mut self, line: &str) {
+        let _ = self.inner.lock().expect("adapter lock").ingest_line(line);
     }
 }
 

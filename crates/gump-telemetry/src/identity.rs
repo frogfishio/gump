@@ -1,8 +1,6 @@
 //! Authoritative Gump telemetry identity (never taken from app SourceIdentity).
 
-use gump_types::{
-    AttemptId, CapsuleId, ClusterId, ExecutionId, Label, NodeId, UnitId, WorkloadId,
-};
+use gump_types::{AttemptId, CapsuleId, ClusterId, ExecutionId, Label, NodeId, UnitId, WorkloadId};
 
 /// Cluster telemetry profile name (docs/v1/README.md §4 / D011).
 pub const TELEMETRY_PROFILE: &str = "gump.ratatouille/1";

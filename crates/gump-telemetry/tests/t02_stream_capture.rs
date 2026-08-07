@@ -3,7 +3,7 @@
 //! Authority: docs/v1/DELIVERY.md T02, docs/v1/RUNTIME.md §14, D011.
 
 use gump_telemetry::{
-    BoundedRecordQueue, ChunkFlags, StreamDrain, StreamKind, MAX_STREAM_RECORD_BYTES, TOPIC_STDERR,
+    BoundedRecordQueue, ChunkFlags, MAX_STREAM_RECORD_BYTES, StreamDrain, StreamKind, TOPIC_STDERR,
     TOPIC_STDOUT,
 };
 
@@ -59,11 +59,19 @@ fn long_line_is_chunked_without_utf8_requirement() {
     }
     drain.finish(&mut q);
     assert!(q.records.len() >= 2, "expected chunked long line");
-    let reconstructed: Vec<u8> = q.records.iter().flat_map(|r| r.bytes.iter().copied()).collect();
+    let reconstructed: Vec<u8> = q
+        .records
+        .iter()
+        .flat_map(|r| r.bytes.iter().copied())
+        .collect();
     assert_eq!(reconstructed, line);
     assert!(q.records[0].flags.contains(ChunkFlags::BEGIN));
     assert!(q.records.back().unwrap().flags.contains(ChunkFlags::END));
-    assert!(q.records.iter().all(|r| r.bytes.len() <= MAX_STREAM_RECORD_BYTES));
+    assert!(
+        q.records
+            .iter()
+            .all(|r| r.bytes.len() <= MAX_STREAM_RECORD_BYTES)
+    );
 }
 
 #[test]
@@ -84,7 +92,10 @@ fn saturation_drops_oldest_without_blocking() {
         .iter()
         .map(|r| String::from_utf8(r.bytes.clone()).unwrap())
         .collect();
-    assert_eq!(texts, vec!["line-18\n".to_string(), "line-19\n".to_string()]);
+    assert_eq!(
+        texts,
+        vec!["line-18\n".to_string(), "line-19\n".to_string()]
+    );
 }
 
 #[test]

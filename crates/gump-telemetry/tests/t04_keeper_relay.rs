@@ -3,8 +3,8 @@
 //! Authority: docs/v1/DELIVERY.md T04, DECISIONS D011, TELEMETRY.md §7/§12.
 
 use gump_telemetry::{
-    select_keepers, BatchAuth, DedupId, RelayMesh, RelayRecord, TelemetryBatch,
-    TARGET_KEEPER_REPLICAS,
+    BatchAuth, DedupId, RelayMesh, RelayRecord, TARGET_KEEPER_REPLICAS, TelemetryBatch,
+    select_keepers,
 };
 
 fn auth() -> BatchAuth {
@@ -84,21 +84,27 @@ fn node_loss_preserves_records_on_surviving_keeper() {
     assert_eq!(keepers.len(), 2);
     let victim = keepers[0];
     let survivor = keepers[1];
-    assert!(mesh.store(survivor).unwrap().contains_dedup(&record(2, b"x").dedup));
+    assert!(
+        mesh.store(survivor)
+            .unwrap()
+            .contains_dedup(&record(2, b"x").dedup)
+    );
 
     mesh.lose_node(victim);
     assert!(mesh.store(victim).is_none());
     // Surviving keeper still holds accepted records.
-    assert!(mesh
-        .store(survivor)
-        .unwrap()
-        .contains_dedup(&record(2, b"x").dedup));
+    assert!(
+        mesh.store(survivor)
+            .unwrap()
+            .contains_dedup(&record(2, b"x").dedup)
+    );
     // Relay continues with remaining nodes (now < 3 → all eligible).
     mesh.relay(&batch(shard, &[4])).unwrap();
-    assert!(mesh
-        .store(survivor)
-        .unwrap()
-        .contains_dedup(&record(4, b"x").dedup));
+    assert!(
+        mesh.store(survivor)
+            .unwrap()
+            .contains_dedup(&record(4, b"x").dedup)
+    );
 }
 
 #[test]

@@ -84,6 +84,7 @@ fn start_native(
             &IoEndpoints {
                 capture_stdout: capture,
                 capture_stderr: capture,
+                pipe_sink: None,
             },
         )
         .unwrap();

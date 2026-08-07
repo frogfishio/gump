@@ -5,8 +5,8 @@
 use std::time::{Duration, Instant};
 
 use gump_telemetry::{
-    ChunkFlags, GapReason, LocalRing, RingConfig, RingEvent, StreamDrain, StreamKind, StreamRecord,
-    TopicFilter, DEFAULT_RING_MAX_AGE, DEFAULT_RING_MAX_BYTES, TOPIC_STDOUT,
+    ChunkFlags, DEFAULT_RING_MAX_AGE, DEFAULT_RING_MAX_BYTES, GapReason, LocalRing, RingConfig,
+    RingEvent, StreamDrain, StreamKind, StreamRecord, TOPIC_STDOUT, TopicFilter,
 };
 
 fn rec(topic: &'static str, seq: u64, bytes: &[u8]) -> StreamRecord {

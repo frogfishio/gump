@@ -2,7 +2,8 @@
 //!
 //! Drain threads start before `start` returns so a chatty child cannot fill OS
 //! pipe buffers and hang. Captured bytes go into a bounded ring (drop-oldest);
-//! full Ratatouille wiring remains STL-09. Unix process-group signals use the
+//! optional [`PipeChunkSink`] fans chunks into the telemetry path (STL-09).
+//! Unix process-group signals use the
 //! host `kill` binary so this crate can keep `forbid(unsafe_code)`.
 
 use std::collections::VecDeque;
@@ -81,6 +82,13 @@ impl CaptureRing {
     }
 }
 
+/// Optional fan-out target for pipe drain chunks (STL-09 telemetry path).
+///
+/// Implementations must not block; drop-oldest under backpressure.
+pub trait PipeChunkSink: Send + Sync {
+    fn on_chunk(&self, kind: StreamKind, chunk: &[u8]);
+}
+
 #[derive(Debug)]
 pub struct PipeDrains {
     joins: Vec<JoinHandle<()>>,
@@ -91,14 +99,29 @@ pub struct PipeDrains {
 impl PipeDrains {
     /// Take pipes from the child and start drain threads immediately (RUNTIME §9).
     pub fn start(child: &mut Child) -> Self {
+        Self::start_with(child, None)
+    }
+
+    /// Like [`Self::start`], also fan chunks into `telemetry` (bounded Ratatouille path).
+    pub fn start_with(child: &mut Child, telemetry: Option<Arc<dyn PipeChunkSink>>) -> Self {
         let stdout_ring = CaptureRing::new();
         let stderr_ring = CaptureRing::new();
         let mut joins = Vec::new();
         if let Some(out) = child.stdout.take() {
-            joins.push(spawn_drain(StreamKind::Stdout, out, stdout_ring.clone()));
+            joins.push(spawn_drain(
+                StreamKind::Stdout,
+                out,
+                stdout_ring.clone(),
+                telemetry.clone(),
+            ));
         }
         if let Some(err) = child.stderr.take() {
-            joins.push(spawn_drain(StreamKind::Stderr, err, stderr_ring.clone()));
+            joins.push(spawn_drain(
+                StreamKind::Stderr,
+                err,
+                stderr_ring.clone(),
+                telemetry.clone(),
+            ));
         }
         Self {
             joins,
@@ -127,9 +150,10 @@ impl PipeDrains {
 }
 
 fn spawn_drain<R: Read + Send + 'static>(
-    _kind: StreamKind,
+    kind: StreamKind,
     mut reader: R,
     ring: CaptureRing,
+    telemetry: Option<Arc<dyn PipeChunkSink>>,
 ) -> JoinHandle<()> {
     thread::Builder::new()
         .name("gump-pipe-drain".into())
@@ -138,7 +162,13 @@ fn spawn_drain<R: Read + Send + 'static>(
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
-                    Ok(n) => ring.push(&buf[..n]),
+                    Ok(n) => {
+                        let chunk = &buf[..n];
+                        ring.push(chunk);
+                        if let Some(sink) = telemetry.as_ref() {
+                            sink.on_chunk(kind, chunk);
+                        }
+                    }
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                     Err(_) => break,
                 }

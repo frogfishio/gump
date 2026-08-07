@@ -15,6 +15,7 @@ use gump_manifest::capture::{
     CapturePlan, VirtualTree, apply_prepare_outputs, capture_workspace, verify_captured_bytes,
 };
 use gump_manifest::{Driver as ManifestDriver, Manifest, parse_manifest_str};
+use gump_telemetry::{AttemptPipeBridge, RingConfig};
 use gump_types::{AttemptId, CapsuleId};
 
 use crate::error::{CliError, CliErrorKind};
@@ -236,6 +237,8 @@ fn drive<D: Driver>(
             &IoEndpoints {
                 capture_stdout: true,
                 capture_stderr: true,
+                // STL-09: fan pipe drains into D011 LocalRing (drop-oldest).
+                pipe_sink: Some(AttemptPipeBridge::new(RingConfig::default()).shared_sink()),
             },
         )
         .map_err(|e| CliError::new(CliErrorKind::Driver, e.to_string()))?;

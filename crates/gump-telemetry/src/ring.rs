@@ -8,7 +8,7 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-use crate::stream::{StreamEmitter, StreamRecord, EmitOutcome};
+use crate::stream::{EmitOutcome, StreamEmitter, StreamRecord};
 
 /// Default per-attempt byte ceiling (D011).
 pub const DEFAULT_RING_MAX_BYTES: usize = 8 * 1024 * 1024;
@@ -142,7 +142,7 @@ impl LocalRing {
         // If still too large for an empty ring, accept but keep only this record
         // truncated conceptually — still store it (single record may exceed max_bytes).
         if bytes > self.config.max_bytes && !self.entries.is_empty() {
-            while let Some(_) = self.entries.pop_front() {
+            while self.entries.pop_front().is_some() {
                 self.dropped_oldest += 1;
                 self.generation = self.generation.saturating_add(1);
                 outcome = EmitOutcome::DroppedOldest;
@@ -284,7 +284,11 @@ impl Subscriber {
 
             // Per-topic sequence gap detection within the ring window.
             let seq = entry.record.stream_sequence;
-            if let Some(prev) = self.last_stream_seq_by_topic.get(entry.record.topic).copied() {
+            if let Some(prev) = self
+                .last_stream_seq_by_topic
+                .get(entry.record.topic)
+                .copied()
+            {
                 if seq > prev.saturating_add(1) {
                     let gap = GapMarker {
                         topic: entry.record.topic,

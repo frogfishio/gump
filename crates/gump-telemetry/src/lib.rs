@@ -8,30 +8,31 @@
 mod adapter;
 mod identity;
 mod keeper;
+mod pipe_bridge;
 mod relay;
 mod ring;
 mod stream;
 mod topic;
 
 pub use adapter::{
-    CallbackAdapter, RecordOutcome, SharedCallbackAdapter, SharedFnSink, TelemetryError,
-    TelemetryErrorKind, MAX_RECORD_BYTES,
+    BoundedCallbackAdapter, CallbackAdapter, MAX_RECORD_BYTES, RecordOutcome,
+    SharedBoundedCallbackAdapter, SharedBoundedFnSink, SharedCallbackAdapter, SharedFnSink,
+    TelemetryError, TelemetryErrorKind,
 };
 pub use identity::{CanonicalIdentity, NormalizedRecord, ProducerHint, TELEMETRY_PROFILE};
-pub use keeper::{
-    select_keepers, NodeId, RENDEZVOUS_MIN_NODES, TARGET_KEEPER_REPLICAS,
-};
+pub use keeper::{NodeId, RENDEZVOUS_MIN_NODES, TARGET_KEEPER_REPLICAS, select_keepers};
+pub use pipe_bridge::AttemptPipeBridge;
 pub use relay::{
-    BatchAuth, DedupId, KeeperStore, RelayError, RelayMesh, RelayRecord, TelemetryBatch,
-    DEFAULT_KEEPER_SHARD_BYTES, MAX_BATCH_RECORDS,
+    BatchAuth, DEFAULT_KEEPER_SHARD_BYTES, DedupId, KeeperStore, MAX_BATCH_RECORDS, RelayError,
+    RelayMesh, RelayRecord, TelemetryBatch,
 };
 pub use ring::{
-    GapMarker, GapReason, LocalRing, RingConfig, RingEvent, Subscriber, TopicFilter,
-    DEFAULT_RING_MAX_AGE, DEFAULT_RING_MAX_BYTES,
+    DEFAULT_RING_MAX_AGE, DEFAULT_RING_MAX_BYTES, GapMarker, GapReason, LocalRing, RingConfig,
+    RingEvent, Subscriber, TopicFilter,
 };
 pub use stream::{
-    BoundedRecordQueue, ChunkFlags, EmitOutcome, StreamCaptureError, StreamCaptureErrorKind,
-    StreamDrain, StreamEmitter, StreamKind, StreamRecord, MAX_READ_CHUNK, MAX_STREAM_RECORD_BYTES,
-    TOPIC_STDERR, TOPIC_STDOUT,
+    BoundedRecordQueue, ChunkFlags, EmitOutcome, MAX_READ_CHUNK, MAX_STREAM_RECORD_BYTES,
+    StreamCaptureError, StreamCaptureErrorKind, StreamDrain, StreamEmitter, StreamKind,
+    StreamRecord, TOPIC_STDERR, TOPIC_STDOUT,
 };
-pub use topic::{validate_topic, TopicError, MAX_TOPIC_LEN};
+pub use topic::{MAX_TOPIC_LEN, TopicError, validate_topic};

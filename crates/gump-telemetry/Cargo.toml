@@ -9,6 +9,7 @@ description = "Ratatouille adapter (T01), stream capture (T02), local ring (T03)
 
 [dependencies]
 gump-types = { workspace = true }
+gump-driver = { workspace = true }
 ratatouille = "0.1"
 serde = { workspace = true, features = ["derive"] }
 serde_json = "1.0"
