@@ -9,12 +9,14 @@ mod common;
 mod error;
 mod native;
 mod script;
+mod supervisor;
 
 pub use abi::{
-    Admission, AttemptContext, Driver, DriverCapabilities, DriverKind, HostProbe, IoEndpoints,
-    Observation, PreparedHandle, ReleaseRoot, ResourceGrant, RunningHandle, RuntimeSpec,
-    SecretPlan, Signal, StartFence, DRIVER_ABI,
+    Admission, AttemptContext, DRIVER_ABI, Driver, DriverCapabilities, DriverKind, HostProbe,
+    IoEndpoints, Observation, PreparedHandle, ReleaseRoot, ResourceGrant, RunningHandle,
+    RuntimeSpec, SecretPlan, Signal, StartFence,
 };
 pub use error::{DriverError, DriverErrorKind};
 pub use native::NativeDriver;
 pub use script::ScriptDriver;
+pub use supervisor::{CAPTURE_RING_BYTES, CaptureRing, DRAIN_JOIN_TIMEOUT, PipeDrains, StreamKind};

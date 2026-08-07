@@ -7,8 +7,8 @@ use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use gump_driver::{
-    AttemptContext, Driver, DriverErrorKind, DriverKind, HostProbe, IoEndpoints, NativeDriver,
-    ReleaseRoot, ResourceGrant, RuntimeSpec, ScriptDriver, SecretPlan, StartFence, DRIVER_ABI,
+    AttemptContext, DRIVER_ABI, Driver, DriverErrorKind, DriverKind, HostProbe, IoEndpoints,
+    NativeDriver, ReleaseRoot, ResourceGrant, RuntimeSpec, ScriptDriver, SecretPlan, StartFence,
 };
 use gump_types::AttemptId;
 
@@ -42,7 +42,12 @@ fn host() -> HostProbe {
     }
 }
 
-fn run_contract<D: Driver>(driver: &D, kind: DriverKind, release: &ReleaseRoot, runtime: RuntimeSpec) {
+fn run_contract<D: Driver>(
+    driver: &D,
+    kind: DriverKind,
+    release: &ReleaseRoot,
+    runtime: RuntimeSpec,
+) {
     let caps = driver.probe(&host()).unwrap();
     assert_eq!(caps.abi, DRIVER_ABI);
     assert_eq!(caps.kind, kind);
@@ -117,10 +122,7 @@ fn abi_version_is_stable() {
 #[test]
 fn native_driver_contract_runs_relative_executable() {
     let root = tmp("native-release");
-    write_executable(
-        &root.join("bin/hello"),
-        "#!/bin/sh\nexit 0\n",
-    );
+    write_executable(&root.join("bin/hello"), "#!/bin/sh\nexit 0\n");
     let release = ReleaseRoot::new(&root);
     let runtime = RuntimeSpec {
         kind: DriverKind::Native,
@@ -138,17 +140,9 @@ fn script_driver_contract_uses_explicit_interpreter() {
     fs::write(root.join("run.py"), "raise SystemExit(0)\n").unwrap();
     // Prefer python3 if present; otherwise /bin/sh with a shell script.
     let (interpreter, command_file, body) = if which("python3") {
-        (
-            vec!["python3".into()],
-            "run.py",
-            "raise SystemExit(0)\n",
-        )
+        (vec!["python3".into()], "run.py", "raise SystemExit(0)\n")
     } else {
-        (
-            vec!["/bin/sh".into()],
-            "run.sh",
-            "#!/bin/sh\nexit 0\n",
-        )
+        (vec!["/bin/sh".into()], "run.sh", "#!/bin/sh\nexit 0\n")
     };
     fs::write(root.join(command_file), body).unwrap();
     let release = ReleaseRoot::new(&root);

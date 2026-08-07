@@ -5,13 +5,14 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use crate::Driver;
 use crate::abi::{
-    Admission, AttemptContext, DriverCapabilities, DriverKind, HostProbe, IoEndpoints, Observation,
-    PreparedHandle, ReleaseRoot, ResourceGrant, RunningHandle, RuntimeSpec, SecretPlan, Signal,
-    StartFence, DRIVER_ABI,
+    Admission, AttemptContext, DRIVER_ABI, DriverCapabilities, DriverKind, HostProbe, IoEndpoints,
+    Observation, PreparedHandle, ReleaseRoot, ResourceGrant, RunningHandle, RuntimeSpec,
+    SecretPlan, Signal, StartFence,
 };
 use crate::error::{DriverError, DriverErrorKind};
-use crate::Driver;
+use crate::supervisor::{self, PipeDrains};
 
 pub(crate) struct CommonDriver {
     pub kind: DriverKind,
@@ -147,10 +148,7 @@ impl Driver for CommonDriver {
         secrets: &SecretPlan,
     ) -> Result<Admission, DriverError> {
         if prepared.admitted {
-            return Err(DriverError::new(
-                DriverErrorKind::State,
-                "already admitted",
-            ));
+            return Err(DriverError::new(DriverErrorKind::State, "already admitted"));
         }
         if !secrets.deferred {
             return Err(DriverError::new(
@@ -215,12 +213,15 @@ impl Driver for CommonDriver {
             use std::os::unix::process::CommandExt;
             cmd.process_group(0);
         }
-        let child = cmd.spawn().map_err(|e| {
-            DriverError::new(DriverErrorKind::Start, format!("spawn failed: {e}"))
-        })?;
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| DriverError::new(DriverErrorKind::Start, format!("spawn failed: {e}")))?;
+        // RUNTIME §9: start drains before the child can fill pipe buffers.
+        let drains = PipeDrains::start(&mut child);
         Ok(RunningHandle {
             prepared: admission.prepared,
             child: Some(child),
+            drains: Some(drains),
             fence,
         })
     }
@@ -233,10 +234,15 @@ impl Driver for CommonDriver {
             });
         };
         match child.try_wait()? {
-            Some(status) => Ok(Observation {
-                running: false,
-                exit_code: status.code(),
-            }),
+            Some(status) => {
+                if let Some(drains) = running.drains.as_mut() {
+                    drains.join_bounded();
+                }
+                Ok(Observation {
+                    running: false,
+                    exit_code: status.code(),
+                })
+            }
             None => Ok(Observation {
                 running: true,
                 exit_code: None,
@@ -251,12 +257,15 @@ impl Driver for CommonDriver {
                 "no running child",
             ));
         };
-        let _ = signal; // F06: force-kill; graceful TERM process-group is R06.
-        child.kill()?;
-        Ok(())
+        supervisor::signal_tree(child, signal)
     }
 
-    fn terminate(&self, running: &mut RunningHandle, deadline: Duration) -> Result<(), DriverError> {
+    fn terminate(
+        &self,
+        running: &mut RunningHandle,
+        deadline: Duration,
+    ) -> Result<(), DriverError> {
+        // RUNTIME §16: graceful signal → drain/wait → kill process tree.
         self.signal(running, Signal::Term)?;
         let start = Instant::now();
         while start.elapsed() < deadline {
@@ -270,9 +279,14 @@ impl Driver for CommonDriver {
     }
 
     fn kill(&self, running: &mut RunningHandle) -> Result<(), DriverError> {
-        self.signal(running, Signal::Kill)?;
+        if running.child.is_some() {
+            self.signal(running, Signal::Kill)?;
+        }
         if let Some(mut child) = running.child.take() {
             let _ = child.wait();
+        }
+        if let Some(mut drains) = running.drains.take() {
+            drains.join_bounded();
         }
         Ok(())
     }

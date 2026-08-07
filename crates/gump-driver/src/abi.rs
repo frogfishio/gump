@@ -117,8 +117,43 @@ pub struct RunningHandle {
     #[allow(dead_code)] // attempt/release roots retained for R06 supervision
     pub(crate) prepared: PreparedHandle,
     pub(crate) child: Option<std::process::Child>,
+    pub(crate) drains: Option<crate::supervisor::PipeDrains>,
     #[allow(dead_code)] // retained for fence-aware supervision in R06
     pub(crate) fence: StartFence,
+}
+
+impl RunningHandle {
+    /// Bytes retained from stdout (bounded ring; may have dropped oldest).
+    pub fn captured_stdout(&self) -> Vec<u8> {
+        self.drains
+            .as_ref()
+            .map(|d| d.stdout.snapshot())
+            .unwrap_or_default()
+    }
+
+    /// Bytes retained from stderr (bounded ring; may have dropped oldest).
+    pub fn captured_stderr(&self) -> Vec<u8> {
+        self.drains
+            .as_ref()
+            .map(|d| d.stderr.snapshot())
+            .unwrap_or_default()
+    }
+
+    /// Total stdout bytes received (including dropped).
+    pub fn stdout_received_bytes(&self) -> u64 {
+        self.drains
+            .as_ref()
+            .map(|d| d.stdout.received_bytes())
+            .unwrap_or(0)
+    }
+
+    /// Total stderr bytes received (including dropped).
+    pub fn stderr_received_bytes(&self) -> u64 {
+        self.drains
+            .as_ref()
+            .map(|d| d.stderr.received_bytes())
+            .unwrap_or(0)
+    }
 }
 
 /// Admission token proving local feasibility without starting work.
@@ -157,7 +192,8 @@ pub trait Driver {
 
     fn signal(&self, running: &mut RunningHandle, signal: Signal) -> Result<(), DriverError>;
 
-    fn terminate(&self, running: &mut RunningHandle, deadline: Duration) -> Result<(), DriverError>;
+    fn terminate(&self, running: &mut RunningHandle, deadline: Duration)
+    -> Result<(), DriverError>;
 
     fn kill(&self, running: &mut RunningHandle) -> Result<(), DriverError>;
 

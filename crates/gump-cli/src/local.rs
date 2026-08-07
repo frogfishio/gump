@@ -255,7 +255,10 @@ fn drive<D: Driver>(
             },
         )
         .map_err(|e| CliError::new(CliErrorKind::Driver, e.to_string()))?;
-    for _ in 0..500 {
+    // Finite local run: wait for exit. Pipe drains live in the driver (STL-04);
+    // do not hard-kill after a fixed wall clock — continuous workloads belong
+    // to the agent supervisor loop, not `gump run`.
+    loop {
         let obs = driver
             .observe(&mut running)
             .map_err(|e| CliError::new(CliErrorKind::Driver, e.to_string()))?;
@@ -264,10 +267,6 @@ fn drive<D: Driver>(
         }
         std::thread::sleep(Duration::from_millis(10));
     }
-    driver
-        .terminate(&mut running, Duration::from_secs(2))
-        .map_err(|e| CliError::new(CliErrorKind::Driver, e.to_string()))?;
-    Ok(Some(124))
 }
 
 fn effective_argv(plan: &LocalParityPlan) -> Vec<String> {
