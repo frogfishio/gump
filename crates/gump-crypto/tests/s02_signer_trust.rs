@@ -5,8 +5,8 @@
 use std::collections::BTreeSet;
 
 use gump_crypto::{
-    ed25519_fingerprint, generate_signing_key, verifying_key, SignerEnrollment, SignerTrustPolicy,
-    SigningKeyBytes, TrustCheck, TrustError, VerifyingKeyBytes,
+    SignerEnrollment, SignerTrustPolicy, SigningKeyBytes, TrustCheck, TrustError,
+    VerifyingKeyBytes, ed25519_fingerprint, generate_signing_key, verifying_key,
 };
 use rand_core::{TryCryptoRng, TryRng};
 
@@ -105,12 +105,16 @@ fn namespace_scope_matrix() {
     let mut policy = SignerTrustPolicy::new();
     let (vk, _) = enroll_key(&mut policy, 3, &["prod", "staging"], None, &[]);
 
-    assert!(policy
-        .check(&vk, "prod", 0, TrustCheck::Publication, None)
-        .is_ok());
-    assert!(policy
-        .check(&vk, "staging", 0, TrustCheck::Declaration, None)
-        .is_ok());
+    assert!(
+        policy
+            .check(&vk, "prod", 0, TrustCheck::Publication, None)
+            .is_ok()
+    );
+    assert!(
+        policy
+            .check(&vk, "staging", 0, TrustCheck::Declaration, None)
+            .is_ok()
+    );
     let denied = policy
         .check(&vk, "dev", 0, TrustCheck::Publication, None)
         .unwrap_err();
@@ -124,18 +128,22 @@ fn namespace_scope_matrix() {
 fn wildcard_namespace_allows_all() {
     let mut policy = SignerTrustPolicy::new();
     let (vk, _) = enroll_key(&mut policy, 4, &["*"], None, &[]);
-    assert!(policy
-        .check(&vk, "any-ns", 1, TrustCheck::Publication, None)
-        .is_ok());
+    assert!(
+        policy
+            .check(&vk, "any-ns", 1, TrustCheck::Publication, None)
+            .is_ok()
+    );
 }
 
 #[test]
 fn revocation_blocks_new_checks_without_rewriting_enrollment() {
     let mut policy = SignerTrustPolicy::new();
     let (vk, fp) = enroll_key(&mut policy, 5, &["prod"], None, &[]);
-    assert!(policy
-        .check(&vk, "prod", 0, TrustCheck::Declaration, None)
-        .is_ok());
+    assert!(
+        policy
+            .check(&vk, "prod", 0, TrustCheck::Declaration, None)
+            .is_ok()
+    );
     policy.revoke(&fp).unwrap();
     assert!(policy.is_revoked(&fp));
     let err = policy
@@ -149,9 +157,11 @@ fn revocation_blocks_new_checks_without_rewriting_enrollment() {
 fn expiry_denies_after_deadline() {
     let mut policy = SignerTrustPolicy::new();
     let (vk, _) = enroll_key(&mut policy, 6, &["prod"], Some(1_000), &[]);
-    assert!(policy
-        .check(&vk, "prod", 999, TrustCheck::Publication, None)
-        .is_ok());
+    assert!(
+        policy
+            .check(&vk, "prod", 999, TrustCheck::Publication, None)
+            .is_ok()
+    );
     let err = policy
         .check(&vk, "prod", 1_000, TrustCheck::Publication, None)
         .unwrap_err();
@@ -162,9 +172,11 @@ fn expiry_denies_after_deadline() {
 fn capability_constraint_matrix() {
     let mut policy = SignerTrustPolicy::new();
     let (vk, _) = enroll_key(&mut policy, 7, &["prod"], None, &["deploy", "reintroduce"]);
-    assert!(policy
-        .check(&vk, "prod", 0, TrustCheck::Declaration, Some("deploy"))
-        .is_ok());
+    assert!(
+        policy
+            .check(&vk, "prod", 0, TrustCheck::Declaration, Some("deploy"))
+            .is_ok()
+    );
     let err = policy
         .check(&vk, "prod", 0, TrustCheck::Declaration, Some("purge"))
         .unwrap_err();
@@ -178,9 +190,11 @@ fn capability_constraint_matrix() {
 fn empty_capabilities_are_unrestricted_within_namespace() {
     let mut policy = SignerTrustPolicy::new();
     let (vk, _) = enroll_key(&mut policy, 8, &["prod"], None, &[]);
-    assert!(policy
-        .check(&vk, "prod", 0, TrustCheck::Publication, Some("anything"))
-        .is_ok());
+    assert!(
+        policy
+            .check(&vk, "prod", 0, TrustCheck::Publication, Some("anything"))
+            .is_ok()
+    );
 }
 
 #[test]

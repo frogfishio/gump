@@ -24,9 +24,7 @@ pub fn build_protected_aad(
     public_metadata_digest: &[u8; 32],
     application_archive_digest: &[u8; 32],
 ) -> Vec<u8> {
-    let mut out = Vec::with_capacity(
-        PROTECTED_AAD_PREFIX.len() + 16 + 16 + 32 + 32,
-    );
+    let mut out = Vec::with_capacity(PROTECTED_AAD_PREFIX.len() + 16 + 16 + 32 + 32);
     out.extend_from_slice(PROTECTED_AAD_PREFIX);
     out.extend_from_slice(capsule_id);
     out.extend_from_slice(cluster_id);
@@ -70,9 +68,8 @@ pub fn build_release_signing_transcript(
             "header too large for u32be length prefix",
         )
     })?;
-    let mut out = Vec::with_capacity(
-        RELEASE_SIG_PREFIX.len() + 4 + header_cbor.len() + 2 + 4 * (2 + 8 + 32),
-    );
+    let mut out =
+        Vec::with_capacity(RELEASE_SIG_PREFIX.len() + 4 + header_cbor.len() + 2 + 4 * (2 + 8 + 32));
     out.extend_from_slice(RELEASE_SIG_PREFIX);
     out.extend_from_slice(&header_len.to_be_bytes());
     out.extend_from_slice(header_cbor);

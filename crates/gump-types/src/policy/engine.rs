@@ -118,16 +118,16 @@ fn wildcard_match(grants: &BTreeSet<Action>, action: &Action) -> bool {
 /// Role/grant wildcards use `"*"` in parameterized scopes.
 fn action_matches(pattern: &Action, action: &Action) -> bool {
     match (pattern, action) {
-        (
-            Action::PublicationUse { provider: p },
-            Action::PublicationUse { provider: a },
-        ) => p == "*" || p == a,
+        (Action::PublicationUse { provider: p }, Action::PublicationUse { provider: a }) => {
+            p == "*" || p == a
+        }
         (Action::ConnectorUse { name: p }, Action::ConnectorUse { name: a }) => p == "*" || p == a,
-        (
-            Action::HiccupPublish { topic: p },
-            Action::HiccupPublish { topic: a },
-        ) => p == "*" || p == a,
-        (Action::HiccupListen { topic: p }, Action::HiccupListen { topic: a }) => p == "*" || p == a,
+        (Action::HiccupPublish { topic: p }, Action::HiccupPublish { topic: a }) => {
+            p == "*" || p == a
+        }
+        (Action::HiccupListen { topic: p }, Action::HiccupListen { topic: a }) => {
+            p == "*" || p == a
+        }
         _ => pattern == action,
     }
 }

@@ -9,13 +9,13 @@ use core::fmt;
 
 use rand_core::CryptoRng;
 
-use crate::aead::DEK_LEN;
+use crate::aead::{DEK_LEN, Dek};
 use crate::error::CryptoError;
 use crate::hpke_wrap::{
-    generate_x25519_keypair, open_dek, seal_dek, ClusterX25519Public, ClusterX25519Secret,
-    SealedDek,
+    ClusterX25519Public, ClusterX25519Secret, SealedDek, generate_x25519_keypair, open_dek,
+    seal_dek,
 };
-use crate::unseal::{derive_cluster_unseal_keypair, RecoverySecret};
+use crate::unseal::{RecoverySecret, derive_cluster_unseal_keypair};
 
 /// Non-secret handle recorded in memory / Capsule envelopes (`cluster_key_id`).
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -38,14 +38,9 @@ impl UnsealProviderDescriptor {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum UnsealProviderError {
     Crypto(CryptoError),
-    KeyMismatch {
-        expected: String,
-        requested: String,
-    },
+    KeyMismatch { expected: String, requested: String },
     Unauthorized,
-    Unavailable {
-        reason: String,
-    },
+    Unavailable { reason: String },
 }
 
 impl fmt::Display for UnsealProviderError {
@@ -90,7 +85,7 @@ pub trait UnsealProvider {
         sealed: &SealedDek,
         info: &[u8],
         aad: &[u8],
-    ) -> Result<[u8; DEK_LEN], UnsealProviderError>;
+    ) -> Result<Dek, UnsealProviderError>;
 }
 
 /// Software unseal: recovery secret → HKDF → X25519 (S03), exposed via the trait.
@@ -130,7 +125,7 @@ impl UnsealProvider for SoftwareUnsealProvider {
         sealed: &SealedDek,
         info: &[u8],
         aad: &[u8],
-    ) -> Result<[u8; DEK_LEN], UnsealProviderError> {
+    ) -> Result<Dek, UnsealProviderError> {
         ensure_key_id(&self.descriptor, requested_key_id)?;
         Ok(open_dek(
             &self.secret,
@@ -201,7 +196,7 @@ impl UnsealProvider for FakeHsmUnsealProvider {
         sealed: &SealedDek,
         info: &[u8],
         aad: &[u8],
-    ) -> Result<[u8; DEK_LEN], UnsealProviderError> {
+    ) -> Result<Dek, UnsealProviderError> {
         if !self.available {
             return Err(UnsealProviderError::Unavailable {
                 reason: "fake HSM offline".into(),
@@ -252,7 +247,7 @@ pub fn seal_and_unwrap_via_provider<R: CryptoRng, P: UnsealProvider>(
     info: &[u8],
     aad: &[u8],
     dek: &[u8; DEK_LEN],
-) -> Result<[u8; DEK_LEN], UnsealProviderError> {
+) -> Result<Dek, UnsealProviderError> {
     let sealed = seal_dek(rng, &provider.cluster_public(), info, aad, dek)?;
     provider.unwrap_dek(&provider.descriptor().key_id, &sealed, info, aad)
 }

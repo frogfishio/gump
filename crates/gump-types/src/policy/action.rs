@@ -88,9 +88,7 @@ impl Action {
             Self::PublicationUse {
                 provider: "kismet".into(),
             },
-            Self::ConnectorUse {
-                name: "s3".into(),
-            },
+            Self::ConnectorUse { name: "s3".into() },
             Self::PolicyRead,
             Self::PolicyManage,
             Self::AuditRead,

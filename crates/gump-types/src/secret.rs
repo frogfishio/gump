@@ -1,4 +1,7 @@
 //! Secret-bearing values with fail-closed Debug/Display.
+//!
+//! Intentionally **not** `Clone`: cloning secret material widens the blast radius
+//! (SECURITY.md §8). Prefer borrowing via [`Secret::expose`].
 
 use core::fmt;
 use zeroize::Zeroize;
@@ -6,7 +9,7 @@ use zeroize::Zeroize;
 /// Wrapper that never prints plaintext in `Debug` or `Display`.
 ///
 /// Exit evidence for W02: formatting a `Secret` must not leak the inner value.
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Eq, PartialEq)]
 pub struct Secret<T: Zeroize>(T);
 
 impl<T: Zeroize> Secret<T> {

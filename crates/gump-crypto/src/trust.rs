@@ -75,10 +75,7 @@ impl std::fmt::Display for TrustError {
             Self::CapabilityDenied {
                 fingerprint,
                 capability,
-            } => write!(
-                f,
-                "signer {fingerprint} denied for capability {capability}"
-            ),
+            } => write!(f, "signer {fingerprint} denied for capability {capability}"),
             Self::AlreadyEnrolled { fingerprint } => {
                 write!(f, "signer already enrolled: {fingerprint}")
             }
@@ -143,12 +140,12 @@ impl SignerTrustPolicy {
 
     /// Revoke by fingerprint. Prevents new declarations/reintroduction; does not rewrite Capsules.
     pub fn revoke(&mut self, fingerprint: &str) -> Result<(), TrustError> {
-        let rec = self
-            .by_fingerprint
-            .get_mut(fingerprint)
-            .ok_or_else(|| TrustError::NotEnrolled {
-                fingerprint: fingerprint.to_string(),
-            })?;
+        let rec =
+            self.by_fingerprint
+                .get_mut(fingerprint)
+                .ok_or_else(|| TrustError::NotEnrolled {
+                    fingerprint: fingerprint.to_string(),
+                })?;
         rec.revoked = true;
         self.bump();
         Ok(())

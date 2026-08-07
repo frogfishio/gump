@@ -3,9 +3,9 @@
 //! Authority: DELIVERY S04, SECURITY.md §6, DECISIONS D004–D005.
 
 use gump_crypto::{
-    seal_and_unwrap_via_provider, seal_dek, FakeHsmUnsealProvider, RecoverySecret,
-    SoftwareUnsealProvider, UnsealProvider, UnsealProviderError, CLUSTER_UNSEAL_INFO,
-    HPKE_SUITE_ID,
+    CLUSTER_UNSEAL_INFO, FakeHsmUnsealProvider, HPKE_SUITE_ID, RecoverySecret,
+    SoftwareUnsealProvider, UnsealProvider, UnsealProviderError, seal_and_unwrap_via_provider,
+    seal_dek,
 };
 use rand_core::{TryCryptoRng, TryRng};
 
@@ -58,15 +58,10 @@ fn fake_hsm_seal_unwrap_roundtrip() {
     let mut rng = SeedRng::new(1);
     let provider = FakeHsmUnsealProvider::generate(&mut rng, "hsm-key-alpha");
     let dek = [0x11u8; 32];
-    let opened = seal_and_unwrap_via_provider(
-        &mut rng,
-        &provider,
-        CLUSTER_UNSEAL_INFO,
-        b"aad-s04",
-        &dek,
-    )
-    .unwrap();
-    assert_eq!(opened, dek);
+    let opened =
+        seal_and_unwrap_via_provider(&mut rng, &provider, CLUSTER_UNSEAL_INFO, b"aad-s04", &dek)
+            .unwrap();
+    assert_eq!(opened.expose(), &dek);
 }
 
 #[test]
@@ -148,15 +143,10 @@ fn software_provider_same_trait_contract() {
         SoftwareUnsealProvider::from_recovery_secret(&secret, &cluster_id(), "soft-1").unwrap();
     assert_eq!(provider.descriptor().provider_type, "software");
     let dek = [0x44u8; 32];
-    let opened = seal_and_unwrap_via_provider(
-        &mut rng,
-        &provider,
-        CLUSTER_UNSEAL_INFO,
-        b"aad",
-        &dek,
-    )
-    .unwrap();
-    assert_eq!(opened, dek);
+    let opened =
+        seal_and_unwrap_via_provider(&mut rng, &provider, CLUSTER_UNSEAL_INFO, b"aad", &dek)
+            .unwrap();
+    assert_eq!(opened.expose(), &dek);
 }
 
 #[test]
@@ -175,12 +165,16 @@ fn provider_does_not_change_capsule_cipher_suite() {
     let _ = (fake.cluster_public().0, soft.cluster_public().0);
     let dek = [0x55u8; 32];
     assert_eq!(
-        seal_and_unwrap_via_provider(&mut rng, &fake, CLUSTER_UNSEAL_INFO, b"", &dek).unwrap(),
-        dek
+        seal_and_unwrap_via_provider(&mut rng, &fake, CLUSTER_UNSEAL_INFO, b"", &dek)
+            .unwrap()
+            .expose(),
+        &dek
     );
     assert_eq!(
-        seal_and_unwrap_via_provider(&mut rng, &soft, CLUSTER_UNSEAL_INFO, b"", &dek).unwrap(),
-        dek
+        seal_and_unwrap_via_provider(&mut rng, &soft, CLUSTER_UNSEAL_INFO, b"", &dek)
+            .unwrap()
+            .expose(),
+        &dek
     );
 }
 

@@ -3,8 +3,8 @@
 //! Authority: docs/v1/DELIVERY.md W05, docs/v1/CONFORMANCE.md §1 (`simulation`)
 //! and §4 (simulator controls).
 
-use gump_types::sim::{LinkFaults, NetworkError, PeerId, ProcessStatus, SimWorld};
 use gump_types::DurationMillis;
+use gump_types::sim::{LinkFaults, NetworkError, PeerId, ProcessStatus, SimWorld};
 
 fn transcript(world: &SimWorld<&'static str, String>) -> Vec<String> {
     let mut lines = Vec::new();
@@ -136,8 +136,14 @@ fn crash_blocks_io_restart_clears_memory() {
     assert_eq!(world.peer(a).unwrap().status(), ProcessStatus::Crashed);
     // In-flight involving a is dropped on crash.
     assert_eq!(world.network().inflight_len(), 0);
-    assert_eq!(world.send(a, b, "nope").unwrap_err(), NetworkError::PeerDown);
-    assert_eq!(world.send(b, a, "nope").unwrap_err(), NetworkError::PeerDown);
+    assert_eq!(
+        world.send(a, b, "nope").unwrap_err(),
+        NetworkError::PeerDown
+    );
+    assert_eq!(
+        world.send(b, a, "nope").unwrap_err(),
+        NetworkError::PeerDown
+    );
 
     // Survivor retains its own RAM.
     assert_eq!(world.peer(b).unwrap().memory(), "follower-state");

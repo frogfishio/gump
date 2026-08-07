@@ -7,7 +7,7 @@ use hpke::{Deserializable, Kem, OpModeR, OpModeS, Serializable};
 use rand_core::CryptoRng;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-use crate::aead::DEK_LEN;
+use crate::aead::{DEK_LEN, Dek};
 use crate::error::{CryptoError, CryptoErrorKind};
 
 pub const HPKE_SUITE_ID: &str = "HPKE-X25519-HKDFSHA256-CHACHA20POLY1305";
@@ -80,14 +80,14 @@ pub fn seal_dek<R: CryptoRng>(
     })
 }
 
-/// Open a sealed DEK.
+/// Open a sealed DEK into a zeroizing container (never bare `[u8; 32]`).
 pub fn open_dek(
     recipient_secret: &ClusterX25519Secret,
     encapsulated_key: &[u8; 32],
     info: &[u8],
     aad: &[u8],
     wrapped_dek: &[u8],
-) -> Result<[u8; DEK_LEN], CryptoError> {
+) -> Result<Dek, CryptoError> {
     let sk = <KemSuite as Kem>::PrivateKey::from_bytes(&recipient_secret.0).map_err(|e| {
         CryptoError::new(
             CryptoErrorKind::Hpke,
@@ -95,12 +95,9 @@ pub fn open_dek(
         )
     })?;
     let enc = <KemSuite as Kem>::EncappedKey::from_bytes(encapsulated_key).map_err(|e| {
-        CryptoError::new(
-            CryptoErrorKind::Hpke,
-            format!("invalid encapped key: {e}"),
-        )
+        CryptoError::new(CryptoErrorKind::Hpke, format!("invalid encapped key: {e}"))
     })?;
-    let plaintext = hpke::single_shot_open::<AeadSuite, Kdf, KemSuite>(
+    let mut plaintext = hpke::single_shot_open::<AeadSuite, Kdf, KemSuite>(
         &OpModeR::Base,
         &sk,
         &enc,
@@ -110,6 +107,7 @@ pub fn open_dek(
     )
     .map_err(|e| CryptoError::new(CryptoErrorKind::Hpke, format!("open: {e}")))?;
     if plaintext.len() != DEK_LEN {
+        plaintext.zeroize();
         return Err(CryptoError::new(
             CryptoErrorKind::Length,
             "HPKE plaintext is not a 32-byte DEK",
@@ -117,5 +115,6 @@ pub fn open_dek(
     }
     let mut dek = [0u8; DEK_LEN];
     dek.copy_from_slice(&plaintext);
-    Ok(dek)
+    plaintext.zeroize();
+    Ok(Dek::new(dek))
 }

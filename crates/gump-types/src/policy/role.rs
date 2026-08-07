@@ -53,16 +53,10 @@ impl Role {
             Self::Agent => vec![
                 Action::SecretResolve,
                 Action::SecretDeliver,
-                Action::ConnectorUse {
-                    name: "*".into(),
-                },
+                Action::ConnectorUse { name: "*".into() },
                 Action::HiccupUse,
-                Action::HiccupPublish {
-                    topic: "*".into(),
-                },
-                Action::HiccupListen {
-                    topic: "*".into(),
-                },
+                Action::HiccupPublish { topic: "*".into() },
+                Action::HiccupListen { topic: "*".into() },
                 Action::CapsuleInspectProtectedMetadata,
             ],
         }

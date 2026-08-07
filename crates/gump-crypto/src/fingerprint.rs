@@ -26,7 +26,10 @@ pub fn format_blake3_hex(digest: &[u8; 32]) -> String {
 /// Parse `blake3:<64 lowercase hex>` into raw bytes.
 pub fn parse_blake3_hex(s: &str) -> Result<[u8; 32], CryptoError> {
     let rest = s.strip_prefix("blake3:").ok_or_else(|| {
-        CryptoError::new(CryptoErrorKind::Encoding, "fingerprint must start with blake3:")
+        CryptoError::new(
+            CryptoErrorKind::Encoding,
+            "fingerprint must start with blake3:",
+        )
     })?;
     if rest.len() != 64 || !rest.bytes().all(|c| c.is_ascii_hexdigit()) {
         return Err(CryptoError::new(
@@ -36,9 +39,8 @@ pub fn parse_blake3_hex(s: &str) -> Result<[u8; 32], CryptoError> {
     }
     let mut out = [0u8; 32];
     for i in 0..32 {
-        out[i] = u8::from_str_radix(&rest[i * 2..i * 2 + 2], 16).map_err(|_| {
-            CryptoError::new(CryptoErrorKind::Encoding, "invalid fingerprint hex")
-        })?;
+        out[i] = u8::from_str_radix(&rest[i * 2..i * 2 + 2], 16)
+            .map_err(|_| CryptoError::new(CryptoErrorKind::Encoding, "invalid fingerprint hex"))?;
     }
     Ok(out)
 }

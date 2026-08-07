@@ -10,3 +10,4 @@ description = "Shared bounded types, clock, IDs, simulation (W02/W05), and polic
 [dependencies]
 uuid = { version = "1.16", features = ["v7", "std"] }
 zeroize = { version = "1.8", features = ["std", "derive"] }
+libc = "0.2"

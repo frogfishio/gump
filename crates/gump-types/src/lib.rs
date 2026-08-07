@@ -6,7 +6,9 @@
 //! The [`sim`] module is the W05 deterministic simulation harness. The [`policy`]
 //! module is the S01 deny-by-default action matrix (SECURITY.md §3).
 
-#![forbid(unsafe_code)]
+// `deny` (not `forbid`) so `process::sys` can isolate libc calls the way
+// `gump-server::peer::cred` does — SECURITY.md §8 memory handling.
+#![deny(unsafe_code)]
 
 mod bounded;
 mod cancel;
@@ -14,6 +16,7 @@ mod clock;
 mod error;
 mod id;
 pub mod policy;
+pub mod process;
 mod secret;
 pub mod sim;
 
@@ -25,7 +28,6 @@ pub use id::{
     AttemptId, CapsuleId, ClusterId, ExecutionId, GumpId, IdError, IncarnationId, LeaseId,
     MessageId, NodeId, OperationId, PlacementGroupId, UnitId, WorkloadId,
 };
-pub use policy::{
-    Action, Decision, DecisionEffect, PolicyEngine, PolicyError, PrincipalId, Role,
-};
+pub use policy::{Action, Decision, DecisionEffect, PolicyEngine, PolicyError, PrincipalId, Role};
+pub use process::{ProcessHardenReport, prepare_for_custody};
 pub use secret::Secret;

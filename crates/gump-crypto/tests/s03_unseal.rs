@@ -3,9 +3,9 @@
 //! Authority: docs/v1/SECURITY.md §6, DECISIONS D005, DELIVERY S03.
 
 use gump_crypto::{
-    combine_recovery_shares, derive_cluster_unseal_keypair, generate_recovery_secret, open_dek,
-    seal_dek, split_recovery_secret, CryptoErrorKind, OperatorShare, RecoverySecret,
-    CLUSTER_UNSEAL_INFO, DEFAULT_SHARE_COUNT, DEFAULT_THRESHOLD, RECOVERY_SECRET_LEN,
+    CLUSTER_UNSEAL_INFO, CryptoErrorKind, DEFAULT_SHARE_COUNT, DEFAULT_THRESHOLD, OperatorShare,
+    RECOVERY_SECRET_LEN, RecoverySecret, combine_recovery_shares, derive_cluster_unseal_keypair,
+    generate_recovery_secret, open_dek, seal_dek, split_recovery_secret,
 };
 use rand_core::{TryCryptoRng, TryRng};
 
@@ -74,20 +74,15 @@ fn one_of_one_roundtrip_and_unseal_derive() {
         &sealed.wrapped_dek,
     )
     .unwrap();
-    assert_eq!(opened, dek);
+    assert_eq!(opened.expose(), &dek);
 }
 
 #[test]
 fn three_of_five_any_threshold_subset_recovers() {
     let mut rng = SeedRng::new(3);
     let secret = generate_recovery_secret(&mut rng);
-    let shares = split_recovery_secret(
-        &secret,
-        DEFAULT_SHARE_COUNT,
-        DEFAULT_THRESHOLD,
-        &mut rng,
-    )
-    .unwrap();
+    let shares =
+        split_recovery_secret(&secret, DEFAULT_SHARE_COUNT, DEFAULT_THRESHOLD, &mut rng).unwrap();
     assert_eq!(shares.len(), DEFAULT_SHARE_COUNT as usize);
 
     // Every combination of 3 distinct shares must recover.

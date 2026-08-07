@@ -60,7 +60,7 @@ impl<M, S: Default> SimWorld<M, S> {
 
     pub fn add_peer(&mut self, id: PeerId) {
         self.net.add_peer(id);
-        self.peers.entry(id).or_insert_with(SimProcess::new);
+        self.peers.entry(id).or_default();
     }
 
     pub fn add_peer_with(&mut self, id: PeerId, memory: S) {
@@ -140,7 +140,9 @@ impl<M, S: Default> SimWorld<M, S> {
         self.net.set_faults(forced);
         let now = self.clock.now();
         // Temporarily schedule by advancing deliver_at via a one-shot helper.
-        let result = self.net.send_with_delay(from, to, payload, now, delay_ms, &mut self.rng);
+        let result = self
+            .net
+            .send_with_delay(from, to, payload, now, delay_ms, &mut self.rng);
         self.net.set_faults(saved);
         result
     }

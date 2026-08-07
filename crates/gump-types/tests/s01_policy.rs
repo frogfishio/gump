@@ -55,14 +55,16 @@ fn deployer_and_reader_role_matrix() {
     engine.bind_role(reader.clone(), Role::Reader);
 
     assert!(engine.authorize(&dep, &Action::WorkloadDeploy).allowed());
-    assert!(engine
-        .authorize(
-            &dep,
-            &Action::PublicationUse {
-                provider: "kismet".into()
-            }
-        )
-        .allowed());
+    assert!(
+        engine
+            .authorize(
+                &dep,
+                &Action::PublicationUse {
+                    provider: "kismet".into()
+                }
+            )
+            .allowed()
+    );
     assert!(!engine.authorize(&dep, &Action::ClusterUnseal).allowed());
 
     assert!(engine.authorize(&reader, &Action::WorkloadRead).allowed());
@@ -75,22 +77,21 @@ fn agent_wildcard_scopes_connector_and_hiccup_topics() {
     let mut engine = PolicyEngine::new();
     let agent = principal("node:agent-1");
     engine.bind_role(agent.clone(), Role::Agent);
-    assert!(engine
-        .authorize(
-            &agent,
-            &Action::ConnectorUse {
-                name: "s3".into()
-            }
-        )
-        .allowed());
-    assert!(engine
-        .authorize(
-            &agent,
-            &Action::HiccupPublish {
-                topic: "peers".into()
-            }
-        )
-        .allowed());
+    assert!(
+        engine
+            .authorize(&agent, &Action::ConnectorUse { name: "s3".into() })
+            .allowed()
+    );
+    assert!(
+        engine
+            .authorize(
+                &agent,
+                &Action::HiccupPublish {
+                    topic: "peers".into()
+                }
+            )
+            .allowed()
+    );
     assert!(!engine.authorize(&agent, &Action::WorkloadDeploy).allowed());
 }
 
@@ -98,28 +99,17 @@ fn agent_wildcard_scopes_connector_and_hiccup_topics() {
 fn parameterized_grant_does_not_cross_scope() {
     let mut engine = PolicyEngine::new();
     let p = principal("oidc:alice");
-    engine.grant(
-        p.clone(),
-        Action::HiccupPublish {
-            topic: "a".into(),
-        },
+    engine.grant(p.clone(), Action::HiccupPublish { topic: "a".into() });
+    assert!(
+        engine
+            .authorize(&p, &Action::HiccupPublish { topic: "a".into() })
+            .allowed()
     );
-    assert!(engine
-        .authorize(
-            &p,
-            &Action::HiccupPublish {
-                topic: "a".into()
-            }
-        )
-        .allowed());
-    assert!(!engine
-        .authorize(
-            &p,
-            &Action::HiccupPublish {
-                topic: "b".into()
-            }
-        )
-        .allowed());
+    assert!(
+        !engine
+            .authorize(&p, &Action::HiccupPublish { topic: "b".into() })
+            .allowed()
+    );
 }
 
 #[test]
@@ -148,10 +138,7 @@ fn action_as_str_matches_security_contract_names() {
     assert_eq!(Action::WorkloadDeploy.as_str(), "workload.deploy");
     assert_eq!(Action::PolicyManage.as_str(), "policy.manage");
     assert_eq!(
-        Action::HiccupPublish {
-            topic: "t".into()
-        }
-        .as_str(),
+        Action::HiccupPublish { topic: "t".into() }.as_str(),
         "hiccup.publish:t"
     );
     assert_eq!(

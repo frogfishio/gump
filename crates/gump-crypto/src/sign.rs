@@ -53,7 +53,6 @@ pub fn verify_transcript(
         )
     })?;
     let sig = Signature::from_bytes(signature);
-    vk.verify(transcript, &sig).map_err(|_| {
-        CryptoError::new(CryptoErrorKind::Signature, "signature verification failed")
-    })
+    vk.verify(transcript, &sig)
+        .map_err(|_| CryptoError::new(CryptoErrorKind::Signature, "signature verification failed"))
 }

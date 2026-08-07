@@ -9,8 +9,8 @@ use core::fmt;
 use hkdf::Hkdf;
 use hpke::kem::X25519HkdfSha256;
 use hpke::{Deserializable, Kem, Serializable};
-use rand_chacha::rand_core::SeedableRng;
 use rand_chacha::ChaCha20Rng;
+use rand_chacha::rand_core::SeedableRng;
 use rand_core::CryptoRng;
 use sha2::Sha256;
 use sharks::{Share as SharkShare, Sharks};
@@ -62,14 +62,14 @@ pub struct OperatorShare {
 impl OperatorShare {
     pub fn from_bytes(raw: Vec<u8>) -> Result<Self, CryptoError> {
         if raw.is_empty() {
-            return Err(CryptoError::new(
-                CryptoErrorKind::Length,
-                "empty share",
-            ));
+            return Err(CryptoError::new(CryptoErrorKind::Length, "empty share"));
         }
         // Validate encoding early.
         let _ = SharkShare::try_from(raw.as_slice()).map_err(|e| {
-            CryptoError::new(CryptoErrorKind::Share, format!("invalid share encoding: {e}"))
+            CryptoError::new(
+                CryptoErrorKind::Share,
+                format!("invalid share encoding: {e}"),
+            )
         })?;
         Ok(Self { raw })
     }
@@ -148,10 +148,7 @@ pub fn combine_recovery_shares(
     if shares.len() < threshold as usize {
         return Err(CryptoError::new(
             CryptoErrorKind::Share,
-            format!(
-                "need at least {threshold} shares, got {}",
-                shares.len()
-            ),
+            format!("need at least {threshold} shares, got {}", shares.len()),
         ));
     }
 
@@ -166,9 +163,9 @@ pub fn combine_recovery_shares(
     let parsed = parsed?;
 
     let sharks = Sharks(threshold);
-    let secret = sharks.recover(&parsed).map_err(|e| {
-        CryptoError::new(CryptoErrorKind::Share, format!("recover failed: {e}"))
-    })?;
+    let secret = sharks
+        .recover(&parsed)
+        .map_err(|e| CryptoError::new(CryptoErrorKind::Share, format!("recover failed: {e}")))?;
     if secret.len() != RECOVERY_SECRET_LEN {
         return Err(CryptoError::new(
             CryptoErrorKind::Length,
@@ -198,9 +195,8 @@ pub fn derive_cluster_unseal_keypair(
 ) -> Result<(ClusterX25519Secret, ClusterX25519Public), CryptoError> {
     let hk = Hkdf::<Sha256>::new(Some(cluster_id.as_slice()), secret.as_bytes());
     let mut okm = [0u8; 32];
-    hk.expand(CLUSTER_UNSEAL_INFO, &mut okm).map_err(|_| {
-        CryptoError::new(CryptoErrorKind::Unseal, "HKDF-SHA256 expand failed")
-    })?;
+    hk.expand(CLUSTER_UNSEAL_INFO, &mut okm)
+        .map_err(|_| CryptoError::new(CryptoErrorKind::Unseal, "HKDF-SHA256 expand failed"))?;
 
     let sk = <KemSuite as Kem>::PrivateKey::from_bytes(&okm).map_err(|e| {
         CryptoError::new(

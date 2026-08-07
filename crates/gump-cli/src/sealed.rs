@@ -4,11 +4,12 @@ use std::path::PathBuf;
 
 use gump_capsule::{GumpCapsuleHeader, SegmentType, verify_release_signature, write_gump_capsule};
 use gump_crypto::{
-    DEK_LEN, NONCE_LEN, SegmentDigestRef, build_protected_aad, build_release_signing_transcript,
-    generate_signing_key, generate_x25519_keypair, hpke_info, open_dek, open_protected, seal_dek,
-    seal_protected, sign_transcript, signer_fingerprint, verifying_key,
+    DEK_LEN, Dek, NONCE_LEN, SegmentDigestRef, build_protected_aad,
+    build_release_signing_transcript, generate_signing_key, generate_x25519_keypair, hpke_info,
+    open_dek, open_protected, seal_dek, seal_protected, sign_transcript, signer_fingerprint,
+    verifying_key,
 };
-use gump_types::{CapsuleId, ClusterId};
+use gump_types::{CapsuleId, ClusterId, prepare_for_custody};
 use rand_core::{CryptoRng, TryCryptoRng, TryRng};
 
 use crate::error::{CliError, CliErrorKind};
@@ -65,6 +66,9 @@ pub fn build_sealed_capsule<R: CryptoRng>(
     cluster_id: ClusterId,
     rng: &mut R,
 ) -> Result<BuiltSealedCapsule, CliError> {
+    // SECURITY §8: harden before any DEK / protected plaintext enters memory.
+    let _harden = prepare_for_custody();
+
     let signing = generate_signing_key(rng);
     let verifying = verifying_key(&signing);
     let fp = signer_fingerprint(&signing);
@@ -84,17 +88,22 @@ pub fn build_sealed_capsule<R: CryptoRng>(
         &pub_digest,
         &arch_digest,
     );
-    let mut dek = [0u8; DEK_LEN];
+    let mut dek_bytes = [0u8; DEK_LEN];
     let mut nonce = [0u8; NONCE_LEN];
-    let _ = rng.try_fill_bytes(&mut dek);
+    let _ = rng.try_fill_bytes(&mut dek_bytes);
     let _ = rng.try_fill_bytes(&mut nonce);
+    let dek = Dek::new(dek_bytes);
+    // Best-effort scrub of the fill buffer (plain array Drop does not zeroize).
+    for b in &mut dek_bytes {
+        *b = 0;
+    }
     let plaintext = br#"{"schema":"gump.protected/1","local":true}"#;
-    let protected = seal_protected(&dek, &nonce, &aad, plaintext)
+    let protected = seal_protected(dek.expose(), &nonce, &aad, plaintext)
         .map_err(|e| CliError::new(CliErrorKind::Crypto, e.to_string()))?;
 
     let (cluster_sk, cluster_pk) = generate_x25519_keypair(rng);
     let info = hpke_info(capsule_id.as_bytes(), cluster_id.as_bytes());
-    let sealed_dek = seal_dek(rng, &cluster_pk, &info, &aad, &dek)
+    let sealed_dek = seal_dek(rng, &cluster_pk, &info, &aad, dek.expose())
         .map_err(|e| CliError::new(CliErrorKind::Crypto, e.to_string()))?;
 
     // Prove local unseal before trusting the archive for execution.
@@ -106,9 +115,9 @@ pub fn build_sealed_capsule<R: CryptoRng>(
         &sealed_dek.wrapped_dek,
     )
     .map_err(|e| CliError::new(CliErrorKind::Crypto, e.to_string()))?;
-    let opened_pt = open_protected(&opened_dek, &nonce, &aad, &protected)
+    let opened_pt = open_protected(opened_dek.expose(), &nonce, &aad, &protected)
         .map_err(|e| CliError::new(CliErrorKind::Crypto, e.to_string()))?;
-    if opened_pt != plaintext {
+    if opened_pt.expose().as_slice() != plaintext {
         return Err(CliError::new(
             CliErrorKind::Crypto,
             "protected plaintext mismatch after local unseal",

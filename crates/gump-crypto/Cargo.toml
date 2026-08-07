@@ -8,6 +8,7 @@ publish = false
 description = "Capsule crypto (F05), signer trust (S02), software unseal (S03), HSM/KMS provider trait (S04)."
 
 [dependencies]
+gump-types = { workspace = true }
 blake3 = { workspace = true }
 ed25519-dalek = { workspace = true }
 chacha20poly1305 = { workspace = true }

@@ -6,12 +6,13 @@ use std::fs;
 use std::path::PathBuf;
 
 use gump_crypto::{
-    build_protected_aad, build_release_signing_transcript, ed25519_fingerprint, generate_x25519_keypair,
-    hpke_info, open_dek, open_protected, seal_dek, seal_protected, sign_transcript, verifying_key,
-    verify_transcript, SegmentDigestRef, SigningKeyBytes, HPKE_SUITE_ID, SIGNING_SUITE,
+    HPKE_SUITE_ID, SIGNING_SUITE, SegmentDigestRef, SigningKeyBytes, build_protected_aad,
+    build_release_signing_transcript, ed25519_fingerprint, generate_x25519_keypair, hpke_info,
+    open_dek, open_protected, seal_dek, seal_protected, sign_transcript, verify_transcript,
+    verifying_key,
 };
 use rand_core::{TryCryptoRng, TryRng};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Deterministic RNG that replays a fixed byte stream (for HPKE KATs).
 struct ReplayRng {
@@ -128,8 +129,11 @@ fn compute_vectors(inputs: &Value) -> Value {
     let info = hpke_info(&capsule_id, &cluster_id);
     let sealed = seal_protected(&dek, &nonce, &aad, &plaintext).unwrap();
     assert_eq!(
-        open_protected(&dek, &nonce, &aad, &sealed).unwrap(),
-        plaintext
+        open_protected(&dek, &nonce, &aad, &sealed)
+            .unwrap()
+            .expose()
+            .as_slice(),
+        plaintext.as_slice()
     );
 
     let mut krng = ReplayRng::new(&CLUSTER_SEED);
@@ -144,8 +148,9 @@ fn compute_vectors(inputs: &Value) -> Value {
             &aad,
             &wrapped.wrapped_dek
         )
-        .unwrap(),
-        dek
+        .unwrap()
+        .expose(),
+        &dek
     );
 
     let signing = SigningKeyBytes(ed_seed);
@@ -219,7 +224,8 @@ fn known_answer_vectors_match_checked_in_file() {
     }))
     .unwrap();
     assert_eq!(
-        vectors, on_disk,
+        vectors,
+        on_disk,
         "F05 KAT drift vs {} (GUMP_WRITE_GOLDEN=1 to refresh)",
         path.display()
     );

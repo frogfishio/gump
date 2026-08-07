@@ -10,7 +10,11 @@ impl SimRng {
     pub fn new(seed: u64) -> Self {
         // Avoid the all-zero fixed point of xorshift.
         Self {
-            state: if seed == 0 { 0x9E37_79B9_7F4A_7C15 } else { seed },
+            state: if seed == 0 {
+                0x9E37_79B9_7F4A_7C15
+            } else {
+                seed
+            },
         }
     }
 
