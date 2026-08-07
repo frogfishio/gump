@@ -7,8 +7,8 @@ mod local;
 mod sealed;
 
 pub use error::{CliError, CliErrorKind};
-pub use local::{local_parity_plan, run_local, LocalParityPlan, LocalRunOptions, LocalRunReport};
+pub use local::{LocalParityPlan, LocalRunOptions, LocalRunReport, local_parity_plan, run_local};
 pub use sealed::{
-    build_sealed_capsule, run_sealed_test, run_verified_sealed, verify_sealed_capsule,
-    BuiltSealedCapsule, SealedTestOptions,
+    BuiltSealedCapsule, SealedTestOptions, build_sealed_capsule, run_sealed_test,
+    run_verified_sealed, verify_sealed_capsule,
 };

@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use gump_manifest::capture::{
-    apply_prepare_outputs, capture_workspace, CaptureErrorKind, CapturePlan,
+    CaptureErrorKind, CapturePlan, apply_prepare_outputs, capture_workspace, verify_captured_bytes,
 };
 use gump_manifest::{Package, PackageFormat, PrepareOutput};
 
@@ -94,8 +94,7 @@ fn denies_sensitive_files_unless_explicitly_allowed() {
 
     // Explicit allow still captures only matched includes.
     write(&root, "bin/.env", b"x");
-    let plan_allow =
-        CapturePlan::from_package(&package(&["bin/**"], &[], false, true)).unwrap();
+    let plan_allow = CapturePlan::from_package(&package(&["bin/**"], &[], false, true)).unwrap();
     let tree = capture_workspace(&root, &plan_allow).unwrap();
     assert!(tree.get("bin/.env").is_some());
     let _ = fs::remove_dir_all(root);
@@ -138,8 +137,8 @@ fn prepare_outputs_enter_virtual_tree() {
 
 #[test]
 fn source_changed_when_file_mutates_between_passes() {
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::thread;
     use std::time::Duration;
 
@@ -190,5 +189,61 @@ fn rejects_symlink_as_escape() {
         let err = capture_workspace(&root, &plan).unwrap_err();
         assert_eq!(err.kind(), CaptureErrorKind::Escape);
     }
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn retained_bytes_survive_symlink_swap_after_capture() {
+    // STL-05: after capture, replacing the path with a symlink must not change
+    // archived bytes (pack uses retained content, not a fresh follow-open).
+    let root = tmp_workspace("toctou-symlink");
+    write(&root, "bin/hello", b"trusted-payload");
+    let plan = CapturePlan::from_package(&package(&["bin/hello"], &[], false, false)).unwrap();
+    let tree = capture_workspace(&root, &plan).unwrap();
+    let entry = tree.get("bin/hello").unwrap().clone();
+    assert_eq!(entry.bytes, b"trusted-payload");
+    verify_captured_bytes(&entry).unwrap();
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        fs::remove_file(root.join("bin/hello")).unwrap();
+        symlink("/etc/passwd", root.join("bin/hello")).unwrap();
+        // Workspace path now points at a host file if followed.
+        let followed = fs::read(root.join("bin/hello")).unwrap();
+        assert_ne!(followed, b"trusted-payload");
+        // Retained capture bytes stay trusted.
+        assert_eq!(entry.bytes, b"trusted-payload");
+        verify_captured_bytes(&entry).unwrap();
+        // No-follow open of the swapped path must fail closed.
+        let err = capture_workspace(&root, &plan).unwrap_err();
+        assert_eq!(err.kind(), CaptureErrorKind::Escape);
+    }
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn retained_bytes_survive_mutate_after_capture() {
+    let root = tmp_workspace("toctou-mutate");
+    write(&root, "bin/hello", b"v1");
+    let plan = CapturePlan::from_package(&package(&["bin/hello"], &[], false, false)).unwrap();
+    let tree = capture_workspace(&root, &plan).unwrap();
+    let entry = tree.get("bin/hello").unwrap().clone();
+    write(&root, "bin/hello", b"v2-mutated-after-capture");
+    assert_eq!(entry.bytes, b"v1");
+    verify_captured_bytes(&entry).unwrap();
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn verify_captured_bytes_detects_tampered_buffer() {
+    let root = tmp_workspace("tamper");
+    write(&root, "bin/hello", b"ok");
+    let plan = CapturePlan::from_package(&package(&["bin/hello"], &[], false, false)).unwrap();
+    let tree = capture_workspace(&root, &plan).unwrap();
+    let mut entry = tree.get("bin/hello").unwrap().clone();
+    entry.bytes.push(b'!');
+    let err = verify_captured_bytes(&entry).unwrap_err();
+    assert_eq!(err.kind(), CaptureErrorKind::SourceChanged);
     let _ = fs::remove_dir_all(root);
 }

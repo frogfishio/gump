@@ -5,16 +5,16 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use gump_capsule::archive::{
-    materialize_application_archive, pack_archive, ArchiveEntry, ExtractLimits,
+    ArchiveEntry, ExtractLimits, materialize_application_archive, pack_archive,
 };
 use gump_driver::{
     AttemptContext, Driver, DriverKind, HostProbe, IoEndpoints, NativeDriver, ReleaseRoot,
     ResourceGrant, RuntimeSpec, ScriptDriver, SecretPlan, StartFence,
 };
 use gump_manifest::capture::{
-    apply_prepare_outputs, capture_workspace, CapturePlan, VirtualTree,
+    CapturePlan, VirtualTree, apply_prepare_outputs, capture_workspace, verify_captured_bytes,
 };
-use gump_manifest::{parse_manifest_str, Driver as ManifestDriver, Manifest};
+use gump_manifest::{Driver as ManifestDriver, Manifest, parse_manifest_str};
 use gump_types::{AttemptId, CapsuleId};
 
 use crate::error::{CliError, CliErrorKind};
@@ -66,17 +66,14 @@ pub fn local_parity_plan(
             format!("read manifest {}: {e}", manifest_abs.display()),
         )
     })?;
-    let manifest = parse_manifest_str(&text).map_err(|e| {
-        CliError::new(CliErrorKind::Manifest, e.to_string())
-    })?;
+    let manifest = parse_manifest_str(&text)
+        .map_err(|e| CliError::new(CliErrorKind::Manifest, e.to_string()))?;
 
     let package_root = workspace.join(&manifest.package.root);
-    let plan = CapturePlan::from_package(&manifest.package).map_err(|e| {
-        CliError::new(CliErrorKind::Capture, e.to_string())
-    })?;
-    let mut tree = capture_workspace(&package_root, &plan).map_err(|e| {
-        CliError::new(CliErrorKind::Capture, e.to_string())
-    })?;
+    let plan = CapturePlan::from_package(&manifest.package)
+        .map_err(|e| CliError::new(CliErrorKind::Capture, e.to_string()))?;
+    let mut tree = capture_workspace(&package_root, &plan)
+        .map_err(|e| CliError::new(CliErrorKind::Capture, e.to_string()))?;
     if let Some(prepare) = &manifest.prepare {
         // F07: prepare outputs must already be staged by the caller/tooling;
         // we only merge declared outputs if a staging dir exists.
@@ -94,26 +91,19 @@ pub fn local_parity_plan(
     }
 
     let entries = virtual_tree_to_archive_entries(&tree)?;
-    let archive = pack_archive(&entries).map_err(|e| {
-        CliError::new(CliErrorKind::Archive, e.to_string())
-    })?;
+    let archive =
+        pack_archive(&entries).map_err(|e| CliError::new(CliErrorKind::Archive, e.to_string()))?;
 
     let (driver_kind, interpreter) = match manifest.runtime.driver {
         ManifestDriver::Native => (DriverKind::Native, None),
         ManifestDriver::Script => (
             DriverKind::Script,
-            Some(
-                manifest
-                    .runtime
-                    .interpreter
-                    .clone()
-                    .ok_or_else(|| {
-                        CliError::new(
-                            CliErrorKind::Policy,
-                            "script driver requires runtime.interpreter",
-                        )
-                    })?,
-            ),
+            Some(manifest.runtime.interpreter.clone().ok_or_else(|| {
+                CliError::new(
+                    CliErrorKind::Policy,
+                    "script driver requires runtime.interpreter",
+                )
+            })?),
         ),
         ManifestDriver::Oci => {
             return Err(CliError::new(
@@ -140,10 +130,7 @@ pub fn local_parity_plan(
     });
 
     Ok(LocalParityPlan {
-        telemetry_filter: manifest
-            .telemetry
-            .as_ref()
-            .and_then(|t| t.filter.clone()),
+        telemetry_filter: manifest.telemetry.as_ref().and_then(|t| t.filter.clone()),
         manifest,
         archive,
         command_vector,
@@ -155,7 +142,13 @@ pub fn local_parity_plan(
 
 pub fn run_local(opts: LocalRunOptions) -> Result<LocalRunReport, CliError> {
     let plan = local_parity_plan(&opts.workspace, &opts.manifest_path)?;
-    execute_plan(&opts.workspace, opts.state_root, "run", &plan, &plan.archive)
+    execute_plan(
+        &opts.workspace,
+        opts.state_root,
+        "run",
+        &plan,
+        &plan.archive,
+    )
 }
 
 pub(crate) fn execute_plan(
@@ -167,21 +160,16 @@ pub(crate) fn execute_plan(
 ) -> Result<LocalRunReport, CliError> {
     let state = state_root.unwrap_or_else(|| workspace.join(".gump").join("state"));
     let capsule_id = CapsuleId::new();
-    let mat = materialize_application_archive(
-        &state,
-        capsule_id,
-        archive,
-        &ExtractLimits::default(),
-    )
-    .map_err(|e| CliError::new(CliErrorKind::Archive, e.to_string()))?;
+    let mat =
+        materialize_application_archive(&state, capsule_id, archive, &ExtractLimits::default())
+            .map_err(|e| CliError::new(CliErrorKind::Archive, e.to_string()))?;
 
     let release = ReleaseRoot::new(&mat.root);
     let attempt_root = state
         .join("attempts")
         .join(AttemptId::new().to_hyphenated());
-    fs::create_dir_all(&attempt_root).map_err(|e| {
-        CliError::new(CliErrorKind::Io, e.to_string())
-    })?;
+    fs::create_dir_all(&attempt_root)
+        .map_err(|e| CliError::new(CliErrorKind::Io, e.to_string()))?;
 
     let runtime = RuntimeSpec {
         kind: plan.driver_kind,
@@ -195,12 +183,8 @@ pub(crate) fn execute_plan(
     };
 
     let exit_code = match plan.driver_kind {
-        DriverKind::Native => {
-            drive(&NativeDriver::new(), &release, &runtime, &ctx)?
-        }
-        DriverKind::Script => {
-            drive(&ScriptDriver::new(), &release, &runtime, &ctx)?
-        }
+        DriverKind::Native => drive(&NativeDriver::new(), &release, &runtime, &ctx)?,
+        DriverKind::Script => drive(&ScriptDriver::new(), &release, &runtime, &ctx)?,
     };
 
     let workdir = match &plan.workdir_rel {
@@ -293,36 +277,20 @@ fn virtual_tree_to_archive_entries(tree: &VirtualTree) -> Result<Vec<ArchiveEntr
             parent = p;
         }
         let entry = tree.get(rel).expect("path from iterator");
-        let bytes = fs::read(&entry.source_path).map_err(|e| {
-            CliError::new(
-                CliErrorKind::Io,
-                format!("read {}: {e}", entry.source_path.display()),
-            )
-        })?;
-        let executable = {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                fs::metadata(&entry.source_path)
-                    .map(|m| m.permissions().mode() & 0o111 != 0)
-                    .unwrap_or(false)
-            }
-            #[cfg(not(unix))]
-            {
-                false
-            }
-        };
+        // STL-05: pack retained capture bytes only — never re-open source_path.
+        verify_captured_bytes(entry)
+            .map_err(|e| CliError::new(CliErrorKind::Capture, e.to_string()))?;
+        let bytes = entry.bytes.clone();
+        let executable = entry.executable;
         entries.push(
-            ArchiveEntry::file(rel, bytes, executable).map_err(|e| {
-                CliError::new(CliErrorKind::Archive, e.to_string())
-            })?,
+            ArchiveEntry::file(rel, bytes, executable)
+                .map_err(|e| CliError::new(CliErrorKind::Archive, e.to_string()))?,
         );
     }
     for d in dirs {
         entries.push(
-            ArchiveEntry::directory(d).map_err(|e| {
-                CliError::new(CliErrorKind::Archive, e.to_string())
-            })?,
+            ArchiveEntry::directory(d)
+                .map_err(|e| CliError::new(CliErrorKind::Archive, e.to_string()))?,
         );
     }
     Ok(entries)

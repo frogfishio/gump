@@ -2,19 +2,17 @@
 
 use std::path::PathBuf;
 
-use gump_capsule::{
-    verify_release_signature, write_gump_capsule, GumpCapsuleHeader, SegmentType,
-};
+use gump_capsule::{GumpCapsuleHeader, SegmentType, verify_release_signature, write_gump_capsule};
 use gump_crypto::{
-    build_protected_aad, build_release_signing_transcript, generate_signing_key,
-    generate_x25519_keypair, hpke_info, open_dek, open_protected, seal_dek, seal_protected,
-    sign_transcript, signer_fingerprint, verifying_key, SegmentDigestRef, DEK_LEN, NONCE_LEN,
+    DEK_LEN, NONCE_LEN, SegmentDigestRef, build_protected_aad, build_release_signing_transcript,
+    generate_signing_key, generate_x25519_keypair, hpke_info, open_dek, open_protected, seal_dek,
+    seal_protected, sign_transcript, signer_fingerprint, verifying_key,
 };
 use gump_types::{CapsuleId, ClusterId};
 use rand_core::{CryptoRng, TryCryptoRng, TryRng};
 
 use crate::error::{CliError, CliErrorKind};
-use crate::local::{execute_plan, local_parity_plan, LocalParityPlan, LocalRunReport};
+use crate::local::{LocalParityPlan, LocalRunReport, execute_plan, local_parity_plan};
 
 /// OS CSPRNG adapter for rand_core 0.10 / HPKE / ed25519-dalek.
 struct SysRng;

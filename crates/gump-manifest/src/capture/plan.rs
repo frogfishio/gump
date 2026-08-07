@@ -129,6 +129,9 @@ fn build_globs(patterns: &[String]) -> Result<GlobSet, CaptureError> {
         builder.add(glob);
     }
     builder.build().map_err(|e| {
-        CaptureError::new(CaptureErrorKind::Glob, format!("glob set build failed: {e}"))
+        CaptureError::new(
+            CaptureErrorKind::Glob,
+            format!("glob set build failed: {e}"),
+        )
     })
 }

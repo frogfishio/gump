@@ -4,7 +4,7 @@ use std::env;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use gump_cli::{run_local, run_sealed_test, LocalRunOptions, LocalRunReport, SealedTestOptions};
+use gump_cli::{LocalRunOptions, LocalRunReport, SealedTestOptions, run_local, run_sealed_test};
 
 fn main() -> ExitCode {
     match dispatch(env::args().skip(1).collect()) {
@@ -56,9 +56,7 @@ fn dispatch(args: Vec<String>) -> Result<ExitCode, String> {
             sealed,
         } => {
             if !sealed {
-                return Err(
-                    "gump test requires --sealed in v1 local parity (D014)".into(),
-                );
+                return Err("gump test requires --sealed in v1 local parity (D014)".into());
             }
             let report = run_sealed_test(SealedTestOptions {
                 workspace,

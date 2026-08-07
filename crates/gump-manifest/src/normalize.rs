@@ -222,9 +222,8 @@ fn normalize_runtime(raw: RawRuntime) -> Result<Runtime, ManifestError> {
             .stop_timeout
             .as_deref()
             .map(|d| {
-                parse_duration_millis(d).map_err(|e| {
-                    ManifestError::new(e.kind(), "runtime.stop_timeout", e.message())
-                })
+                parse_duration_millis(d)
+                    .map_err(|e| ManifestError::new(e.kind(), "runtime.stop_timeout", e.message()))
             })
             .transpose()?,
         variables,
@@ -300,7 +299,9 @@ fn normalize_port(raw: RawPort) -> Result<Port, ManifestError> {
     })
 }
 
-fn normalize_runtime_isolation(raw: RawRuntimeIsolation) -> Result<RuntimeIsolation, ManifestError> {
+fn normalize_runtime_isolation(
+    raw: RawRuntimeIsolation,
+) -> Result<RuntimeIsolation, ManifestError> {
     Ok(RuntimeIsolation {
         profile: raw
             .profile
@@ -354,12 +355,10 @@ fn normalize_check(path: &str, raw: RawCheck) -> Result<Check, ManifestError> {
             .transpose()?,
         path: raw.path,
         command: raw.command,
-        interval_ms: parse_duration_millis(&raw.interval).map_err(|e| {
-            ManifestError::new(e.kind(), format!("{path}.interval"), e.message())
-        })?,
-        timeout_ms: parse_duration_millis(&raw.timeout).map_err(|e| {
-            ManifestError::new(e.kind(), format!("{path}.timeout"), e.message())
-        })?,
+        interval_ms: parse_duration_millis(&raw.interval)
+            .map_err(|e| ManifestError::new(e.kind(), format!("{path}.interval"), e.message()))?,
+        timeout_ms: parse_duration_millis(&raw.timeout)
+            .map_err(|e| ManifestError::new(e.kind(), format!("{path}.timeout"), e.message()))?,
         initial_delay_ms: raw
             .initial_delay
             .as_deref()

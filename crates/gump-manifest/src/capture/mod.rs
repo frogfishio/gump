@@ -6,8 +6,9 @@ mod deny;
 mod plan;
 mod tree;
 
-pub use deny::{is_sensitive_relative_path, SensitiveDeny};
+pub use deny::{SensitiveDeny, is_sensitive_relative_path};
 pub use plan::{CaptureError, CaptureErrorKind, CapturePlan};
 pub use tree::{
-    apply_prepare_outputs, capture_workspace, FileIdentity, VirtualEntry, VirtualTree,
+    FileIdentity, VirtualEntry, VirtualTree, apply_prepare_outputs, capture_workspace,
+    verify_captured_bytes,
 };

@@ -8,8 +8,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use gump_manifest::{
-    parse_manifest_str, Coordination, Coverage, Driver, Lifetime, ManifestErrorKind, PortValue,
-    SchemaVersion, SuccessPolicy,
+    Coordination, Coverage, Driver, Lifetime, ManifestErrorKind, PortValue, SchemaVersion,
+    SuccessPolicy, parse_manifest_str,
 };
 use gump_types::Label;
 
@@ -27,10 +27,14 @@ fn read(path: &Path) -> String {
 #[test]
 fn valid_fixtures_parse_and_normalize() {
     let root = fixtures_root();
-    for name in ["minimal-finite.toml", "gpu-gang.toml", "kismet-all-nodes.toml"] {
+    for name in [
+        "minimal-finite.toml",
+        "gpu-gang.toml",
+        "kismet-all-nodes.toml",
+    ] {
         let path = root.join(name);
-        let manifest = parse_manifest_str(&read(&path))
-            .unwrap_or_else(|e| panic!("{name} should parse: {e}"));
+        let manifest =
+            parse_manifest_str(&read(&path)).unwrap_or_else(|e| panic!("{name} should parse: {e}"));
         assert_eq!(manifest.schema, SchemaVersion::Gump1);
         assert_eq!(manifest.runtime.driver, Driver::Native);
     }
@@ -92,16 +96,15 @@ fn invalid_fixtures_are_rejected() {
         ("all-nodes-with-units.toml", ManifestErrorKind::Semantic),
     ];
     for (name, kind) in cases {
-        let err = parse_manifest_str(&read(&root.join(name)))
-            .expect_err(&format!("{name} must fail"));
+        let err =
+            parse_manifest_str(&read(&root.join(name))).expect_err(&format!("{name} must fail"));
         assert_eq!(err.kind(), kind, "{name}: {err}");
     }
 }
 
 #[test]
 fn schema_file_is_present_for_corpus_authority() {
-    let schema = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../spec/v1/gump.schema.json");
+    let schema = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../spec/v1/gump.schema.json");
     let text = read(&schema);
     assert!(text.contains("\"const\": \"gump/1\""));
     assert!(text.contains("additionalProperties"));

@@ -7,8 +7,8 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use gump_cli::{
-    build_sealed_capsule, local_parity_plan, run_local, run_verified_sealed, verify_sealed_capsule,
-    LocalRunOptions,
+    LocalRunOptions, build_sealed_capsule, local_parity_plan, run_local, run_verified_sealed,
+    verify_sealed_capsule,
 };
 use gump_types::{CapsuleId, ClusterId};
 use rand_core::{TryCryptoRng, TryRng};
@@ -160,13 +160,7 @@ fn verified_local_run_after_sealed_build() {
     let built = build_sealed_capsule(&plan, capsule, cluster, &mut rng).unwrap();
     verify_sealed_capsule(&built).unwrap();
 
-    let report = run_verified_sealed(
-        &ws,
-        Some(ws.join("state")),
-        &plan,
-        &built,
-    )
-    .unwrap();
+    let report = run_verified_sealed(&ws, Some(ws.join("state")), &plan, &built).unwrap();
     assert_eq!(report.mode, "test-sealed");
     assert_eq!(report.namespace, "ci");
     assert_eq!(report.app_id, "x01-hello");

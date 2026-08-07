@@ -6,7 +6,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use gump_cli::{run_local, run_sealed_test, LocalRunOptions, SealedTestOptions};
+use gump_cli::{LocalRunOptions, SealedTestOptions, run_local, run_sealed_test};
 
 fn tmp_workspace(name: &str) -> PathBuf {
     let nanos = SystemTime::now()
@@ -78,7 +78,11 @@ fn run_local_parity_executes_same_command_vector() {
     assert_eq!(report.app_id, "hello-job");
     assert_eq!(report.command_vector, vec!["bin/hello".to_string()]);
     assert_eq!(report.telemetry_filter.as_deref(), Some("app/*"));
-    assert!(report.release_root.starts_with(ws.join("state").join("apps")));
+    assert!(
+        report
+            .release_root
+            .starts_with(ws.join("state").join("apps"))
+    );
     assert_eq!(report.exit_code, Some(0));
     let _ = fs::remove_dir_all(ws);
 }

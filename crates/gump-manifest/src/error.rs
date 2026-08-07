@@ -62,11 +62,7 @@ impl ManifestError {
 
 impl fmt::Display for ManifestError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{} at {}: {}",
-            self.kind, self.path, self.message
-        )
+        write!(f, "{} at {}: {}", self.kind, self.path, self.message)
     }
 }
 
