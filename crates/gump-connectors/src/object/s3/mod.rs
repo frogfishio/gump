@@ -1,10 +1,9 @@
-//! S3-compatible object connector (D02 / DECISIONS D008).
+//! S3-compatible object connector (D02 / DECISIONS D008 / STL-07).
 //!
-//! Speaks path-style HTTP PUT/GET/HEAD/DELETE with `If-None-Match: *` for
-//! immutable final publication and `x-amz-meta-gump-blake3` for digest evidence.
+//! Wraps `aws-sdk-s3` (SigV4, TLS, credential chain, retries, multipart) behind
+//! [`crate::object::ObjectStore`]. User metadata `gump-blake3` carries digest
+//! evidence; promote uses conditional server-side `CopyObject`.
 
 mod client;
-mod http;
 
-pub use client::{S3Config, S3ObjectStore};
-pub use http::{S3HttpError, S3ObjectMeta};
+pub use client::{META_BLAKE3, S3Config, S3ObjectStore};

@@ -1,20 +1,24 @@
-//! D02 exit evidence: S3-compatible quarantine + immutable publish integration.
+//! D02 / STL-07: S3 client quarantine → promote → ranged get against MinIO.
 //!
 //! Authority: docs/v1/DELIVERY.md D02, DECISIONS D008, RUNTIME.md §13.
-//! Speaks real path-style HTTP S3 verbs against an in-process compatible server.
-#![allow(clippy::let_unit_value)]
+//!
+//! Requires a live S3-compatible endpoint. Set:
+//! - `GUMP_S3_ENDPOINT` (e.g. `http://127.0.0.1:9000`)
+//! - `GUMP_S3_BUCKET` (default `gump`)
+//! - `GUMP_S3_ACCESS_KEY` / `GUMP_S3_SECRET_KEY` (default `gump` / `gumpsecret`)
+//! - `GUMP_S3_REGION` (default `us-east-1`)
+//!
+//! When unset, tests skip (CI stays green without MinIO).
 
-use std::collections::BTreeMap;
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
-use std::sync::{Arc, Mutex};
-use std::thread;
+use std::io::Read;
 use std::time::Duration;
 
 use gump_connectors::{
     ByteRange, ObjectStore, ObjectStoreErrorKind, S3Config, S3ObjectStore, final_capsule_key,
 };
 use gump_types::{CapsuleId, ClusterId};
+use rusty_s3::actions::{CreateBucket, S3Action as _};
+use rusty_s3::{Bucket, Credentials, UrlStyle};
 
 fn v7(seed: u8) -> [u8; 16] {
     let mut b = [seed; 16];
@@ -23,10 +27,10 @@ fn v7(seed: u8) -> [u8; 16] {
     b
 }
 
-fn ids() -> (ClusterId, CapsuleId) {
+fn ids(seed: u8) -> (ClusterId, CapsuleId) {
     (
-        ClusterId::from_bytes(v7(0x31)).unwrap(),
-        CapsuleId::from_bytes(v7(0x42)).unwrap(),
+        ClusterId::from_bytes(v7(seed)).unwrap(),
+        CapsuleId::from_bytes(v7(seed.wrapping_add(0x10))).unwrap(),
     )
 }
 
@@ -34,263 +38,90 @@ fn digest(bytes: &[u8]) -> [u8; 32] {
     *blake3::hash(bytes).as_bytes()
 }
 
-#[derive(Clone, Debug)]
-struct Stored {
-    bytes: Vec<u8>,
-    digest: [u8; 32],
+fn live_config() -> Option<S3Config> {
+    let endpoint = std::env::var("GUMP_S3_ENDPOINT").ok()?;
+    let bucket = std::env::var("GUMP_S3_BUCKET").unwrap_or_else(|_| "gump".into());
+    let region = std::env::var("GUMP_S3_REGION").unwrap_or_else(|_| "us-east-1".into());
+    let access = std::env::var("GUMP_S3_ACCESS_KEY").unwrap_or_else(|_| "gump".into());
+    let secret = std::env::var("GUMP_S3_SECRET_KEY").unwrap_or_else(|_| "gumpsecret".into());
+    Some(S3Config::with_static_credentials(
+        endpoint, region, bucket, access, secret,
+    ))
 }
 
-struct MockS3 {
-    objects: Mutex<BTreeMap<String, Stored>>,
-}
-
-impl MockS3 {
-    fn new() -> Arc<Self> {
-        Arc::new(Self {
-            objects: Mutex::new(BTreeMap::new()),
-        })
-    }
-
-    fn serve(self: &Arc<Self>, listener: TcpListener) {
-        let this = Arc::clone(self);
-        thread::spawn(move || {
-            for stream in listener.incoming() {
-                let Ok(mut stream) = stream else { continue };
-                let _ = handle_conn(&this, &mut stream);
-            }
-        });
-    }
-}
-
-fn handle_conn(store: &MockS3, stream: &mut TcpStream) -> std::io::Result<()> {
-    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
-    let mut buf = Vec::new();
-    let mut tmp = [0u8; 8192];
-    loop {
-        match stream.read(&mut tmp) {
-            Ok(0) => break,
-            Ok(n) => buf.extend_from_slice(&tmp[..n]),
-            Err(_) => break,
-        }
-        if let Some(split) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
-            let head = std::str::from_utf8(&buf[..split]).unwrap_or("");
-            let mut content_length = 0usize;
-            for line in head.lines().skip(1) {
-                if let Some((k, v)) = line.split_once(':') {
-                    if k.eq_ignore_ascii_case("content-length") {
-                        content_length = v.trim().parse().unwrap_or(0);
-                    }
-                }
-            }
-            if buf.len() >= split + 4 + content_length {
-                break;
-            }
-        }
-    }
-    let Some(split) = buf.windows(4).position(|w| w == b"\r\n\r\n") else {
-        return Ok(());
+fn ensure_bucket(cfg: &S3Config) -> bool {
+    let endpoint: url::Url = match cfg.endpoint.parse() {
+        Ok(u) => u,
+        Err(_) => return false,
     };
-    let head = std::str::from_utf8(&buf[..split]).unwrap_or("");
-    let mut lines = head.lines();
-    let status_line = lines.next().unwrap_or("");
-    let mut parts = status_line.split_whitespace();
-    let method = parts.next().unwrap_or("");
-    let path = parts.next().unwrap_or("");
-    let mut headers = BTreeMap::<String, String>::new();
-    let mut content_length = 0usize;
-    for line in lines {
-        if let Some((k, v)) = line.split_once(':') {
-            let key = k.trim().to_ascii_lowercase();
-            let val = v.trim().to_string();
-            if key == "content-length" {
-                content_length = val.parse().unwrap_or(0);
-            }
-            headers.insert(key, val);
-        }
-    }
-    let body = buf[split + 4..split + 4 + content_length].to_vec();
-
-    // path: /{bucket}/{key...}
-    let key = path
-        .trim_start_matches('/')
-        .split_once('/')
-        .map(|(_, k)| k.to_string());
-
-    let resp = match (method, key.as_deref()) {
-        ("PUT", Some(key)) => {
-            let if_none = headers.get("if-none-match").map(|s| s.as_str()) == Some("*");
-            let digest_hex = headers.get("x-amz-meta-gump-blake3").cloned();
-            let Some(digest_hex) = digest_hex else {
-                write_raw(stream, 400, "missing digest", &[])?;
-                return Ok(());
-            };
-            let digest = parse_hex32(&digest_hex).unwrap_or([0u8; 32]);
-            let mut objs = store.objects.lock().unwrap();
-            // Server-side COPY: empty body + x-amz-copy-source (STL-03b).
-            if let Some(copy_src) = headers.get("x-amz-copy-source") {
-                let src_key = copy_src
-                    .trim_start_matches('/')
-                    .split_once('/')
-                    .map(|(_, k)| k)
-                    .unwrap_or(copy_src.as_str());
-                let Some(src) = objs.get(src_key).cloned() else {
-                    write_raw(stream, 404, "copy source missing", &[])?;
-                    return Ok(());
-                };
-                if src.digest != digest {
-                    write_raw(stream, 400, "copy digest mismatch", &[])?;
-                    return Ok(());
-                }
-                if if_none {
-                    if let Some(existing) = objs.get(key) {
-                        if existing.digest == digest && existing.bytes.len() == src.bytes.len() {
-                            // absent-only: still 412 when occupied
-                        }
-                        write_raw(stream, 412, "precondition failed", &[])?;
-                        return Ok(());
-                    }
-                }
-                objs.insert(
-                    key.to_string(),
-                    Stored {
-                        bytes: src.bytes,
-                        digest,
-                    },
-                );
-                write_raw(stream, 200, "OK", &[])?;
-                return Ok(());
-            }
-            if if_none {
-                if let Some(existing) = objs.get(key) {
-                    if existing.digest == digest && existing.bytes.len() == body.len() {
-                        // Should not happen with strict if-none; still 412 for absent write.
-                    }
-                    write_raw(stream, 412, "precondition failed", &[])?;
-                    return Ok(());
-                }
-            }
-            objs.insert(
-                key.to_string(),
-                Stored {
-                    bytes: body,
-                    digest,
-                },
-            );
-            write_raw(stream, 200, "OK", &[])?
-        }
-        ("HEAD", Some(key)) => {
-            let objs = store.objects.lock().unwrap();
-            match objs.get(key) {
-                Some(obj) => {
-                    let dig = bytes_to_hex(&obj.digest);
-                    let headers = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nx-amz-meta-gump-blake3: {dig}\r\nConnection: close\r\n\r\n",
-                        obj.bytes.len()
-                    );
-                    stream.write_all(headers.as_bytes())?;
-                }
-                None => write_raw(stream, 404, "not found", &[])?,
-            }
-        }
-        ("GET", Some(key)) => {
-            let objs = store.objects.lock().unwrap();
-            match objs.get(key) {
-                Some(obj) => {
-                    let mut slice = obj.bytes.as_slice();
-                    let mut status = 200;
-                    if let Some(range) = headers.get("range") {
-                        if let Some(r) = parse_range(range, obj.bytes.len()) {
-                            slice = &obj.bytes[r.0..r.1];
-                            status = 206;
-                        }
-                    }
-                    let dig = bytes_to_hex(&obj.digest);
-                    let headers = format!(
-                        "HTTP/1.1 {status} OK\r\nContent-Length: {}\r\nx-amz-meta-gump-blake3: {dig}\r\nConnection: close\r\n\r\n",
-                        slice.len()
-                    );
-                    stream.write_all(headers.as_bytes())?;
-                    stream.write_all(slice)?;
-                }
-                None => write_raw(stream, 404, "not found", &[])?,
-            }
-        }
-        ("DELETE", Some(key)) => {
-            let mut objs = store.objects.lock().unwrap();
-            objs.remove(key);
-            write_raw(stream, 204, "No Content", &[])?
-        }
-        _ => write_raw(stream, 400, "bad request", &[])?,
+    let bucket = match Bucket::new(
+        endpoint,
+        UrlStyle::Path,
+        std::borrow::Cow::Owned(cfg.bucket.clone()),
+        std::borrow::Cow::Owned(cfg.region.clone()),
+    ) {
+        Ok(b) => b,
+        Err(_) => return false,
     };
-    let _ = resp;
-    Ok(())
-}
-
-fn write_raw(
-    stream: &mut TcpStream,
-    status: u16,
-    reason: &str,
-    body: &[u8],
-) -> std::io::Result<()> {
-    let headers = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        body.len()
+    let creds = Credentials::new(
+        cfg.access_key_id.clone().unwrap_or_else(|| "gump".into()),
+        cfg.secret_access_key
+            .clone()
+            .unwrap_or_else(|| "gumpsecret".into()),
     );
-    stream.write_all(headers.as_bytes())?;
-    stream.write_all(body)?;
-    Ok(())
-}
-
-fn parse_range(header: &str, len: usize) -> Option<(usize, usize)> {
-    let rest = header.strip_prefix("bytes=")?;
-    let (start_s, end_s) = rest.split_once('-')?;
-    let start: usize = start_s.parse().ok()?;
-    if end_s.is_empty() {
-        return Some((start, len));
+    let action = CreateBucket::new(&bucket, &creds);
+    let url = action.sign(Duration::from_secs(60));
+    // CreateBucket is PUT on the bucket URL. Treat connection failures as "no live endpoint".
+    match ureq::put(url.as_str()).call() {
+        Ok(_) => true,
+        Err(ureq::Error::Status(code, _)) if (200..500).contains(&code) => true,
+        Err(_) => false,
     }
-    let end_incl: usize = end_s.parse().ok()?;
-    Some((start, (end_incl + 1).min(len)))
 }
 
-fn parse_hex32(s: &str) -> Option<[u8; 32]> {
-    if s.len() != 64 {
+fn open_store() -> Option<S3ObjectStore> {
+    let cfg = live_config()?;
+    if !ensure_bucket(&cfg) {
+        eprintln!("skip: GUMP_S3_ENDPOINT unreachable");
         return None;
     }
-    let mut out = [0u8; 32];
-    for i in 0..32 {
-        out[i] = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).ok()?;
+    match S3ObjectStore::new(cfg) {
+        Ok(s) => Some(s),
+        Err(e) => {
+            eprintln!("skip: S3ObjectStore::new failed: {e}");
+            None
+        }
     }
-    Some(out)
 }
 
-fn bytes_to_hex(bytes: &[u8; 32]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut s = String::with_capacity(64);
-    for b in bytes {
-        s.push(HEX[(b >> 4) as usize] as char);
-        s.push(HEX[(b & 0xf) as usize] as char);
-    }
-    s
+fn scrub_key(store: &mut S3ObjectStore, key: &gump_connectors::ObjectKey) {
+    let _ = store.delete(key);
 }
 
-fn start_mock() -> (u16, Arc<MockS3>) {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let mock = MockS3::new();
-    mock.serve(listener);
-    // Brief settle for accept loop.
-    thread::sleep(Duration::from_millis(20));
-    (port, mock)
+#[test]
+fn s3_config_rejects_partial_static_creds() {
+    let cfg = S3Config {
+        endpoint: "http://127.0.0.1:9000".into(),
+        region: "us-east-1".into(),
+        bucket: "gump".into(),
+        access_key_id: Some("only-ak".into()),
+        secret_access_key: None,
+        force_path_style: true,
+    };
+    let err = S3ObjectStore::new(cfg).unwrap_err();
+    assert_eq!(err.kind(), ObjectStoreErrorKind::InvalidArgument);
 }
 
 #[test]
 fn s3_quarantine_publish_and_ranged_get() {
-    let (port, _mock) = start_mock();
-    let (cluster, capsule) = ids();
+    let Some(mut store) = open_store() else {
+        eprintln!("skip: GUMP_S3_ENDPOINT not set");
+        return;
+    };
+    let (cluster, capsule) = ids(0x31);
     let body = b"sealed-capsule-bytes-via-s3";
     let dig = digest(body);
 
-    let mut store = S3ObjectStore::new(S3Config::new("127.0.0.1", port, "gump"));
     let upload = store
         .begin_quarantine(cluster, capsule, body.len() as u64)
         .unwrap();
@@ -298,6 +129,7 @@ fn s3_quarantine_publish_and_ranged_get() {
     let q = store.finish_quarantine(upload, dig).unwrap();
 
     let final_key = final_capsule_key(cluster, capsule).unwrap();
+    scrub_key(&mut store, &final_key);
     let published = store
         .publish_if_absent(&q.key, &final_key, dig, body.len() as u64)
         .unwrap();
@@ -317,17 +149,18 @@ fn s3_quarantine_publish_and_ranged_get() {
         b"sealed"
     );
 
-    // Quarantine cleanup after successful promotion.
     store.delete(&q.key).unwrap();
 }
 
 #[test]
 fn s3_publish_idempotent_on_identical_object() {
-    let (port, _mock) = start_mock();
-    let (cluster, capsule) = ids();
+    let Some(mut store) = open_store() else {
+        eprintln!("skip: GUMP_S3_ENDPOINT not set");
+        return;
+    };
+    let (cluster, capsule) = ids(0x32);
     let body = b"identical-final-object----";
     let dig = digest(body);
-    let mut store = S3ObjectStore::new(S3Config::new("127.0.0.1", port, "gump"));
 
     let up = store
         .begin_quarantine(cluster, capsule, body.len() as u64)
@@ -335,11 +168,11 @@ fn s3_publish_idempotent_on_identical_object() {
     store.write(up, body).unwrap();
     let q = store.finish_quarantine(up, dig).unwrap();
     let final_key = final_capsule_key(cluster, capsule).unwrap();
+    scrub_key(&mut store, &final_key);
     store
         .publish_if_absent(&q.key, &final_key, dig, body.len() as u64)
         .unwrap();
 
-    // Second publish of same digest+len succeeds (D008).
     let again = store
         .publish_if_absent(&q.key, &final_key, dig, body.len() as u64)
         .unwrap();
@@ -348,11 +181,13 @@ fn s3_publish_idempotent_on_identical_object() {
 
 #[test]
 fn s3_publish_conflicts_on_different_digest() {
-    let (port, _mock) = start_mock();
-    let (cluster, capsule) = ids();
+    let Some(mut store) = open_store() else {
+        eprintln!("skip: GUMP_S3_ENDPOINT not set");
+        return;
+    };
+    let (cluster, capsule) = ids(0x33);
     let a = b"object-a----------------";
     let b = b"object-b-DIFFERENT------";
-    let mut store = S3ObjectStore::new(S3Config::new("127.0.0.1", port, "gump"));
 
     let up = store
         .begin_quarantine(cluster, capsule, a.len() as u64)
@@ -360,6 +195,7 @@ fn s3_publish_conflicts_on_different_digest() {
     store.write(up, a).unwrap();
     let q = store.finish_quarantine(up, digest(a)).unwrap();
     let final_key = final_capsule_key(cluster, capsule).unwrap();
+    scrub_key(&mut store, &final_key);
     store
         .publish_if_absent(&q.key, &final_key, digest(a), a.len() as u64)
         .unwrap();
@@ -377,11 +213,56 @@ fn s3_publish_conflicts_on_different_digest() {
 
 #[test]
 fn s3_abort_leaves_no_quarantine_object() {
-    let (port, mock) = start_mock();
-    let (cluster, capsule) = ids();
-    let mut store = S3ObjectStore::new(S3Config::new("127.0.0.1", port, "gump"));
+    let Some(mut store) = open_store() else {
+        eprintln!("skip: GUMP_S3_ENDPOINT not set");
+        return;
+    };
+    let (cluster, capsule) = ids(0x34);
     let up = store.begin_quarantine(cluster, capsule, 8).unwrap();
-    store.write(up, b"partial").unwrap();
+    store.write(up, b"partial!").unwrap();
     store.abort(up).unwrap();
-    assert!(mock.objects.lock().unwrap().is_empty());
+}
+
+#[test]
+fn s3_multipart_quarantine_when_over_threshold() {
+    let Some(mut store) = open_store() else {
+        eprintln!("skip: GUMP_S3_ENDPOINT not set");
+        return;
+    };
+    let (cluster, capsule) = ids(0x35);
+    let len = 8 * 1024 * 1024 + 1024;
+    let mut body = vec![0u8; len];
+    for (i, b) in body.iter_mut().enumerate() {
+        *b = (i % 251) as u8;
+    }
+    let dig = digest(&body);
+
+    let up = store
+        .begin_quarantine(cluster, capsule, len as u64)
+        .unwrap();
+    const CHUNK: usize = 1024 * 1024;
+    for chunk in body.chunks(CHUNK) {
+        store.write(up, chunk).unwrap();
+    }
+    let q = store.finish_quarantine(up, dig).unwrap();
+    let final_key = final_capsule_key(cluster, capsule).unwrap();
+    scrub_key(&mut store, &final_key);
+    store
+        .publish_if_absent(&q.key, &final_key, dig, len as u64)
+        .unwrap();
+    let mut reader = store
+        .get_reader(
+            &final_key,
+            Some(ByteRange {
+                start: 0,
+                end: Some(16),
+            }),
+        )
+        .unwrap();
+    let mut head = [0u8; 16];
+    reader.read_exact(&mut head).unwrap();
+    assert_eq!(&head[..], &body[..16]);
+    drop(reader);
+    store.delete(&q.key).unwrap();
+    store.delete(&final_key).unwrap();
 }

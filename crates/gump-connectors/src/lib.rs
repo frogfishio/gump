@@ -28,7 +28,7 @@ pub use ingress::{
     IngressReceipt, StreamedIngress,
 };
 pub use object::{
-    ByteRange, FakeObjectStore, ObjectEvidence, ObjectKey, ObjectStore, ObjectStoreError,
-    ObjectStoreErrorKind, S3Config, S3ObjectStore, UploadId, UploadProgress, final_capsule_key,
-    quarantine_key,
+    ByteRange, FakeObjectStore, META_BLAKE3, ObjectEvidence, ObjectKey, ObjectStore,
+    ObjectStoreError, ObjectStoreErrorKind, S3Config, S3ObjectStore, UploadId, UploadProgress,
+    final_capsule_key, quarantine_key,
 };
