@@ -4,7 +4,7 @@ use crate::records::key::RecordKey;
 use crate::records::lease::LeasePurpose;
 
 /// Compare precondition for Put/Delete/Txn.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Expected {
     /// Key must not exist.
     Absent,
@@ -16,7 +16,7 @@ pub enum Expected {
     Any,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum MutateOp {
     Put {
         key: RecordKey,
@@ -30,21 +30,21 @@ pub enum MutateOp {
     },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Comparison {
     pub key: RecordKey,
     pub expected: Expected,
 }
 
 /// Atomic multi-key transaction at one new revision.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Txn {
     pub comparisons: Vec<Comparison>,
     pub success_ops: Vec<MutateOp>,
     pub failure_ops: Vec<MutateOp>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Command {
     Put {
         key: RecordKey,
@@ -63,13 +63,22 @@ pub enum Command {
     },
     LeaseGrant {
         purpose: LeasePurpose,
+        /// Leader-stamped monotonic time (ms); commit advances the machine clock.
+        now_ms: u64,
     },
     LeaseRenew {
         lease_id: u64,
+        now_ms: u64,
     },
     LeaseRevoke {
         lease_id: u64,
     },
-    /// Commit revocation for all leases due at the machine's monotonic clock.
-    ExpireLeases,
+    /// Advance the committed monotonic clock (leader tick). Rejects backward time.
+    AdvanceTime {
+        now_ms: u64,
+    },
+    /// Advance committed time (if needed) and revoke leases due at `now_ms`.
+    ExpireLeases {
+        now_ms: u64,
+    },
 }

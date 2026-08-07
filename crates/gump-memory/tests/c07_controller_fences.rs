@@ -38,9 +38,7 @@ fn current_fence_accepts_matching_effect() {
     let mut auth = ControllerAuthority::new();
     let mut leases = LeaseTable::default();
     let token = auth.acquire(1, 0, &mut leases);
-    let op = auth
-        .accept_effect(&effect(token, 42), 0, &leases)
-        .unwrap();
+    let op = auth.accept_effect(&effect(token, 42), 0, &leases).unwrap();
     assert_eq!(op, 42);
 }
 
@@ -85,7 +83,7 @@ fn expired_lease_cannot_create_effect() {
     let mut auth = ControllerAuthority::new();
     let mut leases = LeaseTable::default();
     let token = auth.acquire(1, 0, &mut leases);
-    // Controller TTL is 10s; expire and revoke via ExpireLeases path on table.
+    // Controller TTL is 10s; expire via the same table path ExpireLeases uses (committed now_ms).
     leases.expire_due(10_001);
     let err = auth
         .accept_effect(&effect(token, 1), 10_001, &leases)

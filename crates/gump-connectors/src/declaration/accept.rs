@@ -82,7 +82,11 @@ struct DesiredState {
     declaration: NormalizedDeclaration,
 }
 
-/// In-memory desired-state ledger keyed by `(namespace, app)`.
+/// Process-local desired-state ledger keyed by `(namespace, app)`.
+///
+/// **STL-01:** durable desired state must live in replicated
+/// `gump_memory::ClusterState` (`RaftCommand::PutDesired`). This type remains
+/// for validation/unit tests until callers submit through the Raft façade.
 #[derive(Debug, Default)]
 pub struct DeclarationLedger {
     by_app: BTreeMap<(String, String), DesiredState>,

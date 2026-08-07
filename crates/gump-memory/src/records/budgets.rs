@@ -3,7 +3,7 @@
 use core::fmt;
 
 /// Initial budgets: 64 MiB authoritative, 32 MiB leased, 32 MiB history.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MemoryBudgets {
     pub authoritative_bytes: u64,
     pub leased_bytes: u64,
@@ -20,7 +20,7 @@ impl Default for MemoryBudgets {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct BudgetUsage {
     pub authoritative_bytes: u64,
     pub leased_bytes: u64,
@@ -74,7 +74,7 @@ impl BudgetUsage {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum BudgetClass {
     Authoritative,
     Leased,

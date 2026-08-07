@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 
 use crate::membership::types::MemberId;
-use crate::quorum::{can_commit, QuorumError};
+use crate::quorum::{QuorumError, can_commit};
 
 /// Overlapping old and new voter sets during a membership change.
 #[derive(Clone, Debug, Eq, PartialEq)]

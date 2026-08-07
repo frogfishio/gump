@@ -1,7 +1,7 @@
 //! Fence tokens carried on effect-creating commands (PROTOCOL.md §9).
 
 /// Controller fence: epoch + opaque fence bytes + binding lease.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct FenceToken {
     pub epoch: u64,
     pub fence: [u8; 16],
@@ -34,18 +34,11 @@ impl FenceToken {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EffectReject {
     /// Presented epoch is below the current / accepted epoch.
-    StaleEpoch {
-        current: u64,
-        presented: u64,
-    },
+    StaleEpoch { current: u64, presented: u64 },
     /// Same epoch but different fence bytes (protocol violation).
-    FenceMismatch {
-        epoch: u64,
-    },
+    FenceMismatch { epoch: u64 },
     /// Lease expired or unknown — fence unverifiable.
-    ExpiredOrUnverifiable {
-        lease_id: u64,
-    },
+    ExpiredOrUnverifiable { lease_id: u64 },
     /// No controller authority has been acquired yet.
     NoAuthority,
 }
@@ -53,10 +46,9 @@ pub enum EffectReject {
 impl std::fmt::Display for EffectReject {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::StaleEpoch {
-                current,
-                presented,
-            } => write!(f, "stale controller epoch {presented} < current {current}"),
+            Self::StaleEpoch { current, presented } => {
+                write!(f, "stale controller epoch {presented} < current {current}")
+            }
             Self::FenceMismatch { epoch } => {
                 write!(f, "fence mismatch at epoch {epoch} (protocol violation)")
             }

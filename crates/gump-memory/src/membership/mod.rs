@@ -8,7 +8,7 @@ mod lifecycle;
 mod snapshot;
 mod types;
 
-pub use joint::{can_commit_joint, JointConfig, JointError};
+pub use joint::{JointConfig, JointError, can_commit_joint};
 pub use lifecycle::{MembershipCluster, MembershipError, MembershipEvent};
 pub use snapshot::{SnapshotOffer, SnapshotTransferError, SnapshotVerify};
 pub use types::{ClusterIncarnation, MemberId, MemberPhase, MemberRecord};

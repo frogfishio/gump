@@ -9,17 +9,18 @@ use crate::records::lease::{Lease, LeaseError, LeaseTable};
 use crate::records::value::{RecordValue, ValueError};
 use crate::records::watch::{Compacted, WatchBatch, WatchChange, WatchHistory};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct TypedRecordMachine {
     revision: u64,
     records: BTreeMap<RecordKey, RecordValue>,
     budgets: MemoryBudgets,
     usage: BudgetUsage,
-    /// Monotonic leader clock (milliseconds) for leases and watch age.
+    /// Committed monotonic clock (ms) for leases and watch age (STL-02 / PROTOCOL §8).
     now_ms: u64,
     watch: WatchHistory,
     leases: LeaseTable,
     /// Pending changes for the current revision batch (txn coalescing).
+    #[serde(skip)]
     pending: Vec<WatchChange>,
 }
 
@@ -40,6 +41,11 @@ pub enum ApplyError {
         expected: Expected,
     },
     NotFound(RecordKey),
+    /// Committed time must be monotonic; replicas never read wall clock on apply.
+    TimeWentBackward {
+        current: u64,
+        presented: u64,
+    },
 }
 
 impl std::fmt::Display for ApplyError {
@@ -53,6 +59,12 @@ impl std::fmt::Display for ApplyError {
                 write!(f, "precondition failed for {key}: {expected:?}")
             }
             Self::NotFound(key) => write!(f, "key not found: {key}"),
+            Self::TimeWentBackward { current, presented } => {
+                write!(
+                    f,
+                    "committed time went backward: current={current} presented={presented}"
+                )
+            }
         }
     }
 }
@@ -125,14 +137,20 @@ impl TypedRecordMachine {
         self.now_ms
     }
 
-    /// Advance or set the monotonic clock (simulation / leader tick).
-    pub fn set_now_ms(&mut self, now_ms: u64) {
-        self.now_ms = now_ms;
-        self.watch.retain(self.now_ms, self.budgets.history_bytes);
-    }
-
-    pub fn advance_now_ms(&mut self, by_ms: u64) {
-        self.set_now_ms(self.now_ms.saturating_add(by_ms));
+    /// Commit a leader-stamped monotonic time. Rejects backward movement (STL-02).
+    /// Equal time is a no-op success so re-ticks at the same ms are safe.
+    fn commit_time(&mut self, now_ms: u64) -> Result<(), ApplyError> {
+        if now_ms < self.now_ms {
+            return Err(ApplyError::TimeWentBackward {
+                current: self.now_ms,
+                presented: now_ms,
+            });
+        }
+        if now_ms > self.now_ms {
+            self.now_ms = now_ms;
+            self.watch.retain(self.now_ms, self.budgets.history_bytes);
+        }
+        Ok(())
     }
 
     pub fn compaction_floor(&self) -> u64 {
@@ -145,6 +163,17 @@ impl TypedRecordMachine {
 
     pub fn get_lease(&self, id: u64) -> Option<&Lease> {
         self.leases.get(id)
+    }
+
+    /// Mutable lease table for replicated authority commands (STL-01).
+    pub fn leases_mut(&mut self) -> &mut LeaseTable {
+        &mut self.leases
+    }
+
+    /// Order non-record authority mutations with the typed revision counter.
+    pub fn bump_revision(&mut self) -> u64 {
+        self.revision = self.revision.saturating_add(1);
+        self.revision
     }
 
     /// Watches start strictly after `after`; lagging watchers get COMPACTED.
@@ -194,7 +223,8 @@ impl TypedRecordMachine {
                     expired_lease_ids: Vec::new(),
                 })
             }
-            Command::LeaseGrant { purpose } => {
+            Command::LeaseGrant { purpose, now_ms } => {
+                self.commit_time(now_ms)?;
                 let lease = self.leases.grant(purpose, self.now_ms);
                 self.revision = self.revision.saturating_add(1);
                 Ok(ApplyResult {
@@ -204,7 +234,8 @@ impl TypedRecordMachine {
                     expired_lease_ids: Vec::new(),
                 })
             }
-            Command::LeaseRenew { lease_id } => {
+            Command::LeaseRenew { lease_id, now_ms } => {
+                self.commit_time(now_ms)?;
                 let lease = self.leases.renew(lease_id, self.now_ms)?;
                 self.revision = self.revision.saturating_add(1);
                 Ok(ApplyResult {
@@ -229,7 +260,17 @@ impl TypedRecordMachine {
                     expired_lease_ids: vec![lease_id],
                 })
             }
-            Command::ExpireLeases => {
+            Command::AdvanceTime { now_ms } => {
+                self.commit_time(now_ms)?;
+                Ok(ApplyResult {
+                    revision: self.revision,
+                    txn_succeeded: None,
+                    lease: None,
+                    expired_lease_ids: Vec::new(),
+                })
+            }
+            Command::ExpireLeases { now_ms } => {
+                self.commit_time(now_ms)?;
                 let expired = self.leases.expire_due(self.now_ms);
                 if expired.is_empty() {
                     return Ok(ApplyResult {
@@ -262,11 +303,7 @@ impl TypedRecordMachine {
             .comparisons
             .iter()
             .all(|c| self.check_expected(&c.key, &c.expected).is_ok());
-        let ops = if ok {
-            txn.success_ops
-        } else {
-            txn.failure_ops
-        };
+        let ops = if ok { txn.success_ops } else { txn.failure_ops };
         let snap = self.snapshot();
         for op in ops {
             if let Err(e) = self.apply_mutate(op) {
@@ -379,7 +416,8 @@ impl TypedRecordMachine {
             at_ms: self.now_ms,
             changes,
         };
-        self.watch.push(batch, self.now_ms, self.budgets.history_bytes);
+        self.watch
+            .push(batch, self.now_ms, self.budgets.history_bytes);
     }
 
     fn check_expected(&self, key: &RecordKey, expected: &Expected) -> Result<(), ApplyError> {

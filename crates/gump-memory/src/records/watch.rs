@@ -9,7 +9,7 @@ pub const MAX_WATCH_REVISIONS: usize = 10_000;
 pub const MAX_WATCH_AGE_MS: u64 = 10 * 60 * 1000;
 
 /// Ordered change visible to watchers after a revision.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum WatchChange {
     Put {
         key: RecordKey,
@@ -27,14 +27,14 @@ pub enum WatchChange {
     },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct WatchBatch {
     pub revision: u64,
     pub at_ms: u64,
     pub changes: Vec<WatchChange>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Compacted {
     /// Highest revision no longer available; resume watches with `after = compaction_floor`.
     pub compaction_floor: u64,
@@ -53,7 +53,7 @@ impl std::fmt::Display for Compacted {
 impl std::error::Error for Compacted {}
 
 /// Bounded committed-change log for watches.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct WatchHistory {
     /// Highest revision that has been compacted away (unavailable).
     compacted_through: u64,

@@ -2,10 +2,13 @@
 //!
 //! Log, vote, membership, snapshots, and application buffers live only in RAM.
 //! Controller fencing: PROTOCOL.md §9 / CONFORMANCE INV-007.
+//! STL-01: application mutations apply through [`cluster_state::ClusterState`] via
+//! [`cluster_state::RaftCommand`]; OpenRaft `StoredMembership` owns voter sets.
 
 #![forbid(unsafe_code)]
 
 pub mod authority;
+pub mod cluster_state;
 pub mod membership;
 mod quorum;
 mod ram_store;
@@ -15,19 +18,20 @@ pub use authority::{
     AgentFenceError, AgentFenceMemory, ControllerAuthority, ControllerError, EffectCommand,
     EffectReject, FenceToken,
 };
+pub use cluster_state::{ApplyOutcome, ClusterState, RaftCommand, RaftResponse};
 pub use membership::{
-    can_commit_joint, ClusterIncarnation, JointConfig, JointError, MemberId, MemberPhase,
-    MemberRecord, MembershipCluster, MembershipError, MembershipEvent, SnapshotOffer,
-    SnapshotTransferError, SnapshotVerify,
+    ClusterIncarnation, JointConfig, JointError, MemberId, MemberPhase, MemberRecord,
+    MembershipCluster, MembershipError, MembershipEvent, SnapshotOffer, SnapshotTransferError,
+    SnapshotVerify, can_commit_joint,
 };
-pub use quorum::{can_commit, majority, QuorumError};
+pub use quorum::{QuorumError, can_commit, majority};
 pub use ram_store::{
-    ram_v2_stores, ClientRequest, ClientResponse, MemoryNodeId, RamLogStore, RamStateMachine,
-    RamStore, TypeConfig,
+    ClientRequest, ClientResponse, MemoryNodeId, RamLogStore, RamStateMachine, RamStore,
+    TypeConfig, ram_v2_stores,
 };
 pub use records::{
-    comparisons_hold, ApplyError, ApplyResult, BudgetClass, BudgetError, BudgetUsage, Command,
-    Compacted, Comparison, Expected, KeyPrefix, Lease, LeaseError, LeasePurpose, LeaseTable,
-    MemoryBudgets, MutateOp, RecordKey, RecordValue, Txn, TypedRecordMachine, WatchBatch,
-    WatchChange, MAX_WATCH_AGE_MS, MAX_WATCH_REVISIONS,
+    ApplyError, ApplyResult, BudgetClass, BudgetError, BudgetUsage, Command, Compacted, Comparison,
+    Expected, KeyPrefix, Lease, LeaseError, LeasePurpose, LeaseTable, MAX_WATCH_AGE_MS,
+    MAX_WATCH_REVISIONS, MemoryBudgets, MutateOp, RecordKey, RecordValue, Txn, TypedRecordMachine,
+    WatchBatch, WatchChange, comparisons_hold,
 };

@@ -4,6 +4,6 @@ mod agent;
 mod controller;
 mod fence;
 
-pub use agent::{AgentFenceMemory, AgentFenceError};
+pub use agent::{AgentFenceError, AgentFenceMemory};
 pub use controller::{ControllerAuthority, ControllerError, EffectCommand};
 pub use fence::{EffectReject, FenceToken};

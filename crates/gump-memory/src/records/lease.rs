@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 /// Default lease TTLs from PROTOCOL.md §8 (milliseconds).
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum LeasePurpose {
     ControllerAuthority,
     MemberLiveness,
@@ -34,7 +34,7 @@ impl LeasePurpose {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Lease {
     pub id: u64,
     pub purpose: LeasePurpose,
@@ -42,7 +42,7 @@ pub struct Lease {
     pub expires_at_ms: u64,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct LeaseTable {
     next_id: u64,
     leases: BTreeMap<u64, Lease>,

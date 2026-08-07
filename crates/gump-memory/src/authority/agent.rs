@@ -59,9 +59,7 @@ impl AgentFenceMemory {
         if token.epoch == self.max_epoch {
             if let Some(prev) = &self.accepted {
                 if prev.fence != token.fence {
-                    return Err(AgentFenceError::ProtocolViolation {
-                        epoch: token.epoch,
-                    });
+                    return Err(AgentFenceError::ProtocolViolation { epoch: token.epoch });
                 }
             }
         }
@@ -88,9 +86,7 @@ impl AgentFenceMemory {
             }));
         }
         if token.fence != accepted.fence {
-            return Err(AgentFenceError::ProtocolViolation {
-                epoch: token.epoch,
-            });
+            return Err(AgentFenceError::ProtocolViolation { epoch: token.epoch });
         }
         Ok(())
     }

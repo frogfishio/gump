@@ -34,7 +34,7 @@ impl From<EffectReject> for ControllerError {
 }
 
 /// Cluster-side controller authority record (`/authority/controller`).
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct ControllerAuthority {
     current: Option<FenceToken>,
     holder: Option<u64>,
@@ -60,12 +60,7 @@ impl ControllerAuthority {
     }
 
     /// `AcquireController` → commit `(epoch + 1, fence, lease_id)` under controller TTL.
-    pub fn acquire(
-        &mut self,
-        holder: u64,
-        now_ms: u64,
-        leases: &mut LeaseTable,
-    ) -> FenceToken {
+    pub fn acquire(&mut self, holder: u64, now_ms: u64, leases: &mut LeaseTable) -> FenceToken {
         self.acquire_nonce = self.acquire_nonce.saturating_add(1);
         let epoch = self.epoch().saturating_add(1);
         let fence = FenceToken::derive_fence(epoch, holder, self.acquire_nonce);

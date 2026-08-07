@@ -6,8 +6,8 @@
 use std::collections::BTreeSet;
 
 use gump_memory::{
-    can_commit_joint, ClusterIncarnation, JointConfig, MemberPhase, MembershipCluster,
-    MembershipError, SnapshotOffer,
+    ClusterIncarnation, JointConfig, MemberPhase, MembershipCluster, MembershipError,
+    SnapshotOffer, can_commit_joint,
 };
 
 fn avail(ids: &[u64]) -> BTreeSet<u64> {
@@ -142,10 +142,7 @@ fn drain_and_remove_via_joint() {
 fn cannot_drain_last_voter() {
     let mut c = MembershipCluster::new();
     c.init(1, ClusterIncarnation::new(1)).unwrap();
-    assert!(matches!(
-        c.begin_drain(1),
-        Err(MembershipError::LastVoter)
-    ));
+    assert!(matches!(c.begin_drain(1), Err(MembershipError::LastVoter)));
 }
 
 #[test]

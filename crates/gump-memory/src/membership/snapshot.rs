@@ -36,7 +36,10 @@ impl std::fmt::Display for SnapshotTransferError {
         match self {
             Self::DigestMismatch { .. } => write!(f, "snapshot digest mismatch"),
             Self::IndexMismatch { expected, actual } => {
-                write!(f, "snapshot index mismatch: expected {expected}, got {actual}")
+                write!(
+                    f,
+                    "snapshot index mismatch: expected {expected}, got {actual}"
+                )
             }
         }
     }

@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use gump_memory::{
-    can_commit, majority, ram_v2_stores, MemoryNodeId, RamLogStore, RamStateMachine, TypeConfig,
+    MemoryNodeId, RamLogStore, RamStateMachine, TypeConfig, can_commit, majority, ram_v2_stores,
 };
 use gump_types::sim::{LinkFaults, PeerId, SimWorld};
 use openraft::storage::{RaftLogStorage, RaftStateMachine};

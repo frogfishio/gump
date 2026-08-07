@@ -135,9 +135,7 @@ fn txn_atomic_success_and_failure_branches() {
     assert_eq!(r.txn_succeeded, Some(false));
     assert!(m.get(&a).is_some(), "success delete must not run");
     assert_eq!(
-        m.get(&key(KeyPrefix::Reasons, "units/u1"))
-            .unwrap()
-            .payload,
+        m.get(&key(KeyPrefix::Reasons, "units/u1")).unwrap().payload,
         b"conflict"
     );
     assert!(m.revision() > before);

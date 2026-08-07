@@ -3,8 +3,8 @@
 //! Authority: docs/v1/DELIVERY.md C05, PROTOCOL.md §8.
 
 use gump_memory::{
-    Command, Compacted, Expected, KeyPrefix, LeasePurpose, RecordKey, TypedRecordMachine,
-    WatchChange, MAX_WATCH_AGE_MS,
+    Command, Compacted, Expected, KeyPrefix, LeasePurpose, MAX_WATCH_AGE_MS, RecordKey,
+    TypedRecordMachine, WatchChange,
 };
 
 fn key(prefix: KeyPrefix, suffix: &str) -> RecordKey {
@@ -81,13 +81,16 @@ fn compact_makes_lagging_watcher_receive_compacted() {
 #[test]
 fn slow_watch_age_retention_compacts_history() {
     let mut m = TypedRecordMachine::with_defaults();
-    m.set_now_ms(1_000);
+    m.apply(Command::AdvanceTime { now_ms: 1_000 }).unwrap();
     let k = key(KeyPrefix::Names, "slow");
     put(&mut m, &k, b"old");
     assert_eq!(m.watch_after(0).unwrap().len(), 1);
 
     // Age retention drops the old batch and raises the compaction floor.
-    m.advance_now_ms(MAX_WATCH_AGE_MS + 1);
+    m.apply(Command::AdvanceTime {
+        now_ms: 1_000 + MAX_WATCH_AGE_MS + 1,
+    })
+    .unwrap();
 
     let floor = m.compaction_floor();
     assert_eq!(floor, 1, "aged revision 1 must be compacted away");
@@ -103,20 +106,18 @@ fn slow_watch_age_retention_compacts_history() {
     let catch_up = m.watch_after(floor).unwrap();
     assert_eq!(catch_up.len(), 1);
     assert_eq!(catch_up[0].revision, m.revision());
-    assert!(matches!(
-        &catch_up[0].changes[0],
-        WatchChange::Put { .. }
-    ));
+    assert!(matches!(&catch_up[0].changes[0], WatchChange::Put { .. }));
 }
 
 #[test]
 fn lease_grant_renew_and_expiry_simulation() {
     let mut m = TypedRecordMachine::with_defaults();
-    m.set_now_ms(100);
+    m.apply(Command::AdvanceTime { now_ms: 100 }).unwrap();
 
     let grant = m
         .apply(Command::LeaseGrant {
             purpose: LeasePurpose::MemberLiveness,
+            now_ms: 100,
         })
         .unwrap();
     let lease = grant.lease.unwrap();
@@ -125,12 +126,19 @@ fn lease_grant_renew_and_expiry_simulation() {
     let id = lease.id;
     let after_grant = grant.revision;
 
-    m.advance_now_ms(5_000);
-    let renewed = m.apply(Command::LeaseRenew { lease_id: id }).unwrap();
+    let renewed = m
+        .apply(Command::LeaseRenew {
+            lease_id: id,
+            now_ms: 100 + 5_000,
+        })
+        .unwrap();
     assert_eq!(renewed.lease.unwrap().expires_at_ms, 100 + 5_000 + 15_000);
 
-    m.advance_now_ms(20_000);
-    let expired = m.apply(Command::ExpireLeases).unwrap();
+    let expired = m
+        .apply(Command::ExpireLeases {
+            now_ms: 100 + 5_000 + 20_000,
+        })
+        .unwrap();
     assert_eq!(expired.expired_lease_ids, vec![id]);
     assert!(m.get_lease(id).is_none());
 
@@ -145,10 +153,10 @@ fn lease_grant_renew_and_expiry_simulation() {
 #[test]
 fn lease_revoke_is_watchable() {
     let mut m = TypedRecordMachine::with_defaults();
-    m.set_now_ms(0);
     let id = m
         .apply(Command::LeaseGrant {
             purpose: LeasePurpose::PlacementAttempt,
+            now_ms: 0,
         })
         .unwrap()
         .lease

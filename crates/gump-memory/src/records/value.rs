@@ -3,7 +3,7 @@
 use crate::records::key::KeyPrefix;
 
 /// Stored record body with revision and content digest.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RecordValue {
     pub revision: u64,
     pub digest: [u8; 32],

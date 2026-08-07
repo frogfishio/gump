@@ -1,12 +1,18 @@
 //! Membership state machine: init / join / promote / drain / remove.
+//!
+//! **STL-01 authority split:** OpenRaft `StoredMembership` is the sole source of
+//! truth for which node IDs are voters/learners for log commit. This
+//! [`MembershipCluster`] tracks *application* member phases (transfer, drain,
+//! incarnation metadata). Do not use [`MembershipCluster::voters`] or
+//! [`crate::membership::can_commit_joint`] to decide whether a Raft log entry
+//! may commit — that remains OpenRaft's job. Joint config helpers here only
+//! validate set arithmetic for tests / operator preflight.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::membership::joint::{can_commit_joint, JointConfig};
+use crate::membership::joint::{JointConfig, can_commit_joint};
 use crate::membership::snapshot::{SnapshotOffer, SnapshotTransferError, SnapshotVerify};
-use crate::membership::types::{
-    ClusterIncarnation, MemberId, MemberPhase, MemberRecord,
-};
+use crate::membership::types::{ClusterIncarnation, MemberId, MemberPhase, MemberRecord};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MembershipError {
@@ -43,7 +49,10 @@ impl std::fmt::Display for MembershipError {
             Self::Snapshot(e) => write!(f, "{e}"),
             Self::Joint(e) => write!(f, "{e}"),
             Self::JointQuorumNotMet => {
-                write!(f, "joint commit requires majority of old and new voter sets")
+                write!(
+                    f,
+                    "joint commit requires majority of old and new voter sets"
+                )
             }
             Self::NotAVoter(id) => write!(f, "member {id} is not a voter"),
             Self::LastVoter => write!(f, "cannot drain/remove the last voter"),
@@ -316,15 +325,8 @@ impl MembershipCluster {
         }
 
         let new_voters = joint.new_voters.clone();
-        let leaving: Vec<MemberId> = joint
-            .old_voters
-            .difference(&new_voters)
-            .copied()
-            .collect();
-        let joining: Vec<MemberId> = new_voters
-            .difference(&joint.old_voters)
-            .copied()
-            .collect();
+        let leaving: Vec<MemberId> = joint.old_voters.difference(&new_voters).copied().collect();
+        let joining: Vec<MemberId> = new_voters.difference(&joint.old_voters).copied().collect();
 
         for id in &joining {
             if let Some(rec) = self.members.get_mut(id) {
@@ -337,9 +339,7 @@ impl MembershipCluster {
             self.learners.remove(id);
         }
         self.voters = new_voters.clone();
-        Ok(MembershipEvent::JointCommitted {
-            voters: new_voters,
-        })
+        Ok(MembershipEvent::JointCommitted { voters: new_voters })
     }
 
     /// Force-remove a non-voter (e.g. leftover learner); voters must drain via joint first.

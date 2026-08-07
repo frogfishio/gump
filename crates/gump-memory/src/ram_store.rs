@@ -1,6 +1,10 @@
 //! Gump-owned RAM OpenRaft v2 stores (C03 / D001). No `std::fs` — buffers only.
+//!
+//! Application state is [`crate::cluster_state::ClusterState`] applied via
+//! [`crate::cluster_state::RaftCommand`] (STL-01). OpenRaft `StoredMembership`
+//! is the sole voter/learner authority.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::io::Cursor;
 use std::ops::RangeBounds;
@@ -15,25 +19,20 @@ use openraft::{
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
+use crate::cluster_state::{ClusterState, RaftCommand, RaftResponse};
+
 /// OpenRaft node id (`u64`, collision-checked at formation — PROTOCOL.md §6).
 pub type MemoryNodeId = u64;
 
-/// Placeholder app request until C04 typed records land.
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct ClientRequest {
-    pub client: String,
-    pub serial: u64,
-    pub status: String,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct ClientResponse(pub Option<String>);
+/// Backward-compatible aliases for the C03 placeholder names.
+pub type ClientRequest = RaftCommand;
+pub type ClientResponse = RaftResponse;
 
 openraft::declare_raft_types!(
     /// Type configuration for the RAM adapter (C03).
     pub TypeConfig:
-        D = ClientRequest,
-        R = ClientResponse,
+        D = RaftCommand,
+        R = RaftResponse,
         Node = (),
 );
 
@@ -47,8 +46,7 @@ struct RamSnapshot {
 struct StateMachineData {
     last_applied_log: Option<LogId<MemoryNodeId>>,
     last_membership: StoredMembership<MemoryNodeId, ()>,
-    client_serial_responses: HashMap<String, (u64, Option<String>)>,
-    client_status: HashMap<String, String>,
+    cluster: ClusterState,
 }
 
 #[derive(Default)]
@@ -93,6 +91,11 @@ impl RamLogStore {
 impl RamStateMachine {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Inspect replicated application state (tests / local read after apply).
+    pub async fn cluster_state(&self) -> ClusterState {
+        self.inner.read().await.sm.cluster.clone()
     }
 }
 
@@ -155,12 +158,17 @@ impl RaftLogStorage<TypeConfig> for RamLogStore {
         self.clone()
     }
 
-    async fn save_vote(&mut self, vote: &Vote<MemoryNodeId>) -> Result<(), StorageError<MemoryNodeId>> {
+    async fn save_vote(
+        &mut self,
+        vote: &Vote<MemoryNodeId>,
+    ) -> Result<(), StorageError<MemoryNodeId>> {
         self.inner.write().await.vote = Some(*vote);
         Ok(())
     }
 
-    async fn read_vote(&mut self) -> Result<Option<Vote<MemoryNodeId>>, StorageError<MemoryNodeId>> {
+    async fn read_vote(
+        &mut self,
+    ) -> Result<Option<Vote<MemoryNodeId>>, StorageError<MemoryNodeId>> {
         Ok(self.inner.read().await.vote)
     }
 
@@ -172,7 +180,9 @@ impl RaftLogStorage<TypeConfig> for RamLogStore {
         Ok(())
     }
 
-    async fn read_committed(&mut self) -> Result<Option<LogId<MemoryNodeId>>, StorageError<MemoryNodeId>> {
+    async fn read_committed(
+        &mut self,
+    ) -> Result<Option<LogId<MemoryNodeId>>, StorageError<MemoryNodeId>> {
         Ok(self.inner.read().await.committed)
     }
 
@@ -196,7 +206,10 @@ impl RaftLogStorage<TypeConfig> for RamLogStore {
         Ok(())
     }
 
-    async fn truncate(&mut self, log_id: LogId<MemoryNodeId>) -> Result<(), StorageError<MemoryNodeId>> {
+    async fn truncate(
+        &mut self,
+        log_id: LogId<MemoryNodeId>,
+    ) -> Result<(), StorageError<MemoryNodeId>> {
         let mut inner = self.inner.write().await;
         let keys: Vec<u64> = inner.log.range(log_id.index..).map(|(k, _)| *k).collect();
         for key in keys {
@@ -205,7 +218,10 @@ impl RaftLogStorage<TypeConfig> for RamLogStore {
         Ok(())
     }
 
-    async fn purge(&mut self, log_id: LogId<MemoryNodeId>) -> Result<(), StorageError<MemoryNodeId>> {
+    async fn purge(
+        &mut self,
+        log_id: LogId<MemoryNodeId>,
+    ) -> Result<(), StorageError<MemoryNodeId>> {
         let mut inner = self.inner.write().await;
         assert!(inner.last_purged_log_id <= Some(log_id));
         inner.last_purged_log_id = Some(log_id);
@@ -220,8 +236,8 @@ impl RaftLogStorage<TypeConfig> for RamLogStore {
 impl RaftSnapshotBuilder<TypeConfig> for RamStateMachine {
     async fn build_snapshot(&mut self) -> Result<Snapshot<TypeConfig>, StorageError<MemoryNodeId>> {
         let mut inner = self.inner.write().await;
-        let data = serde_json::to_vec(&inner.sm)
-            .map_err(|e| StorageIOError::read_state_machine(&e))?;
+        let data =
+            serde_json::to_vec(&inner.sm).map_err(|e| StorageIOError::read_state_machine(&e))?;
         let last_applied_log = inner.sm.last_applied_log;
         let last_membership = inner.sm.last_membership.clone();
         inner.snapshot_idx += 1;
@@ -252,13 +268,21 @@ impl RaftStateMachine<TypeConfig> for RamStateMachine {
 
     async fn applied_state(
         &mut self,
-    ) -> Result<(Option<LogId<MemoryNodeId>>, StoredMembership<MemoryNodeId, ()>), StorageError<MemoryNodeId>>
-    {
+    ) -> Result<
+        (
+            Option<LogId<MemoryNodeId>>,
+            StoredMembership<MemoryNodeId, ()>,
+        ),
+        StorageError<MemoryNodeId>,
+    > {
         let inner = self.inner.read().await;
         Ok((inner.sm.last_applied_log, inner.sm.last_membership.clone()))
     }
 
-    async fn apply<I>(&mut self, entries: I) -> Result<Vec<ClientResponse>, StorageError<MemoryNodeId>>
+    async fn apply<I>(
+        &mut self,
+        entries: I,
+    ) -> Result<Vec<ClientResponse>, StorageError<MemoryNodeId>>
     where
         I: IntoIterator<Item = Entry<TypeConfig>> + OptionalSend,
         I::IntoIter: OptionalSend,
@@ -268,28 +292,31 @@ impl RaftStateMachine<TypeConfig> for RamStateMachine {
         for entry in entries {
             inner.sm.last_applied_log = Some(entry.log_id);
             match &entry.payload {
-                EntryPayload::Blank => res.push(ClientResponse(None)),
-                EntryPayload::Normal(data) => {
-                    if let Some((serial, r)) = inner.sm.client_serial_responses.get(&data.client) {
-                        if serial == &data.serial {
-                            res.push(ClientResponse(r.clone()));
-                            continue;
-                        }
-                    }
-                    let previous = inner
-                        .sm
-                        .client_status
-                        .insert(data.client.clone(), data.status.clone());
-                    inner
-                        .sm
-                        .client_serial_responses
-                        .insert(data.client.clone(), (data.serial, previous.clone()));
-                    res.push(ClientResponse(previous));
+                EntryPayload::Blank => {
+                    res.push(RaftResponse::Applied(crate::cluster_state::ApplyOutcome {
+                        revision: inner.sm.cluster.records().revision(),
+                        txn_succeeded: None,
+                        lease_id: None,
+                        expired_lease_ids: Vec::new(),
+                        controller: None,
+                        desired_generation: None,
+                    }))
+                }
+                EntryPayload::Normal(cmd) => {
+                    res.push(inner.sm.cluster.apply(cmd.clone()));
                 }
                 EntryPayload::Membership(mem) => {
                     inner.sm.last_membership =
                         StoredMembership::new(Some(entry.log_id), mem.clone());
-                    res.push(ClientResponse(None));
+                    // Membership responses are empty outcomes; voter sets live in OpenRaft.
+                    res.push(RaftResponse::Applied(crate::cluster_state::ApplyOutcome {
+                        revision: inner.sm.cluster.records().revision(),
+                        txn_succeeded: None,
+                        lease_id: None,
+                        expired_lease_ids: Vec::new(),
+                        controller: None,
+                        desired_generation: None,
+                    }));
                 }
             }
         }

@@ -15,10 +15,7 @@ pub fn majority(voters: u32) -> Result<u32, QuorumError> {
 /// D006: one node commits with itself; two require both; three tolerate one loss.
 pub fn can_commit(voters: u32, available: u32) -> Result<bool, QuorumError> {
     if available > voters {
-        return Err(QuorumError::AvailableExceedsVoters {
-            available,
-            voters,
-        });
+        return Err(QuorumError::AvailableExceedsVoters { available, voters });
     }
     Ok(available >= majority(voters)?)
 }

@@ -3,7 +3,9 @@
 use core::fmt;
 
 /// Known key prefixes; callers cannot invent others.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+#[derive(
+    Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum KeyPrefix {
     ClusterMeta,
     Members,
@@ -83,7 +85,7 @@ impl KeyPrefix {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum RecordClass {
     Authoritative,
     LeasedCapable,
@@ -91,7 +93,9 @@ pub enum RecordClass {
 }
 
 /// Typed record key: closed prefix + bounded suffix.
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+#[derive(
+    Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct RecordKey {
     pub prefix: KeyPrefix,
     pub suffix: String,

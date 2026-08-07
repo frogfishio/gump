@@ -29,7 +29,11 @@ impl std::fmt::Display for IdempotencyError {
 
 impl std::error::Error for IdempotencyError {}
 
-/// Retains outcomes for 24h or 100_000 ops, whichever binds first (D014).
+/// Process-local idempotency cache (24h / 100_000 ops — D014).
+///
+/// **STL-01:** durable receipts must be stored in replicated
+/// `gump_memory::ClusterState` via `RaftCommand::Idempotent` in the same apply
+/// as the mutation. This cache is for connector/unit tests until wired.
 #[derive(Debug)]
 pub struct IdempotencyCache {
     by_op: BTreeMap<[u8; 16], IdempotencyRecord>,
