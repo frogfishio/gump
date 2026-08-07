@@ -54,10 +54,7 @@ impl ExecutionStatus {
                 wait,
                 eligible,
                 total,
-            } => format!(
-                "{} — {eligible}/{total} units eligible",
-                wait.as_str()
-            ),
+            } => format!("{} — {eligible}/{total} units eligible", wait.as_str()),
         }
     }
 }

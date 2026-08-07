@@ -1,6 +1,7 @@
 //! Object-store types and trait.
 
 use core::fmt;
+use std::io::Read;
 
 use gump_types::{CapsuleId, ClusterId};
 
@@ -133,7 +134,8 @@ pub trait ObjectStore {
         expected_len: u64,
     ) -> Result<UploadId, ObjectStoreError>;
 
-    fn write(&mut self, upload: UploadId, chunk: &[u8]) -> Result<UploadProgress, ObjectStoreError>;
+    fn write(&mut self, upload: UploadId, chunk: &[u8])
+    -> Result<UploadProgress, ObjectStoreError>;
 
     fn finish_quarantine(
         &mut self,
@@ -154,7 +156,31 @@ pub trait ObjectStore {
 
     fn head(&self, key: &ObjectKey) -> Result<ObjectEvidence, ObjectStoreError>;
 
-    fn get(&self, key: &ObjectKey, range: Option<ByteRange>) -> Result<Vec<u8>, ObjectStoreError>;
+    /// Streaming get (STL-03). Callers must not assume the body fits in RAM.
+    fn get_reader(
+        &self,
+        key: &ObjectKey,
+        range: Option<ByteRange>,
+    ) -> Result<Box<dyn Read + '_>, ObjectStoreError>;
+
+    /// Convenience: buffer a get. Prefer [`Self::get_reader`] for Capsule bodies.
+    fn get(&self, key: &ObjectKey, range: Option<ByteRange>) -> Result<Vec<u8>, ObjectStoreError> {
+        let mut reader = self.get_reader(key, range)?;
+        let mut buf = Vec::new();
+        reader.read_to_end(&mut buf).map_err(|e| {
+            ObjectStoreError::new(ObjectStoreErrorKind::FaultInjected, e.to_string())
+        })?;
+        Ok(buf)
+    }
+
+    /// Server-side / in-store copy for write-if-absent promote (no download).
+    fn copy_if_absent(
+        &mut self,
+        source: &ObjectKey,
+        dest: &ObjectKey,
+        digest: [u8; 32],
+        len: u64,
+    ) -> Result<ObjectEvidence, ObjectStoreError>;
 
     fn delete(&mut self, key: &ObjectKey) -> Result<(), ObjectStoreError>;
 }

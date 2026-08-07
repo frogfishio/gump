@@ -10,10 +10,10 @@ mod wait;
 mod workflow;
 
 pub use idempotency::{IdempotencyCache, IdempotencyError, IdempotencyRecord};
-pub use receipt::{format_receipt_human, DeployReceipt, DurabilityGuarantee, ExecutionStatus};
+pub use receipt::{DeployReceipt, DurabilityGuarantee, ExecutionStatus, format_receipt_human};
 pub use types::{
     ConvergenceSnapshot, DeployFailure, DeployOutcome, DeployPhase, ObjectLocator, OrphanCapsule,
     WorkloadContract,
 };
-pub use wait::{default_wait_condition, WaitCondition};
+pub use wait::{WaitCondition, default_wait_condition};
 pub use workflow::{DeployBackend, DeployRequest, DeployWorkflow};

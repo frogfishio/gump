@@ -45,7 +45,7 @@ pub fn extract_entries(
     }
     let mut total = 0u64;
     for entry in entries {
-        if entry.path.as_bytes().len() > limits.max_path_bytes {
+        if entry.path.len() > limits.max_path_bytes {
             return Err(ArchiveError::new(
                 ArchiveErrorKind::Limit,
                 "path length ceiling exceeded",
@@ -81,7 +81,10 @@ pub fn extract_entries(
                     deny_symlink(parent)?;
                 }
                 // Refuse to follow a pre-existing symlink at the destination.
-                if dest.symlink_metadata().map(|m| m.file_type().is_symlink()).unwrap_or(false)
+                if dest
+                    .symlink_metadata()
+                    .map(|m| m.file_type().is_symlink())
+                    .unwrap_or(false)
                 {
                     return Err(ArchiveError::new(
                         ArchiveErrorKind::Escape,
@@ -119,9 +122,9 @@ fn join_jail(root: &Path, rel: &str) -> Result<PathBuf, ArchiveError> {
     // after join; canonicalize parents that exist.
     if let Some(parent) = out.parent() {
         if parent.exists() {
-            let parent_canon = parent.canonicalize().map_err(|e| {
-                ArchiveError::new(ArchiveErrorKind::Io, e.to_string())
-            })?;
+            let parent_canon = parent
+                .canonicalize()
+                .map_err(|e| ArchiveError::new(ArchiveErrorKind::Io, e.to_string()))?;
             if !parent_canon.starts_with(root) {
                 return Err(ArchiveError::new(
                     ArchiveErrorKind::Escape,

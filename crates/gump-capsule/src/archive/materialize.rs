@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use gump_types::CapsuleId;
 
 use super::error::{ArchiveError, ArchiveErrorKind};
-use super::extract::{extract_entries, ExtractLimits};
+use super::extract::{ExtractLimits, extract_entries};
 use super::pack::unpack_archive;
 
 /// Result of materializing an application archive into the local apps cache.
@@ -36,10 +36,7 @@ pub fn materialize_application_archive(
     if target.exists() {
         return Err(ArchiveError::new(
             ArchiveErrorKind::Io,
-            format!(
-                "materialization already exists at {}",
-                target.display()
-            ),
+            format!("materialization already exists at {}", target.display()),
         ));
     }
 

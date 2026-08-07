@@ -13,22 +13,22 @@ pub mod ingress;
 pub mod object;
 
 pub use declaration::{
-    normalize_declaration, sign_declaration, verify_declaration_signature, AcceptResult,
-    DeclarationDraft, DeclarationError, DeclarationLedger, NormalizedDeclaration,
-    OverrideProvenance, DECLARATION_SCHEMA, DECLARATION_SIG_DOMAIN,
+    AcceptResult, DECLARATION_SCHEMA, DECLARATION_SIG_DOMAIN, DeclarationDraft, DeclarationError,
+    DeclarationLedger, NormalizedDeclaration, OverrideProvenance, normalize_declaration,
+    sign_declaration, verify_declaration_signature,
 };
 pub use deploy::{
-    default_wait_condition, format_receipt_human, ConvergenceSnapshot, DeployBackend,
-    DeployFailure, DeployOutcome, DeployPhase, DeployReceipt, DeployRequest, DeployWorkflow,
-    DurabilityGuarantee, ExecutionStatus, IdempotencyCache, IdempotencyError, IdempotencyRecord,
-    ObjectLocator, OrphanCapsule, WaitCondition, WorkloadContract,
+    ConvergenceSnapshot, DeployBackend, DeployFailure, DeployOutcome, DeployPhase, DeployReceipt,
+    DeployRequest, DeployWorkflow, DurabilityGuarantee, ExecutionStatus, IdempotencyCache,
+    IdempotencyError, IdempotencyRecord, ObjectLocator, OrphanCapsule, WaitCondition,
+    WorkloadContract, default_wait_condition, format_receipt_human,
 };
 pub use ingress::{
-    IngestStats, IngressError, IngressLimits, IngressReceipt, StreamedIngress,
-    DEFAULT_MAX_CAPSULE_BYTES, DEFAULT_MAX_CHUNK_BYTES,
+    DEFAULT_MAX_CAPSULE_BYTES, DEFAULT_MAX_CHUNK_BYTES, IngestStats, IngressError, IngressLimits,
+    IngressReceipt, StreamedIngress,
 };
 pub use object::{
-    final_capsule_key, quarantine_key, ByteRange, FakeObjectStore, ObjectEvidence, ObjectKey,
-    ObjectStore, ObjectStoreError, ObjectStoreErrorKind, S3Config, S3ObjectStore, UploadId,
-    UploadProgress,
+    ByteRange, FakeObjectStore, ObjectEvidence, ObjectKey, ObjectStore, ObjectStoreError,
+    ObjectStoreErrorKind, S3Config, S3ObjectStore, UploadId, UploadProgress, final_capsule_key,
+    quarantine_key,
 };

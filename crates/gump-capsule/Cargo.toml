@@ -12,6 +12,7 @@ gump-types = { workspace = true }
 gump-crypto = { workspace = true }
 capsule-lib = "1.0"
 blake3 = { workspace = true }
+crc32fast = "1.4"
 zstd = { workspace = true }
 unicode-normalization = { workspace = true }
 

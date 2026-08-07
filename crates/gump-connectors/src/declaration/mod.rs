@@ -10,7 +10,5 @@ mod types;
 
 pub use accept::{AcceptResult, DeclarationError, DeclarationLedger};
 pub use normalize::normalize_declaration;
-pub use sign::{sign_declaration, verify_declaration_signature, DECLARATION_SIG_DOMAIN};
-pub use types::{
-    DeclarationDraft, NormalizedDeclaration, OverrideProvenance, DECLARATION_SCHEMA,
-};
+pub use sign::{DECLARATION_SIG_DOMAIN, sign_declaration, verify_declaration_signature};
+pub use types::{DECLARATION_SCHEMA, DeclarationDraft, NormalizedDeclaration, OverrideProvenance};

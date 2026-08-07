@@ -7,7 +7,8 @@ pub const TABLE_VERSION: u16 = 1;
 pub const SEGMENT_COUNT: u16 = 5;
 pub const TABLE_PREFIX_LEN: usize = 16;
 pub const SEGMENT_DESC_LEN: usize = 64;
-pub const TABLE_BYTE_LEN: u32 = (TABLE_PREFIX_LEN + SEGMENT_COUNT as usize * SEGMENT_DESC_LEN) as u32;
+pub const TABLE_BYTE_LEN: u32 =
+    (TABLE_PREFIX_LEN + SEGMENT_COUNT as usize * SEGMENT_DESC_LEN) as u32;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 #[repr(u16)]
@@ -104,6 +105,107 @@ impl SegmentTable {
         }
         debug_assert_eq!(out.len(), TABLE_BYTE_LEN as usize);
         out
+    }
+
+    /// Parse the fixed-size table prefix only (no segment body digests).
+    ///
+    /// Used by streaming verify (STL-03): digests are checked while hashing each
+    /// segment from a bounded reader instead of requiring the full inner buffer.
+    pub fn parse_table_bytes(table: &[u8]) -> Result<Self, CapsuleDialectError> {
+        if table.len() != TABLE_BYTE_LEN as usize {
+            return Err(CapsuleDialectError::new(
+                CapsuleDialectErrorKind::Table,
+                format!(
+                    "segment table must be exactly {TABLE_BYTE_LEN} bytes, got {}",
+                    table.len()
+                ),
+            ));
+        }
+        if &table[..8] != MAGIC {
+            return Err(CapsuleDialectError::new(
+                CapsuleDialectErrorKind::Table,
+                "bad GUMPDEP1 magic",
+            ));
+        }
+        let version = u16::from_be_bytes([table[8], table[9]]);
+        if version != TABLE_VERSION {
+            return Err(CapsuleDialectError::new(
+                CapsuleDialectErrorKind::Table,
+                format!("unsupported table version {version}"),
+            ));
+        }
+        let count = u16::from_be_bytes([table[10], table[11]]);
+        if count != SEGMENT_COUNT {
+            return Err(CapsuleDialectError::new(
+                CapsuleDialectErrorKind::Table,
+                format!("segment count must be {SEGMENT_COUNT}, got {count}"),
+            ));
+        }
+        let table_len = u32::from_be_bytes([table[12], table[13], table[14], table[15]]);
+        if table_len != TABLE_BYTE_LEN {
+            return Err(CapsuleDialectError::new(
+                CapsuleDialectErrorKind::Table,
+                format!("table byte length must be {TABLE_BYTE_LEN}, got {table_len}"),
+            ));
+        }
+
+        let mut descriptors = Vec::with_capacity(5);
+        for i in 0..SEGMENT_COUNT as usize {
+            let start = TABLE_PREFIX_LEN + i * SEGMENT_DESC_LEN;
+            let desc = &table[start..start + SEGMENT_DESC_LEN];
+            let ty = SegmentType::from_u16(u16::from_be_bytes([desc[0], desc[1]]))?;
+            let flags = u16::from_be_bytes([desc[2], desc[3]]);
+            let reserved = u32::from_be_bytes([desc[4], desc[5], desc[6], desc[7]]);
+            if flags != 0 || reserved != 0 {
+                return Err(CapsuleDialectError::new(
+                    CapsuleDialectErrorKind::Table,
+                    "v1 segment flags/reserved must be zero",
+                ));
+            }
+            let offset = u64::from_be_bytes(desc[8..16].try_into().unwrap());
+            let stored_length = u64::from_be_bytes(desc[16..24].try_into().unwrap());
+            let logical_length = u64::from_be_bytes(desc[24..32].try_into().unwrap());
+            let mut digest = [0u8; 32];
+            digest.copy_from_slice(&desc[32..64]);
+            descriptors.push(SegmentDescriptor {
+                segment_type: ty,
+                flags,
+                offset,
+                stored_length,
+                logical_length,
+                digest,
+            });
+        }
+
+        for (i, d) in descriptors.iter().enumerate() {
+            let expected = SegmentType::from_u16((i + 1) as u16)?;
+            if d.segment_type != expected {
+                return Err(CapsuleDialectError::new(
+                    CapsuleDialectErrorKind::Table,
+                    "descriptors must be sorted as types 1..=5",
+                ));
+            }
+        }
+
+        let mut cursor = u64::from(TABLE_BYTE_LEN);
+        for d in &descriptors {
+            if d.offset != cursor {
+                return Err(CapsuleDialectError::new(
+                    CapsuleDialectErrorKind::Table,
+                    format!(
+                        "segment {:?} offset {} != expected contiguous {}",
+                        d.segment_type, d.offset, cursor
+                    ),
+                ));
+            }
+            cursor = d.offset.checked_add(d.stored_length).ok_or_else(|| {
+                CapsuleDialectError::new(CapsuleDialectErrorKind::Table, "segment end overflow")
+            })?;
+        }
+
+        Ok(Self {
+            descriptors: descriptors.try_into().expect("five descriptors"),
+        })
     }
 
     /// Parse and validate the table against `inner` payload (table + segments).

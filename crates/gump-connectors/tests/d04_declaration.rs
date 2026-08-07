@@ -6,12 +6,10 @@ use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use gump_connectors::{
-    sign_declaration, DeclarationDraft, DeclarationError, DeclarationLedger,
-};
+use gump_connectors::{DeclarationDraft, DeclarationError, DeclarationLedger, sign_declaration};
 use gump_crypto::{
-    generate_signing_key, verifying_key, SignerEnrollment, SignerTrustPolicy, SigningKeyBytes,
-    VerifyingKeyBytes,
+    SignerEnrollment, SignerTrustPolicy, SigningKeyBytes, VerifyingKeyBytes, generate_signing_key,
+    verifying_key,
 };
 use gump_types::{Action, CapsuleId, PolicyEngine, PrincipalId, Role, WorkloadId};
 use rand_core::{TryCryptoRng, TryRng};
@@ -79,7 +77,9 @@ fn draft(digest: [u8; 32], expected_generation: u64, op: u64) -> DeclarationDraf
     }
 }
 
-fn setup(seed: u64) -> (
+fn setup(
+    seed: u64,
+) -> (
     PolicyEngine,
     SignerTrustPolicy,
     PrincipalId,
@@ -137,7 +137,12 @@ fn first_accept_creates_generation_one() {
     assert!(result.created);
     assert_eq!(result.declaration.generation, 1);
     assert_eq!(result.declaration.workload_id, wid());
-    assert!(result.declaration.authorization_decision_id.starts_with("pd-"));
+    assert!(
+        result
+            .declaration
+            .authorization_decision_id
+            .starts_with("pd-")
+    );
 }
 
 #[test]
@@ -243,16 +248,7 @@ fn concurrent_accepts_only_one_next_generation() {
             let mut policy = PolicyEngine::new();
             policy.bind_role((*principal).clone(), Role::Deployer);
             let mut guard = ledger.lock().unwrap();
-            guard.accept_declaration(
-                &mut policy,
-                &trust,
-                &principal,
-                &vk,
-                &sig,
-                d,
-                "prod",
-                0,
-            )
+            guard.accept_declaration(&mut policy, &trust, &principal, &vk, &sig, d, "prod", 0)
         }));
     }
 
@@ -274,13 +270,14 @@ fn concurrent_accepts_only_one_next_generation() {
         }
     }
     assert_eq!(wins, 1, "exactly one accept must create generation 2");
+    assert_eq!(wins + conflicts + divergent, 8, "all racers accounted for");
     assert_eq!(
-        wins + conflicts + divergent,
-        8,
-        "all racers accounted for"
-    );
-    assert_eq!(
-        ledger.lock().unwrap().get("prod", "accounts").unwrap().generation,
+        ledger
+            .lock()
+            .unwrap()
+            .get("prod", "accounts")
+            .unwrap()
+            .generation,
         2
     );
 }

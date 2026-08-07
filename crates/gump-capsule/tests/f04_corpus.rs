@@ -6,8 +6,8 @@ use std::path::PathBuf;
 
 use capsule_lib::{Capsule, Encoding, ParseOptions};
 use gump_capsule::{
-    read_gump_capsule, write_gump_capsule, GumpCapsuleHeader, SegmentTable, SegmentType,
-    StreamingCapsuleReader, StreamingCapsuleWriter, TABLE_PREFIX_LEN, SEGMENT_DESC_LEN,
+    GumpCapsuleHeader, SEGMENT_DESC_LEN, SegmentTable, SegmentType, StreamingCapsuleReader,
+    StreamingCapsuleWriter, TABLE_PREFIX_LEN, read_gump_capsule, write_gump_capsule,
 };
 
 fn vectors_dir() -> PathBuf {
@@ -61,7 +61,10 @@ fn gump_capsule_roundtrips_through_capsule_lib_and_streaming_reader() {
     // Reference parser agrees on framing.
     let decoded = Capsule::parse(&bytes).unwrap();
     assert_eq!(decoded.prelude.encoding, Encoding::Cbor);
-    assert_eq!(decoded.header_decoded, written.header.encode_cbor().unwrap());
+    assert_eq!(
+        decoded.header_decoded,
+        written.header.encode_cbor().unwrap()
+    );
 
     // Dialect reader verifies segment table.
     let view = read_gump_capsule(&bytes).unwrap();
@@ -127,10 +130,9 @@ fn malformed_table_corpus_is_rejected() {
 
     // Digest mismatch.
     let mut bad_digest = good.clone();
-    let seg0_off = usize::try_from(
-        SegmentTable::parse_and_verify(&good).unwrap().descriptors[0].offset,
-    )
-    .unwrap();
+    let seg0_off =
+        usize::try_from(SegmentTable::parse_and_verify(&good).unwrap().descriptors[0].offset)
+            .unwrap();
     bad_digest[seg0_off] ^= 0xff;
     assert!(SegmentTable::parse_and_verify(&bad_digest).is_err());
 

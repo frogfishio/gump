@@ -10,11 +10,11 @@ mod path;
 mod ustar;
 
 pub use error::{ArchiveError, ArchiveErrorKind};
-pub use extract::{extract_entries, ExtractLimits};
-pub use materialize::{materialize_application_archive, MaterializedRelease};
+pub use extract::{ExtractLimits, extract_entries};
+pub use materialize::{MaterializedRelease, materialize_application_archive};
 pub use pack::{
-    compress_ustar, decompress_ustar, pack_archive, unpack_archive, ArchiveEntry, EntryKind,
-    ARCHIVE_FORMAT,
+    ARCHIVE_FORMAT, ArchiveEntry, EntryKind, compress_ustar, decompress_ustar, pack_archive,
+    unpack_archive,
 };
 pub use path::validate_archive_path;
 pub use ustar::{parse_ustar, write_ustar};

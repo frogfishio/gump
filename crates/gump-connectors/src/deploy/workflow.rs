@@ -1,5 +1,7 @@
 //! Deploy workflow orchestration (PROTOCOL.md §13 steps 5–6 + wait/retry).
 
+#![allow(clippy::result_large_err)]
+
 use gump_types::{CapsuleId, WorkloadId};
 
 use crate::deploy::idempotency::{IdempotencyCache, IdempotencyRecord};
@@ -8,7 +10,7 @@ use crate::deploy::types::{
     ConvergenceSnapshot, DeployFailure, DeployOutcome, DeployPhase, ObjectLocator, OrphanCapsule,
     WorkloadContract,
 };
-use crate::deploy::wait::{default_wait_condition, WaitCondition};
+use crate::deploy::wait::{WaitCondition, default_wait_condition};
 
 /// Backend effects for one deploy attempt (testable without live cluster).
 pub trait DeployBackend {
@@ -90,10 +92,7 @@ impl DeployWorkflow {
         now_ms: u64,
     ) -> DeployOutcome {
         let digest = Self::request_digest(&req);
-        match self
-            .idempotency
-            .check(&req.operation_id, &digest, now_ms)
-        {
+        match self.idempotency.check(&req.operation_id, &digest, now_ms) {
             Err(crate::deploy::idempotency::IdempotencyError::Conflict { operation_id }) => {
                 return DeployOutcome::Conflict { operation_id };
             }
@@ -105,40 +104,36 @@ impl DeployWorkflow {
             Ok(None) => {}
         }
 
-        let wait = req.wait.unwrap_or_else(|| default_wait_condition(&req.contract));
+        let wait = req
+            .wait
+            .unwrap_or_else(|| default_wait_condition(&req.contract));
 
-        let object = match backend.publish_capsule(
-            req.capsule_id,
-            req.capsule_digest,
-            req.operation_id,
-        ) {
-            Ok(o) => o,
-            Err(fail) => return DeployOutcome::Failed(fail),
-        };
+        let object =
+            match backend.publish_capsule(req.capsule_id, req.capsule_digest, req.operation_id) {
+                Ok(o) => o,
+                Err(fail) => return DeployOutcome::Failed(fail),
+            };
 
-        let (workload_id, generation, cluster_revision) = match backend.accept_intent(
-            req.operation_id,
-            req.capsule_id,
-            req.capsule_digest,
-        ) {
-            Ok(v) => v,
-            Err(mut fail) => {
-                let orphan = OrphanCapsule {
-                    capsule_id: req.capsule_id,
-                    capsule_digest: req.capsule_digest,
-                    object: object.clone(),
-                    operation_id: req.operation_id,
-                };
-                self.orphans.push(orphan.clone());
-                fail.orphan = Some(orphan);
-                if fail.phase != DeployPhase::IntentAccept {
-                    fail.phase = DeployPhase::IntentAccept;
+        let (workload_id, generation, cluster_revision) =
+            match backend.accept_intent(req.operation_id, req.capsule_id, req.capsule_digest) {
+                Ok(v) => v,
+                Err(mut fail) => {
+                    let orphan = OrphanCapsule {
+                        capsule_id: req.capsule_id,
+                        capsule_digest: req.capsule_digest,
+                        object: object.clone(),
+                        operation_id: req.operation_id,
+                    };
+                    self.orphans.push(orphan.clone());
+                    fail.orphan = Some(orphan);
+                    if fail.phase != DeployPhase::IntentAccept {
+                        fail.phase = DeployPhase::IntentAccept;
+                    }
+                    // Do not cache failures: SAME_OPERATION retry may resume after
+                    // transient accept errors without creating duplicate intent.
+                    return DeployOutcome::Failed(fail);
                 }
-                // Do not cache failures: SAME_OPERATION retry may resume after
-                // transient accept errors without creating duplicate intent.
-                return DeployOutcome::Failed(fail);
-            }
-        };
+            };
 
         let snap = match backend.observe(wait, workload_id, generation) {
             Ok(s) => s,
@@ -164,10 +159,7 @@ impl DeployWorkflow {
         if !snap.satisfied && wait != WaitCondition::Accepted {
             return DeployOutcome::Failed(DeployFailure {
                 phase: DeployPhase::WaitObservation,
-                reason: format!(
-                    "lost observation before wait condition '{}'",
-                    wait.as_str()
-                ),
+                reason: format!("lost observation before wait condition '{}'", wait.as_str()),
                 orphan: None,
             });
         }

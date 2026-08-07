@@ -16,12 +16,13 @@ mod stream;
 mod verify;
 
 pub use error::{CapsuleDialectError, CapsuleDialectErrorKind};
-pub use header::{GumpCapsuleHeader, DIALECT, PAYLOAD_LAYOUT};
+pub use header::{DIALECT, GumpCapsuleHeader, PAYLOAD_LAYOUT};
 pub use segment::{
-    SegmentDescriptor, SegmentTable, SegmentType, SEGMENT_COUNT, SEGMENT_DESC_LEN, TABLE_PREFIX_LEN,
+    SEGMENT_COUNT, SEGMENT_DESC_LEN, SegmentDescriptor, SegmentTable, SegmentType, TABLE_BYTE_LEN,
+    TABLE_PREFIX_LEN,
 };
 pub use stream::{
-    read_gump_capsule, write_gump_capsule, GumpCapsuleView, StreamingCapsuleReader,
-    StreamingCapsuleWriter,
+    DEFAULT_STREAM_CHUNK_BYTES, GumpCapsuleMeta, GumpCapsuleView, MAX_SIGNATURE_SEGMENT_BYTES,
+    StreamingCapsuleReader, StreamingCapsuleWriter, read_gump_capsule, write_gump_capsule,
 };
 pub use verify::{release_signing_transcript, verify_release_signature};

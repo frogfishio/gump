@@ -1,6 +1,6 @@
 //! Archive path rules (FORMATS.md §6).
 
-use unicode_normalization::{is_nfc, UnicodeNormalization};
+use unicode_normalization::{UnicodeNormalization, is_nfc};
 
 use super::error::{ArchiveError, ArchiveErrorKind};
 

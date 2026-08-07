@@ -32,7 +32,11 @@ pub fn write_ustar(entries: &[ArchiveEntry]) -> Result<Vec<u8>, ArchiveError> {
 }
 
 /// Parse a Gump-normalized ustar stream into entries (order preserved = lexical).
-pub fn parse_ustar(bytes: &[u8], max_files: usize, max_bytes: u64) -> Result<Vec<ArchiveEntry>, ArchiveError> {
+pub fn parse_ustar(
+    bytes: &[u8],
+    max_files: usize,
+    max_bytes: u64,
+) -> Result<Vec<ArchiveEntry>, ArchiveError> {
     if bytes.len() % BLOCK != 0 {
         return Err(ArchiveError::new(
             ArchiveErrorKind::Format,
@@ -74,7 +78,7 @@ pub fn parse_ustar(bytes: &[u8], max_files: usize, max_bytes: u64) -> Result<Vec
             ));
         }
 
-        let data_blocks = ((size as usize) + BLOCK - 1) / BLOCK;
+        let data_blocks = (size as usize).div_ceil(BLOCK);
         let need = data_blocks.saturating_mul(BLOCK);
         if i + need > bytes.len() {
             return Err(ArchiveError::new(
@@ -294,21 +298,18 @@ fn parse_octal(field: &[u8]) -> Result<u64, ArchiveError> {
         .iter()
         .position(|&b| b == 0 || b == b' ')
         .unwrap_or(field.len());
-    let s = std::str::from_utf8(&field[..end]).map_err(|_| {
-        ArchiveError::new(ArchiveErrorKind::Format, "octal field not utf8")
-    })?;
+    let s = std::str::from_utf8(&field[..end])
+        .map_err(|_| ArchiveError::new(ArchiveErrorKind::Format, "octal field not utf8"))?;
     if s.is_empty() {
         return Ok(0);
     }
-    u64::from_str_radix(s.trim(), 8).map_err(|_| {
-        ArchiveError::new(ArchiveErrorKind::Format, format!("invalid octal {s:?}"))
-    })
+    u64::from_str_radix(s.trim(), 8)
+        .map_err(|_| ArchiveError::new(ArchiveErrorKind::Format, format!("invalid octal {s:?}")))
 }
 
 fn cstr_field(field: &[u8]) -> Result<String, ArchiveError> {
     let end = field.iter().position(|&b| b == 0).unwrap_or(field.len());
-    let s = std::str::from_utf8(&field[..end]).map_err(|_| {
-        ArchiveError::new(ArchiveErrorKind::Format, "path field not utf8")
-    })?;
+    let s = std::str::from_utf8(&field[..end])
+        .map_err(|_| ArchiveError::new(ArchiveErrorKind::Format, "path field not utf8"))?;
     Ok(s.to_string())
 }

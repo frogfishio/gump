@@ -11,7 +11,7 @@ use std::thread;
 use std::time::Duration;
 
 use gump_connectors::{
-    final_capsule_key, ByteRange, ObjectStore, ObjectStoreErrorKind, S3Config, S3ObjectStore,
+    ByteRange, ObjectStore, ObjectStoreErrorKind, S3Config, S3ObjectStore, final_capsule_key,
 };
 use gump_types::{CapsuleId, ClusterId};
 
@@ -110,7 +110,10 @@ fn handle_conn(store: &MockS3, stream: &mut TcpStream) -> std::io::Result<()> {
     let body = buf[split + 4..split + 4 + content_length].to_vec();
 
     // path: /{bucket}/{key...}
-    let key = path.trim_start_matches('/').split_once('/').map(|(_, k)| k.to_string());
+    let key = path
+        .trim_start_matches('/')
+        .split_once('/')
+        .map(|(_, k)| k.to_string());
 
     let resp = match (method, key.as_deref()) {
         ("PUT", Some(key)) => {
@@ -188,7 +191,12 @@ fn handle_conn(store: &MockS3, stream: &mut TcpStream) -> std::io::Result<()> {
     Ok(())
 }
 
-fn write_raw(stream: &mut TcpStream, status: u16, reason: &str, body: &[u8]) -> std::io::Result<()> {
+fn write_raw(
+    stream: &mut TcpStream,
+    status: u16,
+    reason: &str,
+    body: &[u8],
+) -> std::io::Result<()> {
     let headers = format!(
         "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()

@@ -828,6 +828,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "capsule-lib",
+ "crc32fast",
  "gump-crypto",
  "gump-types",
  "unicode-normalization",

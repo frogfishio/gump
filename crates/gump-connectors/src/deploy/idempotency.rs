@@ -14,9 +14,7 @@ pub struct IdempotencyRecord {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum IdempotencyError {
-    Conflict {
-        operation_id: [u8; 16],
-    },
+    Conflict { operation_id: [u8; 16] },
 }
 
 impl std::fmt::Display for IdempotencyError {
@@ -75,11 +73,7 @@ impl IdempotencyCache {
         self.by_op.is_empty()
     }
 
-    pub fn get(
-        &mut self,
-        operation_id: &[u8; 16],
-        now_ms: u64,
-    ) -> Option<&IdempotencyRecord> {
+    pub fn get(&mut self, operation_id: &[u8; 16], now_ms: u64) -> Option<&IdempotencyRecord> {
         self.expire(now_ms);
         self.by_op.get(operation_id)
     }

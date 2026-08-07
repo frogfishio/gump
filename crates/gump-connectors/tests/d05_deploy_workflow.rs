@@ -4,9 +4,9 @@
 //! CONFORMANCE Deploy receipt, DECISIONS D014.
 
 use gump_connectors::{
-    default_wait_condition, format_receipt_human, ConvergenceSnapshot, DeployBackend,
-    DeployFailure, DeployOutcome, DeployPhase, DeployRequest, DeployWorkflow, ObjectKey,
-    ObjectLocator, WaitCondition, WorkloadContract,
+    ConvergenceSnapshot, DeployBackend, DeployFailure, DeployOutcome, DeployPhase, DeployRequest,
+    DeployWorkflow, ObjectKey, ObjectLocator, WaitCondition, WorkloadContract,
+    default_wait_condition, format_receipt_human,
 };
 use gump_types::{CapsuleId, WorkloadId};
 
@@ -182,7 +182,11 @@ impl DeployBackend for FakeBackend {
     }
 }
 
-fn req(contract: WorkloadContract, operation_id: [u8; 16], wait: Option<WaitCondition>) -> DeployRequest {
+fn req(
+    contract: WorkloadContract,
+    operation_id: [u8; 16],
+    wait: Option<WaitCondition>,
+) -> DeployRequest {
     DeployRequest {
         operation_id,
         principal: "oidc:deployer".into(),
@@ -223,11 +227,7 @@ fn default_wait_matrix_d014() {
 fn successful_finite_deploy_receipt_is_truthful() {
     let mut wf = DeployWorkflow::new();
     let mut backend = FakeBackend::ok();
-    let outcome = wf.run(
-        &mut backend,
-        req(contract_finite(), op(1), None),
-        1_000,
-    );
+    let outcome = wf.run(&mut backend, req(contract_finite(), op(1), None), 1_000);
     let DeployOutcome::Success(receipt) = outcome else {
         panic!("expected success: {outcome:?}");
     };
@@ -372,9 +372,21 @@ fn accepted_wait_skips_unit_convergence() {
 fn workflow_acceptance_matrix_phases() {
     // CLI_LIFECYCLE §9 outcome taxonomy — phase discrimination.
     let cases: &[(&str, FailAt, Option<DeployPhase>)] = &[
-        ("capsule persistence / publish", FailAt::Publish, Some(DeployPhase::ImmutablePublish)),
-        ("live-intent acceptance", FailAt::Accept, Some(DeployPhase::IntentAccept)),
-        ("lost observation", FailAt::ObserveLost, Some(DeployPhase::WaitObservation)),
+        (
+            "capsule persistence / publish",
+            FailAt::Publish,
+            Some(DeployPhase::ImmutablePublish),
+        ),
+        (
+            "live-intent acceptance",
+            FailAt::Accept,
+            Some(DeployPhase::IntentAccept),
+        ),
+        (
+            "lost observation",
+            FailAt::ObserveLost,
+            Some(DeployPhase::WaitObservation),
+        ),
         ("converged", FailAt::None, None),
     ];
     for (i, (label, fail_at, expect_phase)) in cases.iter().enumerate() {

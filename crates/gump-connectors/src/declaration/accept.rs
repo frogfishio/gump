@@ -2,11 +2,11 @@
 
 use std::collections::BTreeMap;
 
-use gump_crypto::{SignerTrustPolicy, TrustCheck, TrustError, VerifyingKeyBytes, SIGNATURE_LEN};
+use gump_crypto::{SIGNATURE_LEN, SignerTrustPolicy, TrustCheck, TrustError, VerifyingKeyBytes};
 use gump_types::{Action, PolicyEngine, PrincipalId, WorkloadId};
 
-use crate::declaration::normalize::{normalize_declaration, NormalizeError};
-use crate::declaration::sign::{verify_declaration_signature, SignError};
+use crate::declaration::normalize::{NormalizeError, normalize_declaration};
+use crate::declaration::sign::{SignError, verify_declaration_signature};
 use crate::declaration::types::{DeclarationDraft, NormalizedDeclaration};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -107,6 +107,7 @@ impl DeclarationLedger {
     ///
     /// Signature covers intent for the proposed next generation
     /// (`expected_generation + 1`) and the bound `workload_id`.
+    #[allow(clippy::too_many_arguments)]
     pub fn accept_declaration(
         &mut self,
         policy: &mut PolicyEngine,
@@ -138,17 +139,12 @@ impl DeclarationLedger {
         let key = (draft.namespace.clone(), draft.app_name.clone());
         let current = self.by_app.get(&key).map(|s| s.declaration.clone());
 
-        let (workload_id, next_gen, created) =
-            resolve_generation(current.as_ref(), &draft)?;
+        let (workload_id, next_gen, created) = resolve_generation(current.as_ref(), &draft)?;
 
         verify_declaration_signature(signer, &draft, workload_id, next_gen, signature)?;
 
-        let normalized = normalize_declaration(
-            &draft,
-            workload_id,
-            next_gen,
-            auth.decision_id.clone(),
-        )?;
+        let normalized =
+            normalize_declaration(&draft, workload_id, next_gen, auth.decision_id.clone())?;
 
         // Concurrent write barrier: exactly one next generation; equal-gen
         // divergent content fails closed (INV-015).
@@ -198,7 +194,9 @@ fn resolve_generation(
                     expected: draft.expected_generation,
                 });
             }
-            let wid = draft.workload_id.ok_or(DeclarationError::MissingWorkloadId)?;
+            let wid = draft
+                .workload_id
+                .ok_or(DeclarationError::MissingWorkloadId)?;
             Ok((wid, 1u64, true))
         }
         Some(cur) => {
@@ -213,11 +211,7 @@ fn resolve_generation(
                     return Err(DeclarationError::WorkloadMismatch);
                 }
             }
-            Ok((
-                cur.workload_id,
-                cur.generation.saturating_add(1),
-                false,
-            ))
+            Ok((cur.workload_id, cur.generation.saturating_add(1), false))
         }
     }
 }
@@ -236,11 +230,8 @@ fn intent_digest_of(decl: &NormalizedDeclaration) -> [u8; 32] {
         operation_id: decl.operation_id,
         deployer_principal: decl.deployer_principal.clone(),
     };
-    let bytes = crate::declaration::normalize::intent_bytes(
-        &draft,
-        decl.workload_id,
-        decl.generation,
-    )
-    .expect("stored declaration always re-encodes");
+    let bytes =
+        crate::declaration::normalize::intent_bytes(&draft, decl.workload_id, decl.generation)
+            .expect("stored declaration always re-encodes");
     *blake3::hash(&bytes).as_bytes()
 }

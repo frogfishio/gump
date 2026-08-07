@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use gump_capsule::archive::{
-    materialize_application_archive, pack_archive, ArchiveEntry, ArchiveErrorKind, ExtractLimits,
+    ArchiveEntry, ArchiveErrorKind, ExtractLimits, materialize_application_archive, pack_archive,
 };
 use gump_types::CapsuleId;
 
@@ -33,18 +33,14 @@ fn materializes_archive_under_apps_capsule_id() {
     let mat = materialize_application_archive(&state, capsule, &archive, &ExtractLimits::default())
         .unwrap();
     assert_eq!(mat.capsule_id, capsule);
-    assert_eq!(
-        mat.root,
-        state.join("apps").join(capsule.to_hyphenated())
-    );
+    assert_eq!(mat.root, state.join("apps").join(capsule.to_hyphenated()));
     assert_eq!(
         fs::read(mat.root.join("bin/hello")).unwrap(),
         b"#!/bin/sh\nexit 0\n"
     );
     // Second materialize of same id fails (cache exists).
-    let err =
-        materialize_application_archive(&state, capsule, &archive, &ExtractLimits::default())
-            .unwrap_err();
+    let err = materialize_application_archive(&state, capsule, &archive, &ExtractLimits::default())
+        .unwrap_err();
     assert_eq!(err.kind(), ArchiveErrorKind::Io);
     let _ = fs::remove_dir_all(state);
 }

@@ -1,7 +1,7 @@
 //! Release-signature transcript helpers over Capsule segment tables (F05).
 
 use gump_crypto::{
-    build_release_signing_transcript, verify_transcript, SegmentDigestRef, VerifyingKeyBytes,
+    SegmentDigestRef, VerifyingKeyBytes, build_release_signing_transcript, verify_transcript,
 };
 
 use crate::error::{CapsuleDialectError, CapsuleDialectErrorKind};
@@ -17,17 +17,15 @@ pub fn release_signing_transcript(
         stored_length: 0,
         digest: [0u8; 32],
     }; 4];
-    for i in 0..4 {
-        let d = &table.descriptors[i];
+    for (i, d) in table.descriptors.iter().take(4).enumerate() {
         segs[i] = SegmentDigestRef {
             segment_type: d.segment_type.as_u16(),
             stored_length: d.stored_length,
             digest: d.digest,
         };
     }
-    build_release_signing_transcript(header_cbor, TABLE_VERSION, &segs).map_err(|e| {
-        CapsuleDialectError::new(CapsuleDialectErrorKind::Segment, e.to_string())
-    })
+    build_release_signing_transcript(header_cbor, TABLE_VERSION, &segs)
+        .map_err(|e| CapsuleDialectError::new(CapsuleDialectErrorKind::Segment, e.to_string()))
 }
 
 /// Verify an Ed25519 signature over the Capsule release transcript.
@@ -38,10 +36,6 @@ pub fn verify_release_signature(
     signature: &[u8; 64],
 ) -> Result<(), CapsuleDialectError> {
     let transcript = release_signing_transcript(header_cbor, table)?;
-    verify_transcript(
-        &VerifyingKeyBytes(*public_key),
-        &transcript,
-        signature,
-    )
-    .map_err(|e| CapsuleDialectError::new(CapsuleDialectErrorKind::Segment, e.to_string()))
+    verify_transcript(&VerifyingKeyBytes(*public_key), &transcript, signature)
+        .map_err(|e| CapsuleDialectError::new(CapsuleDialectErrorKind::Segment, e.to_string()))
 }

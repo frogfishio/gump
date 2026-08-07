@@ -1,6 +1,7 @@
 //! In-memory fake object store for D01 overwrite/conflict/fault suite.
 
 use std::collections::BTreeMap;
+use std::io::{Cursor, Read};
 
 use gump_types::{CapsuleId, ClusterId};
 
@@ -90,7 +91,11 @@ impl ObjectStore for FakeObjectStore {
         Ok(id)
     }
 
-    fn write(&mut self, upload: UploadId, chunk: &[u8]) -> Result<UploadProgress, ObjectStoreError> {
+    fn write(
+        &mut self,
+        upload: UploadId,
+        chunk: &[u8],
+    ) -> Result<UploadProgress, ObjectStoreError> {
         if self.faults.fail_next_write {
             self.faults.fail_next_write = false;
             return Err(ObjectStoreError::new(
@@ -173,48 +178,7 @@ impl ObjectStore for FakeObjectStore {
         digest: [u8; 32],
         len: u64,
     ) -> Result<ObjectEvidence, ObjectStoreError> {
-        if self.faults.fail_next_publish {
-            self.faults.fail_next_publish = false;
-            return Err(ObjectStoreError::new(
-                ObjectStoreErrorKind::FaultInjected,
-                "injected publish fault",
-            ));
-        }
-        let q = self.objects.get(quarantine).ok_or_else(|| {
-            ObjectStoreError::new(ObjectStoreErrorKind::NotFound, "quarantine object missing")
-        })?;
-        if q.digest != digest || q.bytes.len() as u64 != len {
-            return Err(ObjectStoreError::new(
-                ObjectStoreErrorKind::PreconditionFailed,
-                "quarantine evidence does not match publish args",
-            ));
-        }
-        if let Some(existing) = self.objects.get(final_key) {
-            if existing.digest == digest && existing.bytes.len() as u64 == len {
-                // Idempotent accept of identical object.
-                return Ok(ObjectEvidence {
-                    key: final_key.clone(),
-                    length: len,
-                    digest,
-                });
-            }
-            return Err(ObjectStoreError::new(
-                ObjectStoreErrorKind::Conflict,
-                "final key occupied by different object",
-            ));
-        }
-        let stored = StoredObject {
-            bytes: q.bytes.clone(),
-            digest,
-        };
-        self.objects.insert(final_key.clone(), stored);
-        // Quarantine remains until explicit delete (D008: deleted after promotion
-        // or age cleanup — caller decides).
-        Ok(ObjectEvidence {
-            key: final_key.clone(),
-            length: len,
-            digest,
-        })
+        self.copy_if_absent(quarantine, final_key, digest, len)
     }
 
     fn head(&self, key: &ObjectKey) -> Result<ObjectEvidence, ObjectStoreError> {
@@ -235,31 +199,86 @@ impl ObjectStore for FakeObjectStore {
         })
     }
 
-    fn get(&self, key: &ObjectKey, range: Option<ByteRange>) -> Result<Vec<u8>, ObjectStoreError> {
+    fn get_reader(
+        &self,
+        key: &ObjectKey,
+        range: Option<ByteRange>,
+    ) -> Result<Box<dyn Read + '_>, ObjectStoreError> {
         let obj = self.objects.get(key).ok_or_else(|| {
             ObjectStoreError::new(ObjectStoreErrorKind::NotFound, "object not found")
         })?;
-        let Some(range) = range else {
-            return Ok(obj.bytes.clone());
+        let bytes = match range {
+            None => obj.bytes.clone(),
+            Some(range) => {
+                let start = range.start as usize;
+                if start > obj.bytes.len() {
+                    return Err(ObjectStoreError::new(
+                        ObjectStoreErrorKind::InvalidArgument,
+                        "range start past EOF",
+                    ));
+                }
+                let end = match range.end {
+                    Some(e) => e as usize,
+                    None => obj.bytes.len(),
+                };
+                if end < start || end > obj.bytes.len() {
+                    return Err(ObjectStoreError::new(
+                        ObjectStoreErrorKind::InvalidArgument,
+                        "invalid byte range",
+                    ));
+                }
+                obj.bytes[start..end].to_vec()
+            }
         };
-        let start = range.start as usize;
-        if start > obj.bytes.len() {
+        Ok(Box::new(Cursor::new(bytes)))
+    }
+
+    fn copy_if_absent(
+        &mut self,
+        source: &ObjectKey,
+        dest: &ObjectKey,
+        digest: [u8; 32],
+        len: u64,
+    ) -> Result<ObjectEvidence, ObjectStoreError> {
+        if self.faults.fail_next_publish {
+            self.faults.fail_next_publish = false;
             return Err(ObjectStoreError::new(
-                ObjectStoreErrorKind::InvalidArgument,
-                "range start past EOF",
+                ObjectStoreErrorKind::FaultInjected,
+                "injected publish fault",
             ));
         }
-        let end = match range.end {
-            Some(e) => e as usize,
-            None => obj.bytes.len(),
-        };
-        if end < start || end > obj.bytes.len() {
+        let q = self.objects.get(source).ok_or_else(|| {
+            ObjectStoreError::new(ObjectStoreErrorKind::NotFound, "quarantine object missing")
+        })?;
+        if q.digest != digest || q.bytes.len() as u64 != len {
             return Err(ObjectStoreError::new(
-                ObjectStoreErrorKind::InvalidArgument,
-                "invalid byte range",
+                ObjectStoreErrorKind::PreconditionFailed,
+                "quarantine evidence does not match publish args",
             ));
         }
-        Ok(obj.bytes[start..end].to_vec())
+        if let Some(existing) = self.objects.get(dest) {
+            if existing.digest == digest && existing.bytes.len() as u64 == len {
+                return Ok(ObjectEvidence {
+                    key: dest.clone(),
+                    length: len,
+                    digest,
+                });
+            }
+            return Err(ObjectStoreError::new(
+                ObjectStoreErrorKind::Conflict,
+                "final key occupied by different object",
+            ));
+        }
+        let stored = StoredObject {
+            bytes: q.bytes.clone(),
+            digest,
+        };
+        self.objects.insert(dest.clone(), stored);
+        Ok(ObjectEvidence {
+            key: dest.clone(),
+            length: len,
+            digest,
+        })
     }
 
     fn delete(&mut self, key: &ObjectKey) -> Result<(), ObjectStoreError> {

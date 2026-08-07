@@ -6,11 +6,11 @@
 
 use std::io::Read;
 
-use gump_capsule::{read_gump_capsule, verify_release_signature, SegmentType};
+use gump_capsule::{StreamingCapsuleReader, verify_release_signature};
 use gump_crypto::{SignerTrustPolicy, TrustCheck, TrustError, VerifyingKeyBytes};
 use gump_types::{CapsuleId, ClusterId};
 
-use crate::object::{final_capsule_key, ObjectEvidence, ObjectStore, ObjectStoreError};
+use crate::object::{ObjectEvidence, ObjectStore, ObjectStoreError, final_capsule_key};
 
 /// Default max chunk size kept in the ingest buffer (peak-memory bound).
 pub const DEFAULT_MAX_CHUNK_BYTES: usize = 64 * 1024;
@@ -51,10 +51,7 @@ pub struct IngressReceipt {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum IngressError {
     Io(String),
-    Oversize {
-        received: u64,
-        max: u64,
-    },
+    Oversize { received: u64, max: u64 },
     EmptyBody,
     Object(ObjectStoreError),
     Capsule(String),
@@ -62,10 +59,7 @@ pub enum IngressError {
     Signature,
     ClusterMismatch,
     CapsuleIdMismatch,
-    Truncated {
-        got: u64,
-        expected: u64,
-    },
+    Truncated { got: u64, expected: u64 },
 }
 
 impl std::fmt::Display for IngressError {
@@ -106,17 +100,9 @@ impl From<TrustError> for IngressError {
 }
 
 /// Ingress role: stream → quarantine → verify → publish_if_absent (no unseal).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct StreamedIngress {
     pub limits: IngressLimits,
-}
-
-impl Default for StreamedIngress {
-    fn default() -> Self {
-        Self {
-            limits: IngressLimits::default(),
-        }
-    }
 }
 
 impl StreamedIngress {
@@ -127,7 +113,9 @@ impl StreamedIngress {
     /// Stream a body of known `content_length` (HTTP Content-Length) into quarantine,
     /// verify while quarantined, then promote with write-if-absent.
     ///
-    /// Peak buffer during ingest is at most `limits.max_chunk_bytes`.
+    /// Peak buffer is bounded by `max(max_chunk_bytes, segment-table size, signature
+    /// segment)` — never the full Capsule body (STL-03).
+    #[allow(clippy::too_many_arguments)]
     pub fn accept_known_length<S: ObjectStore>(
         &self,
         store: &mut S,
@@ -192,19 +180,24 @@ impl StreamedIngress {
         let digest = *hasher.finalize().as_bytes();
         let q = store.finish_quarantine(upload, digest)?;
 
-        let bytes = store.get(&q.key, None)?;
-        let view =
-            read_gump_capsule(&bytes).map_err(|e| IngressError::Capsule(e.to_string()))?;
-        if &view.header.cluster_id != cluster.as_bytes() {
+        // STL-03: stream-verify from object store; never buffer the full Capsule.
+        let reader = store.get_reader(&q.key, None)?;
+        let meta = StreamingCapsuleReader::with_chunk_bytes(reader, self.limits.max_chunk_bytes)
+            .verify()
+            .map_err(|e| IngressError::Capsule(e.to_string()))?;
+        // Peak includes ingest chunk and verify chunk (same bound).
+        peak = peak.max(meta.peak_buffer_bytes);
+
+        if &meta.header.cluster_id != cluster.as_bytes() {
             let _ = store.delete(&q.key);
             return Err(IngressError::ClusterMismatch);
         }
-        if &view.header.capsule_id != capsule.as_bytes() {
+        if &meta.header.capsule_id != capsule.as_bytes() {
             let _ = store.delete(&q.key);
             return Err(IngressError::CapsuleIdMismatch);
         }
 
-        let sig_seg = view.segment(SegmentType::ReleaseSignature);
+        let sig_seg = meta.signature_segment.as_slice();
         if sig_seg.len() < 96 {
             let _ = store.delete(&q.key);
             return Err(IngressError::Signature);
@@ -214,11 +207,11 @@ impl StreamedIngress {
         vk.copy_from_slice(&sig_seg[..32]);
         signature.copy_from_slice(&sig_seg[32..96]);
 
-        let header_cbor = view
+        let header_cbor = meta
             .header
             .encode_cbor()
             .map_err(|e| IngressError::Capsule(e.to_string()))?;
-        verify_release_signature(&header_cbor, &view.table, &vk, &signature)
+        verify_release_signature(&header_cbor, &meta.table, &vk, &signature)
             .map_err(|_| IngressError::Signature)?;
 
         let trust_decision = trust.check(

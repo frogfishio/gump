@@ -7,8 +7,8 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use gump_capsule::archive::{
-    extract_entries, pack_archive, unpack_archive, write_ustar, ArchiveEntry, ArchiveErrorKind,
-    ExtractLimits, ARCHIVE_FORMAT,
+    ARCHIVE_FORMAT, ArchiveEntry, ArchiveErrorKind, ExtractLimits, extract_entries, pack_archive,
+    unpack_archive, write_ustar,
 };
 
 fn sample_entries() -> Vec<ArchiveEntry> {
@@ -54,7 +54,8 @@ fn golden_archive_matches_checked_in_vector() {
         )
     });
     assert_eq!(
-        produced, golden,
+        produced,
+        golden,
         "archive bytes drifted from {} (set GUMP_WRITE_GOLDEN=1 to refresh)",
         golden_path.display()
     );

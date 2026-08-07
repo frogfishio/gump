@@ -3,7 +3,7 @@
 use gump_types::{Label, LabelError, WorkloadId};
 
 use crate::declaration::types::{
-    DeclarationDraft, NormalizedDeclaration, OverrideProvenance, DECLARATION_SCHEMA,
+    DECLARATION_SCHEMA, DeclarationDraft, NormalizedDeclaration, OverrideProvenance,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]

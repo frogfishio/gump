@@ -4,7 +4,7 @@
 //! Capsules remain inert objects — the connector never stores desired state.
 
 use gump_connectors::{
-    final_capsule_key, ByteRange, FakeObjectStore, ObjectStore, ObjectStoreErrorKind,
+    ByteRange, FakeObjectStore, ObjectStore, ObjectStoreErrorKind, final_capsule_key,
 };
 use gump_types::{CapsuleId, ClusterId};
 

@@ -1,11 +1,11 @@
 //! Ed25519 signatures over declaration intent bytes.
 
 use gump_crypto::{
-    sign_transcript, verify_transcript, SigningKeyBytes, VerifyingKeyBytes, SIGNATURE_LEN,
+    SIGNATURE_LEN, SigningKeyBytes, VerifyingKeyBytes, sign_transcript, verify_transcript,
 };
 use gump_types::WorkloadId;
 
-use crate::declaration::normalize::{intent_bytes, NormalizeError};
+use crate::declaration::normalize::{NormalizeError, intent_bytes};
 use crate::declaration::types::DeclarationDraft;
 
 /// Domain separator for declaration signatures.

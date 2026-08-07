@@ -1,6 +1,10 @@
 //! `ObjectStore` backed by an S3-compatible HTTP endpoint.
 
 use std::collections::BTreeMap;
+use std::fs::File;
+use std::fs::OpenOptions;
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::PathBuf;
 
 use gump_types::{CapsuleId, ClusterId};
 
@@ -28,16 +32,18 @@ impl S3Config {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct OpenUpload {
     expected_len: u64,
-    buffer: Vec<u8>,
+    written: u64,
+    path: PathBuf,
+    file: File,
     quarantine: ObjectKey,
 }
 
-/// S3-compatible connector: quarantine via ordinary PUT; final publish uses
-/// `If-None-Match: *` (write-if-absent). Matching digest+len is idempotent.
-#[derive(Clone, Debug)]
+/// S3-compatible connector: quarantine streams to a spill file then PUT;
+/// promote uses streaming copy (no full-object Vec) (STL-03 / D008).
+#[derive(Debug)]
 pub struct S3ObjectStore {
     endpoint: S3Endpoint,
     uploads: BTreeMap<UploadId, OpenUpload>,
@@ -74,31 +80,58 @@ impl ObjectStore for S3ObjectStore {
         self.next_upload = self.next_upload.saturating_add(1);
         let id = UploadId::from_raw(self.next_upload);
         let quarantine = quarantine_key(cluster, capsule, id.as_raw())?;
+        let path = std::env::temp_dir().join(format!(
+            "gump-s3-q-{}-{}-{}.capsule",
+            id.as_raw(),
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .map_err(|e| {
+                ObjectStoreError::new(ObjectStoreErrorKind::FaultInjected, e.to_string())
+            })?;
         self.uploads.insert(
             id,
             OpenUpload {
                 expected_len,
-                buffer: Vec::with_capacity(expected_len.min(1024 * 1024) as usize),
+                written: 0,
+                path,
+                file,
                 quarantine,
             },
         );
         Ok(id)
     }
 
-    fn write(&mut self, upload: UploadId, chunk: &[u8]) -> Result<UploadProgress, ObjectStoreError> {
+    fn write(
+        &mut self,
+        upload: UploadId,
+        chunk: &[u8],
+    ) -> Result<UploadProgress, ObjectStoreError> {
         let entry = self.uploads.get_mut(&upload).ok_or_else(|| {
             ObjectStoreError::new(ObjectStoreErrorKind::NotFound, "unknown upload")
         })?;
-        let next = entry.buffer.len() as u64 + chunk.len() as u64;
+        let next = entry.written.saturating_add(chunk.len() as u64);
         if next > entry.expected_len {
             return Err(ObjectStoreError::new(
                 ObjectStoreErrorKind::InvalidArgument,
                 "write would exceed expected_len",
             ));
         }
-        entry.buffer.extend_from_slice(chunk);
+        entry.file.write_all(chunk).map_err(|e| {
+            ObjectStoreError::new(ObjectStoreErrorKind::FaultInjected, e.to_string())
+        })?;
+        entry.written = next;
         Ok(UploadProgress {
-            bytes_written: entry.buffer.len() as u64,
+            bytes_written: entry.written,
             expected_len: entry.expected_len,
         })
     }
@@ -108,29 +141,58 @@ impl ObjectStore for S3ObjectStore {
         upload: UploadId,
         digest: [u8; 32],
     ) -> Result<ObjectEvidence, ObjectStoreError> {
-        let entry = self.uploads.remove(&upload).ok_or_else(|| {
+        let mut entry = self.uploads.remove(&upload).ok_or_else(|| {
             ObjectStoreError::new(ObjectStoreErrorKind::NotFound, "unknown upload")
         })?;
-        if entry.buffer.len() as u64 != entry.expected_len {
+        if entry.written != entry.expected_len {
+            let _ = std::fs::remove_file(&entry.path);
             return Err(ObjectStoreError::new(
                 ObjectStoreErrorKind::PreconditionFailed,
                 format!(
                     "length {} != expected {}",
-                    entry.buffer.len(),
-                    entry.expected_len
+                    entry.written, entry.expected_len
                 ),
             ));
         }
-        let got = *blake3::hash(&entry.buffer).as_bytes();
+        entry.file.flush().map_err(|e| {
+            ObjectStoreError::new(ObjectStoreErrorKind::FaultInjected, e.to_string())
+        })?;
+        entry.file.seek(SeekFrom::Start(0)).map_err(|e| {
+            ObjectStoreError::new(ObjectStoreErrorKind::FaultInjected, e.to_string())
+        })?;
+        // Re-hash from spill to confirm caller digest without holding the object in RAM.
+        let mut hasher = blake3::Hasher::new();
+        let mut buf = [0u8; 64 * 1024];
+        loop {
+            let n = entry.file.read(&mut buf).map_err(|e| {
+                ObjectStoreError::new(ObjectStoreErrorKind::FaultInjected, e.to_string())
+            })?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+        }
+        let got = *hasher.finalize().as_bytes();
         if got != digest {
+            let _ = std::fs::remove_file(&entry.path);
             return Err(ObjectStoreError::new(
                 ObjectStoreErrorKind::PreconditionFailed,
                 "quarantine digest mismatch",
             ));
         }
+        entry.file.seek(SeekFrom::Start(0)).map_err(|e| {
+            ObjectStoreError::new(ObjectStoreErrorKind::FaultInjected, e.to_string())
+        })?;
         self.endpoint
-            .put(entry.quarantine.as_str(), &entry.buffer, digest, false)
+            .put_from_reader(
+                entry.quarantine.as_str(),
+                &mut entry.file,
+                entry.expected_len,
+                digest,
+                false,
+            )
             .map_err(map_http)?;
+        let _ = std::fs::remove_file(&entry.path);
         Ok(ObjectEvidence {
             key: entry.quarantine,
             length: entry.expected_len,
@@ -139,12 +201,13 @@ impl ObjectStore for S3ObjectStore {
     }
 
     fn abort(&mut self, upload: UploadId) -> Result<(), ObjectStoreError> {
-        if self.uploads.remove(&upload).is_none() {
+        let Some(entry) = self.uploads.remove(&upload) else {
             return Err(ObjectStoreError::new(
                 ObjectStoreErrorKind::NotFound,
                 "unknown upload",
             ));
-        }
+        };
+        let _ = std::fs::remove_file(&entry.path);
         Ok(())
     }
 
@@ -155,29 +218,63 @@ impl ObjectStore for S3ObjectStore {
         digest: [u8; 32],
         len: u64,
     ) -> Result<ObjectEvidence, ObjectStoreError> {
-        let q_meta = self.endpoint.head(quarantine.as_str()).map_err(map_http)?;
+        self.copy_if_absent(quarantine, final_key, digest, len)
+    }
+
+    fn head(&self, key: &ObjectKey) -> Result<ObjectEvidence, ObjectStoreError> {
+        let meta = self.endpoint.head(key.as_str()).map_err(map_http)?;
+        Ok(ObjectEvidence {
+            key: key.clone(),
+            length: meta.length,
+            digest: meta.digest,
+        })
+    }
+
+    fn get_reader(
+        &self,
+        key: &ObjectKey,
+        range: Option<ByteRange>,
+    ) -> Result<Box<dyn Read + '_>, ObjectStoreError> {
+        let r = range.map(|b| (b.start, b.end));
+        let reader = self
+            .endpoint
+            .get_reader(key.as_str(), r)
+            .map_err(map_http)?;
+        Ok(Box::new(reader))
+    }
+
+    fn copy_if_absent(
+        &mut self,
+        source: &ObjectKey,
+        dest: &ObjectKey,
+        digest: [u8; 32],
+        len: u64,
+    ) -> Result<ObjectEvidence, ObjectStoreError> {
+        let q_meta = self.endpoint.head(source.as_str()).map_err(map_http)?;
         if q_meta.digest != digest || q_meta.length != len {
             return Err(ObjectStoreError::new(
                 ObjectStoreErrorKind::PreconditionFailed,
                 "quarantine evidence does not match publish args",
             ));
         }
-        let bytes = self.endpoint.get(quarantine.as_str(), None).map_err(map_http)?;
+        let mut reader = self
+            .endpoint
+            .get_reader(source.as_str(), None)
+            .map_err(map_http)?;
         match self
             .endpoint
-            .put(final_key.as_str(), &bytes, digest, true)
+            .put_from_reader(dest.as_str(), &mut reader, len, digest, true)
         {
             Ok(()) => Ok(ObjectEvidence {
-                key: final_key.clone(),
+                key: dest.clone(),
                 length: len,
                 digest,
             }),
             Err(S3HttpError::Http { status: 412, .. }) => {
-                // Pre-existing: accept only exact digest+length match (D008).
-                let existing = self.endpoint.head(final_key.as_str()).map_err(map_http)?;
+                let existing = self.endpoint.head(dest.as_str()).map_err(map_http)?;
                 if existing.digest == digest && existing.length == len {
                     Ok(ObjectEvidence {
-                        key: final_key.clone(),
+                        key: dest.clone(),
                         length: len,
                         digest,
                     })
@@ -192,20 +289,6 @@ impl ObjectStore for S3ObjectStore {
         }
     }
 
-    fn head(&self, key: &ObjectKey) -> Result<ObjectEvidence, ObjectStoreError> {
-        let meta = self.endpoint.head(key.as_str()).map_err(map_http)?;
-        Ok(ObjectEvidence {
-            key: key.clone(),
-            length: meta.length,
-            digest: meta.digest,
-        })
-    }
-
-    fn get(&self, key: &ObjectKey, range: Option<ByteRange>) -> Result<Vec<u8>, ObjectStoreError> {
-        let r = range.map(|b| (b.start, b.end));
-        self.endpoint.get(key.as_str(), r).map_err(map_http)
-    }
-
     fn delete(&mut self, key: &ObjectKey) -> Result<(), ObjectStoreError> {
         self.endpoint.delete(key.as_str()).map_err(map_http)
     }
@@ -216,9 +299,9 @@ fn map_http(e: S3HttpError) -> ObjectStoreError {
         S3HttpError::Http { status: 404, .. } => {
             ObjectStoreError::new(ObjectStoreErrorKind::NotFound, e.to_string())
         }
-        S3HttpError::Http { status: 409 | 412, .. } => {
-            ObjectStoreError::new(ObjectStoreErrorKind::Conflict, e.to_string())
-        }
+        S3HttpError::Http {
+            status: 409 | 412, ..
+        } => ObjectStoreError::new(ObjectStoreErrorKind::Conflict, e.to_string()),
         other => ObjectStoreError::new(ObjectStoreErrorKind::FaultInjected, other.to_string()),
     }
 }

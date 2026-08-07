@@ -1,5 +1,7 @@
 //! Minimal path-style S3 HTTP verbs used by the connector.
 
+#![allow(clippy::type_complexity)]
+
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
@@ -52,10 +54,29 @@ impl S3Endpoint {
         Ok(stream)
     }
 
+    #[allow(dead_code)] // Convenience wrapper used by tests / future callers.
     pub fn put(
         &self,
         key: &str,
         bytes: &[u8],
+        digest: [u8; 32],
+        if_none_match: bool,
+    ) -> Result<(), S3HttpError> {
+        self.put_from_reader(
+            key,
+            &mut &bytes[..],
+            bytes.len() as u64,
+            digest,
+            if_none_match,
+        )
+    }
+
+    /// Stream a known-length body into PUT without buffering the full object (STL-03).
+    pub fn put_from_reader(
+        &self,
+        key: &str,
+        body: &mut dyn Read,
+        content_length: u64,
         digest: [u8; 32],
         if_none_match: bool,
     ) -> Result<(), S3HttpError> {
@@ -64,24 +85,27 @@ impl S3Endpoint {
         let digest_hex = bytes_to_hex(&digest);
         let mut req = format!(
             "PUT {path} HTTP/1.1\r\nHost: {}:{}\r\nContent-Length: {}\r\n{META_BLAKE3}: {digest_hex}\r\nConnection: close\r\n",
-            self.host,
-            self.port,
-            bytes.len(),
+            self.host, self.port, content_length,
         );
         if if_none_match {
             req.push_str("If-None-Match: *\r\n");
         }
         req.push_str("\r\n");
         stream.write_all(req.as_bytes())?;
-        stream.write_all(bytes)?;
+        let copied = std::io::copy(body, &mut stream)?;
+        if copied != content_length {
+            return Err(S3HttpError::Protocol(format!(
+                "put body length {copied} != content-length {content_length}"
+            )));
+        }
         stream.flush()?;
-        let (status, _headers, body) = read_response(&mut stream, false)?;
+        let (status, _headers, resp_body) = read_response(&mut stream, false)?;
         if (200..300).contains(&status) {
             Ok(())
         } else {
             Err(S3HttpError::Http {
                 status,
-                body: String::from_utf8_lossy(&body).into_owned(),
+                body: String::from_utf8_lossy(&resp_body).into_owned(),
             })
         }
     }
@@ -111,7 +135,25 @@ impl S3Endpoint {
         parse_meta(&headers)
     }
 
-    pub fn get(&self, key: &str, range: Option<(u64, Option<u64>)>) -> Result<Vec<u8>, S3HttpError> {
+    /// Buffered convenience; prefer [`Self::get_reader`] for large objects.
+    #[allow(dead_code)]
+    pub fn get(
+        &self,
+        key: &str,
+        range: Option<(u64, Option<u64>)>,
+    ) -> Result<Vec<u8>, S3HttpError> {
+        let mut reader = self.get_reader(key, range)?;
+        let mut body = Vec::new();
+        reader.read_to_end(&mut body)?;
+        Ok(body)
+    }
+
+    /// Open a streaming GET body (STL-03). Does not buffer the object in RAM.
+    pub fn get_reader(
+        &self,
+        key: &str,
+        range: Option<(u64, Option<u64>)>,
+    ) -> Result<S3BodyReader, S3HttpError> {
         let mut stream = self.connect()?;
         let path = format!("/{}/{}", self.bucket, key);
         let mut req = format!(
@@ -121,7 +163,6 @@ impl S3Endpoint {
         if let Some((start, end)) = range {
             match end {
                 Some(e) if e > 0 => {
-                    // HTTP ranges are inclusive end; our ByteRange end is exclusive.
                     req.push_str(&format!("Range: bytes={start}-{}\r\n", e - 1));
                 }
                 _ => req.push_str(&format!("Range: bytes={start}-\r\n")),
@@ -130,7 +171,7 @@ impl S3Endpoint {
         req.push_str("\r\n");
         stream.write_all(req.as_bytes())?;
         stream.flush()?;
-        let (status, _headers, body) = read_response(&mut stream, false)?;
+        let (status, headers, prelude) = read_headers(&mut stream)?;
         if status == 404 {
             return Err(S3HttpError::Http {
                 status,
@@ -140,10 +181,21 @@ impl S3Endpoint {
         if status != 200 && status != 206 {
             return Err(S3HttpError::Http {
                 status,
-                body: String::from_utf8_lossy(&body).into_owned(),
+                body: String::new(),
             });
         }
-        Ok(body)
+        let content_length = header_content_length(&headers).unwrap_or(0);
+        if prelude.len() > content_length {
+            return Err(S3HttpError::Protocol(
+                "body prelude exceeds content-length".into(),
+            ));
+        }
+        Ok(S3BodyReader {
+            stream,
+            pending: prelude,
+            // Includes bytes already buffered in `pending`.
+            remaining: content_length,
+        })
     }
 
     pub fn delete(&self, key: &str) -> Result<(), S3HttpError> {
@@ -191,7 +243,9 @@ fn parse_meta(headers: &[(String, String)]) -> Result<S3ObjectMeta, S3HttpError>
 fn parse_hex32(s: &str) -> Result<[u8; 32], S3HttpError> {
     let s = s.trim();
     if s.len() != 64 {
-        return Err(S3HttpError::Protocol("blake3 meta must be 64 hex chars".into()));
+        return Err(S3HttpError::Protocol(
+            "blake3 meta must be 64 hex chars".into(),
+        ));
     }
     let mut out = [0u8; 32];
     for i in 0..32 {
@@ -212,6 +266,88 @@ fn bytes_to_hex(bytes: &[u8; 32]) -> String {
     s
 }
 
+/// Streaming HTTP response body with known Content-Length.
+pub struct S3BodyReader {
+    stream: TcpStream,
+    pending: Vec<u8>,
+    remaining: usize,
+}
+
+impl Read for S3BodyReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.remaining == 0 {
+            return Ok(0);
+        }
+        if !self.pending.is_empty() {
+            let n = self.pending.len().min(buf.len()).min(self.remaining);
+            buf[..n].copy_from_slice(&self.pending[..n]);
+            self.pending.drain(..n);
+            self.remaining -= n;
+            return Ok(n);
+        }
+        let want = buf.len().min(self.remaining);
+        let n = self.stream.read(&mut buf[..want])?;
+        self.remaining -= n;
+        Ok(n)
+    }
+}
+
+fn header_content_length(headers: &[(String, String)]) -> Option<usize> {
+    headers.iter().find_map(|(k, v)| {
+        if k.eq_ignore_ascii_case("content-length") {
+            v.parse().ok()
+        } else {
+            None
+        }
+    })
+}
+
+fn parse_status_and_headers(head: &[u8]) -> Result<(u16, Vec<(String, String)>), S3HttpError> {
+    let head =
+        std::str::from_utf8(head).map_err(|_| S3HttpError::Protocol("headers not utf8".into()))?;
+    let mut lines = head.split("\r\n");
+    let status_line = lines
+        .next()
+        .ok_or_else(|| S3HttpError::Protocol("empty status".into()))?;
+    let status = status_line
+        .split_whitespace()
+        .nth(1)
+        .ok_or_else(|| S3HttpError::Protocol("bad status line".into()))?
+        .parse::<u16>()
+        .map_err(|_| S3HttpError::Protocol("bad status code".into()))?;
+    let mut headers = Vec::new();
+    for line in lines {
+        if let Some((k, v)) = line.split_once(':') {
+            headers.push((k.trim().to_string(), v.trim().to_string()));
+        }
+    }
+    Ok((status, headers))
+}
+
+fn read_headers(
+    stream: &mut TcpStream,
+) -> Result<(u16, Vec<(String, String)>, Vec<u8>), S3HttpError> {
+    let mut buf = Vec::new();
+    let mut tmp = [0u8; 4096];
+    loop {
+        let n = stream.read(&mut tmp)?;
+        if n == 0 {
+            break;
+        }
+        buf.extend_from_slice(&tmp[..n]);
+        if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+            break;
+        }
+    }
+    let split = buf
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .ok_or_else(|| S3HttpError::Protocol("no http header terminator".into()))?;
+    let (status, headers) = parse_status_and_headers(&buf[..split])?;
+    let prelude = buf[split + 4..].to_vec();
+    Ok((status, headers, prelude))
+}
+
 fn read_response(
     stream: &mut TcpStream,
     head_only: bool,
@@ -226,10 +362,10 @@ fn read_response(
             Err(e) if e.kind() == std::io::ErrorKind::TimedOut => break,
             Err(e) => return Err(e.into()),
         }
-        if buf.windows(4).any(|w| w == b"\r\n\r\n") {
-            if head_only || header_complete_with_body(&buf) {
-                break;
-            }
+        if buf.windows(4).any(|w| w == b"\r\n\r\n")
+            && (head_only || header_complete_with_body(&buf))
+        {
+            break;
         }
     }
     let split = buf
