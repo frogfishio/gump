@@ -13,3 +13,18 @@ path = "src/lib.rs"
 [[bin]]
 name = "check-traceability"
 path = "src/bin/check_traceability.rs"
+
+[dev-dependencies]
+# STL-11 vertical exit harness (Fake store + Capsule + ClusterState + supervisor + telemetry).
+# Tooling-only: product crates must not depend on gump-gates.
+gump-types = { workspace = true }
+gump-capsule = { workspace = true }
+gump-crypto = { workspace = true }
+gump-connectors = { workspace = true }
+gump-memory = { workspace = true }
+gump-driver = { workspace = true }
+gump-telemetry = { workspace = true }
+blake3 = { workspace = true }
+openraft = { workspace = true }
+rand_core = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync"] }

@@ -945,6 +945,19 @@ dependencies = [
 [[package]]
 name = "gump-gates"
 version = "0.1.0"
+dependencies = [
+ "blake3",
+ "gump-capsule",
+ "gump-connectors",
+ "gump-crypto",
+ "gump-driver",
+ "gump-memory",
+ "gump-telemetry",
+ "gump-types",
+ "openraft",
+ "rand_core 0.10.1",
+ "tokio",
+]
 
 [[package]]
 name = "gump-manifest"
