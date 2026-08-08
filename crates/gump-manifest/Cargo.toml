@@ -15,4 +15,4 @@ globset = { workspace = true }
 blake3 = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2"
+rustix = { version = "1", features = ["fs"] }

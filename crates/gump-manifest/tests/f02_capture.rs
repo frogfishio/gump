@@ -193,6 +193,25 @@ fn rejects_symlink_as_escape() {
 }
 
 #[test]
+fn rejects_intermediate_directory_symlink_at_open() {
+    // STL-16: O_NOFOLLOW on the leaf alone is insufficient — an intermediate
+    // directory symlink must fail closed under the root-handle open.
+    let root = tmp_workspace("mid-dir-symlink");
+    fs::create_dir_all(root.join("via")).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        symlink("/etc", root.join("via/mid")).unwrap();
+        // Direct open path (bypasses read_dir discovery) must not follow mid.
+        // Capture walk also rejects when it encounters the symlink entry.
+        let plan = CapturePlan::from_package(&package(&["via/**"], &[], false, false)).unwrap();
+        let err = capture_workspace(&root, &plan).unwrap_err();
+        assert_eq!(err.kind(), CaptureErrorKind::Escape);
+    }
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn retained_bytes_survive_symlink_swap_after_capture() {
     // STL-05: after capture, replacing the path with a symlink must not change
     // archived bytes (pack uses retained content, not a fresh follow-open).

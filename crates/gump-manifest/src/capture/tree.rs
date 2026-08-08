@@ -2,16 +2,19 @@
 //!
 //! STL-05: capture retains immutable bytes from no-follow opens. Pack/CLI must
 //! archive those bytes (re-verify digest/len); never re-open workspace paths.
+//! STL-16: content opens use a root directory handle (`openat2` /
+//! descriptor-relative walk) so intermediate components cannot be swapped to
+//! symlinks between validation and open.
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use crate::model::PrepareOutput;
 
 use super::deny::is_sensitive_relative_path;
+use super::open_beneath::read_regular_beneath;
 use super::plan::{CaptureError, CaptureErrorKind, CapturePlan};
 
 /// Stable identity used to detect races between metadata passes.
@@ -145,8 +148,9 @@ pub fn apply_prepare_outputs(
         maybe_deny_sensitive(&rel, allow_sensitive_files)?;
         let from = staging.join(&out.from);
         ensure_within_root(&staging, &from)?;
-        let blob = read_regular_nofollow(&from)?;
-        let blob2 = read_regular_nofollow(&from)?;
+        let from_rel = normalize_rel(&out.from)?;
+        let blob = read_regular_beneath(&staging, &from_rel)?;
+        let blob2 = read_regular_beneath(&staging, &from_rel)?;
         if blob.identity != blob2.identity || blob.executable != blob2.executable {
             return Err(CaptureError::new(
                 CaptureErrorKind::SourceChanged,
@@ -167,10 +171,10 @@ pub fn apply_prepare_outputs(
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct CapturedBlob {
-    identity: FileIdentity,
-    bytes: Vec<u8>,
-    executable: bool,
+pub(super) struct CapturedBlob {
+    pub(super) identity: FileIdentity,
+    pub(super) bytes: Vec<u8>,
+    pub(super) executable: bool,
 }
 
 fn pass_identities_match(
@@ -222,7 +226,7 @@ fn scan_once(
             }
             maybe_deny_sensitive(&rel, plan.allow_sensitive_files)?;
             ensure_within_root(root, &path)?;
-            out.insert(rel, read_regular_nofollow(&path)?);
+            out.insert(rel.clone(), read_regular_beneath(root, &rel)?);
         }
     }
     Ok(out)
@@ -296,98 +300,4 @@ fn display_rel(root: &Path, path: &Path) -> String {
     path.strip_prefix(root)
         .map(|p| p.to_string_lossy().replace('\\', "/"))
         .unwrap_or_else(|_| path.to_string_lossy().replace('\\', "/"))
-}
-
-/// Open a regular file without following symlinks; hash bytes from that fd.
-fn read_regular_nofollow(path: &Path) -> Result<CapturedBlob, CaptureError> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-
-        let mut opts = fs::OpenOptions::new();
-        opts.read(true);
-        // FORMATS §11 / STL-05: O_NOFOLLOW — symlink swap cannot redirect the open.
-        opts.custom_flags(libc::O_NOFOLLOW);
-        let mut file = opts.open(path).map_err(|e| {
-            // ELOOP when the final component is a symlink.
-            if e.raw_os_error() == Some(libc::ELOOP) {
-                CaptureError::new(
-                    CaptureErrorKind::Escape,
-                    format!("symlink rejected at open: {}", path.display()),
-                )
-            } else {
-                CaptureError::new(CaptureErrorKind::Io, e.to_string())
-            }
-        })?;
-        let meta = file
-            .metadata()
-            .map_err(|e| CaptureError::new(CaptureErrorKind::Io, e.to_string()))?;
-        if !meta.file_type().is_file() {
-            return Err(CaptureError::new(
-                CaptureErrorKind::Escape,
-                format!("non-regular file rejected: {}", path.display()),
-            ));
-        }
-        let executable = meta.permissions().mode() & 0o111 != 0;
-        let mut bytes = Vec::with_capacity(meta.len() as usize);
-        file.read_to_end(&mut bytes)
-            .map_err(|e| CaptureError::new(CaptureErrorKind::Io, e.to_string()))?;
-        if bytes.len() as u64 != meta.len() {
-            return Err(CaptureError::new(
-                CaptureErrorKind::SourceChanged,
-                format!(
-                    "SOURCE_CHANGED: size changed while reading {}",
-                    path.display()
-                ),
-            ));
-        }
-        let digest = *blake3::hash(&bytes).as_bytes();
-        Ok(CapturedBlob {
-            identity: FileIdentity {
-                len: meta.len(),
-                modified: meta.modified().ok(),
-                digest,
-            },
-            bytes,
-            executable,
-        })
-    }
-    #[cfg(not(unix))]
-    {
-        let meta = fs::symlink_metadata(path)
-            .map_err(|e| CaptureError::new(CaptureErrorKind::Io, e.to_string()))?;
-        if meta.file_type().is_symlink() {
-            return Err(CaptureError::new(
-                CaptureErrorKind::Escape,
-                format!("symlink rejected: {}", path.display()),
-            ));
-        }
-        if !meta.file_type().is_file() {
-            return Err(CaptureError::new(
-                CaptureErrorKind::Escape,
-                format!("non-regular file rejected: {}", path.display()),
-            ));
-        }
-        let bytes =
-            fs::read(path).map_err(|e| CaptureError::new(CaptureErrorKind::Io, e.to_string()))?;
-        if bytes.len() as u64 != meta.len() {
-            return Err(CaptureError::new(
-                CaptureErrorKind::SourceChanged,
-                format!(
-                    "SOURCE_CHANGED: size changed while reading {}",
-                    path.display()
-                ),
-            ));
-        }
-        let digest = *blake3::hash(&bytes).as_bytes();
-        Ok(CapturedBlob {
-            identity: FileIdentity {
-                len: meta.len(),
-                modified: meta.modified().ok(),
-                digest,
-            },
-            bytes,
-            executable: false,
-        })
-    }
 }

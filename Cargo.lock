@@ -966,7 +966,7 @@ dependencies = [
  "blake3",
  "globset",
  "gump-types",
- "libc",
+ "rustix",
  "serde",
  "toml",
 ]

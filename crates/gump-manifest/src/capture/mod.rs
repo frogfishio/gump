@@ -3,6 +3,7 @@
 //! Authority: docs/v1/FORMATS.md §11, DECISIONS D009.
 
 mod deny;
+mod open_beneath;
 mod plan;
 mod tree;
 
