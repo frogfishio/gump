@@ -1,8 +1,9 @@
 //! Local daemon request handling over an authenticated Unix connection.
 
 use std::io::{Read, Write};
+use std::sync::Arc;
 
-use gump_memory::{ControllerAuthority, LeaseTable};
+use gump_memory::{ControllerAuthority, LeaseTable, MemoryCluster};
 
 use crate::framing::{FrameError, read_frame, write_frame};
 use crate::machine::{
@@ -16,9 +17,11 @@ pub struct LocalDaemon {
     pub incarnation: u64,
     pub memory_voters: u32,
     pub allowlist: PeerAllowlist,
-    /// In-memory controller view for status (C07).
+    /// Cached controller view; preferred source is [`Self::memory_cluster`] (GUMP-N005).
     pub controller_epoch: u64,
     pub controller_holder: Option<u64>,
+    /// Live one-voter Raft node when memory/controller roles are enabled.
+    pub memory_cluster: Option<Arc<MemoryCluster>>,
 }
 
 impl LocalDaemon {
@@ -30,6 +33,7 @@ impl LocalDaemon {
             allowlist,
             controller_epoch: 0,
             controller_holder: None,
+            memory_cluster: None,
         }
     }
 
@@ -41,6 +45,24 @@ impl LocalDaemon {
 
     pub fn authorize_peer(&self, peer: PeerCred) -> Result<(), PeerAuthError> {
         self.allowlist.authorize(peer)
+    }
+
+    /// Prefer live Raft/SM view for status (N005); fall back to cached fields.
+    fn live_status_fields(&self) -> (u64, Option<u64>, u32) {
+        if let Some(cluster) = &self.memory_cluster {
+            if let Ok(snap) = cluster.status_snapshot() {
+                return (
+                    snap.controller_epoch,
+                    snap.controller_holder,
+                    snap.voter_count,
+                );
+            }
+        }
+        (
+            self.controller_epoch,
+            self.controller_holder,
+            self.memory_voters,
+        )
     }
 }
 
@@ -76,24 +98,22 @@ impl From<PeerAuthError> for ServeError {
 }
 
 pub fn handle_request(daemon: &LocalDaemon, req: LocalRequest) -> LocalResponse {
+    let (controller_epoch, controller_holder, memory_voters) = daemon.live_status_fields();
     match req {
         LocalRequest::Hello => LocalResponse::Hello {
             daemon: "gump-server".into(),
-            controller_epoch: daemon.controller_epoch,
+            controller_epoch,
         },
         LocalRequest::Status => LocalResponse::Status(StatusBody {
             cluster_id: daemon.cluster_id.clone(),
             incarnation: daemon.incarnation,
-            controller_epoch: daemon.controller_epoch,
-            controller_holder: daemon.controller_holder,
-            memory_voters: daemon.memory_voters,
-            durability_note: if daemon.memory_voters <= 1 {
+            controller_epoch,
+            controller_holder,
+            memory_voters,
+            durability_note: if memory_voters <= 1 {
                 "1 memory member; live intent has zero failure tolerance".into()
             } else {
-                format!(
-                    "{} memory voters; majority required for new commits",
-                    daemon.memory_voters
-                )
+                format!("{memory_voters} memory voters; majority required for new commits")
             },
         }),
         LocalRequest::Explain { subject } => LocalResponse::Explain {
@@ -129,6 +149,7 @@ pub fn serve_connection(
 }
 
 /// Helper used by tests: acquire controller once and sync into daemon status.
+/// Production `--init` uses [`MemoryCluster`] (GUMP-N005) instead.
 pub fn bootstrap_controller(daemon: &mut LocalDaemon, holder: u64, now_ms: u64) {
     let mut auth = ControllerAuthority::new();
     let mut leases = LeaseTable::default();

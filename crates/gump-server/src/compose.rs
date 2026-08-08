@@ -1,17 +1,19 @@
-//! Product role composition — wire facets without a parallel state path (GUMP-N004).
+//! Product role composition — wire facets without a parallel state path (GUMP-N004/N005).
 //!
-//! OpenRaft cluster instantiation lands in GUMP-N005; this module only composes
-//! explicit handles so server startup owns one runtime graph.
+//! Memory/controller roles start a live one-voter [`gump_memory::MemoryCluster`].
+
+use std::sync::Arc;
 
 use gump_agent::harden_agent_startup;
 use gump_connectors::FakeObjectStore;
+use gump_memory::MemoryCluster;
 use gump_telemetry::DEFAULT_RING_MAX_BYTES;
 use gump_transport::{NodeRole, TransportLimits};
 use gump_types::{ClusterId, ProcessHardenReport};
 
 use crate::peer::PeerAllowlist;
 use crate::roles::RoleSet;
-use crate::serve::{LocalDaemon, bootstrap_controller};
+use crate::serve::LocalDaemon;
 
 /// Thin facet markers so composition stays explicit and one-way into `LocalDaemon`.
 #[derive(Clone, Debug)]
@@ -91,7 +93,7 @@ impl Default for InitOptions {
 }
 
 impl ProductRuntime {
-    /// Build facets from `--init` role selection. Does not start Raft (N005).
+    /// Build facets from `--init` role selection; starts one-voter Raft when memory is on (N005).
     pub fn init(opts: InitOptions) -> Result<Self, String> {
         let cluster_id = ClusterId::new();
         let roles = opts.roles;
@@ -114,8 +116,20 @@ impl ProductRuntime {
         let mut local_api = LocalDaemon::new(PeerAllowlist::same_uid(opts.peer_uid));
         local_api.cluster_id = cluster_id.to_hyphenated();
         local_api.memory_voters = if memory_on { 1 } else { 0 };
-        if roles.contains(NodeRole::Controller) {
-            bootstrap_controller(&mut local_api, opts.controller_holder, 0);
+
+        let mut memory_voters = if memory_on { 1 } else { 0 };
+        if memory_on {
+            // Node id 1 — single voter; controller fence committed via Raft (not direct SM).
+            let cluster = Arc::new(MemoryCluster::bootstrap_one_voter(
+                1,
+                opts.controller_holder,
+            )?);
+            let snap = cluster.status_snapshot()?;
+            memory_voters = snap.voter_count;
+            local_api.memory_voters = snap.voter_count;
+            local_api.controller_epoch = snap.controller_epoch;
+            local_api.controller_holder = snap.controller_holder;
+            local_api.memory_cluster = Some(cluster);
         }
 
         Ok(Self {
@@ -123,7 +137,7 @@ impl ProductRuntime {
             roles,
             memory: MemoryFacet {
                 enabled: memory_on,
-                voters: if memory_on { 1 } else { 0 },
+                voters: memory_voters,
             },
             transport: TransportFacet {
                 enabled: transport_on,
@@ -184,9 +198,19 @@ mod tests {
         assert!(rt.agent.enabled);
         assert!(rt.scheduler.enabled);
         assert!(rt.local_api.controller_holder.is_some());
+        assert!(rt.local_api.memory_cluster.is_some());
         assert_eq!(rt.local_api.allowlist, PeerAllowlist::same_uid(501));
         assert!(rt.connectors.object_store.contains("FakeObjectStore"));
         assert_eq!(rt.scheduler.crate_name, "gump-scheduler");
+        let snap = rt
+            .local_api
+            .memory_cluster
+            .as_ref()
+            .unwrap()
+            .status_snapshot()
+            .unwrap();
+        assert_eq!(snap.voter_count, 1);
+        assert!(!snap.durable_cluster_state);
     }
 
     #[test]

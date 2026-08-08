@@ -78,7 +78,10 @@ fn run_server(args: &[String]) -> Result<ExitCode, String> {
 
     let daemon = Arc::new(runtime.local_api);
     let stats = AcceptStats::new();
-    run_accept_loop(daemon, listener, cancel, stats).map_err(|e| e.to_string())?;
+    run_accept_loop(Arc::clone(&daemon), listener, cancel, stats).map_err(|e| e.to_string())?;
+    if let Some(cluster) = &daemon.memory_cluster {
+        let _ = cluster.shutdown();
+    }
     eprintln!("gump: shutdown complete");
     Ok(ExitCode::SUCCESS)
 }
