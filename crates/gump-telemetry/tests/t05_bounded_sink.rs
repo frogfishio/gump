@@ -1,6 +1,7 @@
 //! STL-09: bounded callback sink + pipe-drain bridge (D011 drop-oldest).
 
 use std::sync::Arc;
+use std::thread;
 use std::time::Duration;
 
 use gump_driver::PipeChunkSink;
@@ -53,6 +54,96 @@ fn bounded_callback_overflow_drops_oldest() {
     assert_eq!(adapter.records().len(), 2);
     assert_eq!(adapter.records().front().unwrap().message, "two");
     assert_eq!(adapter.records().back().unwrap().message, "three");
+}
+
+#[test]
+fn bounded_callback_charges_large_producer_exactly() {
+    // ~60 KiB producer.app must be charged at full length (not ~256B fudge).
+    let producer = "p".repeat(60 * 1024);
+    let line = format!(r#"{{"topic":"app/stdout","msg":"hi","src":{{"app":"{producer}"}}}}"#);
+    assert!(line.len() <= gump_telemetry::MAX_RECORD_BYTES);
+
+    let mut adapter = BoundedCallbackAdapter::new(sample_identity());
+    assert_eq!(adapter.ingest_line(&line), RecordOutcome::Accepted);
+
+    let expected_min = producer.len() + "app/stdout".len() + "hi".len();
+    assert!(
+        adapter.total_bytes() >= expected_min,
+        "charged {} < expected_min {expected_min}",
+        adapter.total_bytes()
+    );
+    // Must not under-charge by ignoring producer (old bug: topic+message+256).
+    assert!(
+        adapter.total_bytes() > 256 + "app/stdout".len() + "hi".len(),
+        "producer bytes were not charged"
+    );
+}
+
+#[test]
+fn bounded_callback_rejects_oversized_on_empty_queue() {
+    let mut adapter = BoundedCallbackAdapter::with_config(
+        sample_identity(),
+        RingConfig {
+            max_bytes: 64,
+            max_age: Duration::from_secs(60),
+            max_records: None,
+        },
+    );
+    let line = format!("app/stdout {}", "x".repeat(200));
+    assert_eq!(adapter.ingest_line(&line), RecordOutcome::RejectedOversize);
+    assert_eq!(adapter.records().len(), 0);
+    assert_eq!(adapter.rejected_oversize(), 1);
+    assert_eq!(adapter.accepted(), 0);
+}
+
+#[test]
+fn bounded_callback_max_age_evicts_stale() {
+    let mut adapter = BoundedCallbackAdapter::with_config(
+        sample_identity(),
+        RingConfig {
+            max_bytes: 1_000_000,
+            max_age: Duration::from_millis(40),
+            max_records: None,
+        },
+    );
+    assert_eq!(
+        adapter.ingest_line("app/stdout one"),
+        RecordOutcome::Accepted
+    );
+    thread::sleep(Duration::from_millis(80));
+    assert_eq!(
+        adapter.ingest_line("app/stdout two"),
+        RecordOutcome::Accepted
+    );
+    assert_eq!(adapter.records().len(), 1);
+    assert_eq!(adapter.records().front().unwrap().message, "two");
+    assert!(adapter.dropped_oldest() >= 1);
+}
+
+#[test]
+fn pipe_bridge_on_chunk_does_not_block_when_ring_locked() {
+    let bridge = AttemptPipeBridge::new(RingConfig {
+        max_bytes: 10_000,
+        max_age: Duration::from_secs(60),
+        max_records: Some(8),
+    });
+    let sink: Arc<dyn PipeChunkSink> = bridge.clone().shared_sink();
+
+    let started = Arc::new(std::sync::Barrier::new(2));
+    let started2 = Arc::clone(&started);
+    let bridge_hold = bridge.clone();
+    let holder = thread::spawn(move || {
+        bridge_hold.with_ring(|_ring| {
+            started2.wait();
+            thread::sleep(Duration::from_millis(150));
+        });
+    });
+
+    started.wait();
+    // While with_ring holds the mutex, on_chunk must return promptly and count drops.
+    sink.on_chunk(gump_driver::StreamKind::Stdout, b"noisy\n");
+    assert!(bridge.lock_busy_drops() >= 1);
+    holder.join().expect("holder");
 }
 
 #[test]

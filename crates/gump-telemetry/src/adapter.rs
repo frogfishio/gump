@@ -2,6 +2,7 @@
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use ratatouille::Sink;
 use serde::Deserialize;
@@ -188,10 +189,23 @@ impl Sink for CallbackAdapter {
 }
 
 fn record_retained_bytes(rec: &NormalizedRecord) -> usize {
-    rec.topic
-        .len()
-        .saturating_add(rec.message.len())
-        .saturating_add(256)
+    // Exact owned-string charge (STL-18 / D011): no fixed overhead fudge.
+    let mut n = rec.topic.len().saturating_add(rec.message.len());
+    if let Some(app) = rec.producer.app.as_deref() {
+        n = n.saturating_add(app.len());
+    }
+    if let Some(where_) = rec.producer.r#where.as_deref() {
+        n = n.saturating_add(where_.len());
+    }
+    if let Some(instance) = rec.producer.instance.as_deref() {
+        n = n.saturating_add(instance.len());
+    }
+    n = n.saturating_add(rec.identity.namespace.as_str().len());
+    n = n.saturating_add(rec.identity.app_id.as_str().len());
+    if let Some(role) = rec.identity.role.as_ref() {
+        n = n.saturating_add(role.as_str().len());
+    }
+    n
 }
 
 /// Production Ratatouille callback sink: D011 bounded window, drop-oldest.
@@ -199,8 +213,10 @@ pub struct BoundedCallbackAdapter {
     identity: CanonicalIdentity,
     local_sequence: u64,
     records: VecDeque<NormalizedRecord>,
+    inserted_at: VecDeque<Instant>,
     total_bytes: usize,
     max_bytes: usize,
+    max_age: Duration,
     max_records: Option<usize>,
     accepted: u64,
     dropped_oldest: u64,
@@ -218,8 +234,10 @@ impl BoundedCallbackAdapter {
             identity,
             local_sequence: 0,
             records: VecDeque::new(),
+            inserted_at: VecDeque::new(),
             total_bytes: 0,
             max_bytes: config.max_bytes.max(1),
+            max_age: config.max_age,
             // Prefer explicit test ceilings; production defaults to byte/age via max_bytes.
             max_records: config.max_records.map(|n| n.max(1)),
             accepted: 0,
@@ -261,6 +279,10 @@ impl BoundedCallbackAdapter {
         self.dropped_oldest
     }
 
+    pub fn rejected_oversize(&self) -> u64 {
+        self.rejected_oversize
+    }
+
     pub fn ingest_line(&mut self, line: &str) -> RecordOutcome {
         if line.len() > MAX_RECORD_BYTES {
             self.rejected_oversize = self.rejected_oversize.saturating_add(1);
@@ -286,7 +308,7 @@ impl BoundedCallbackAdapter {
             return RecordOutcome::RejectedTopic;
         }
 
-        self.local_sequence = self.local_sequence.saturating_add(1);
+        let next_seq = self.local_sequence.saturating_add(1);
         let record = NormalizedRecord {
             profile: TELEMETRY_PROFILE,
             topic,
@@ -294,12 +316,22 @@ impl BoundedCallbackAdapter {
             message,
             identity: self.identity.clone(),
             producer,
-            local_sequence: self.local_sequence,
+            local_sequence: next_seq,
         };
         let incoming = record_retained_bytes(&record);
+        let now = Instant::now();
+        self.expire_by_age(now);
+
+        // Reject any single record that cannot fit the ceiling, even on an empty queue.
+        if incoming > self.max_bytes {
+            self.rejected_oversize = self.rejected_oversize.saturating_add(1);
+            return RecordOutcome::RejectedOversize;
+        }
+
         let mut dropped = false;
         while self.needs_evict(incoming) {
             if let Some(old) = self.records.pop_front() {
+                let _ = self.inserted_at.pop_front();
                 self.total_bytes = self.total_bytes.saturating_sub(record_retained_bytes(&old));
                 self.dropped_oldest = self.dropped_oldest.saturating_add(1);
                 dropped = true;
@@ -308,13 +340,34 @@ impl BoundedCallbackAdapter {
             }
         }
 
+        // Defensive: if eviction could not make room (should not happen after oversize check).
+        if self.total_bytes.saturating_add(incoming) > self.max_bytes {
+            self.rejected_oversize = self.rejected_oversize.saturating_add(1);
+            return RecordOutcome::RejectedOversize;
+        }
+
+        self.local_sequence = next_seq;
         self.records.push_back(record);
+        self.inserted_at.push_back(now);
         self.total_bytes = self.total_bytes.saturating_add(incoming);
         self.accepted = self.accepted.saturating_add(1);
         if dropped {
             RecordOutcome::AcceptedDropOldest
         } else {
             RecordOutcome::Accepted
+        }
+    }
+
+    fn expire_by_age(&mut self, now: Instant) {
+        while let Some(front_at) = self.inserted_at.front().copied() {
+            if now.saturating_duration_since(front_at) <= self.max_age {
+                break;
+            }
+            let _ = self.inserted_at.pop_front();
+            if let Some(old) = self.records.pop_front() {
+                self.total_bytes = self.total_bytes.saturating_sub(record_retained_bytes(&old));
+                self.dropped_oldest = self.dropped_oldest.saturating_add(1);
+            }
         }
     }
 

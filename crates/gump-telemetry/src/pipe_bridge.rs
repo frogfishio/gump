@@ -1,6 +1,7 @@
 //! Bridge STL-04 pipe drains into the D011 bounded LocalRing (STL-09).
 
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, TryLockError};
 use std::time::Instant;
 
 use gump_driver::{PipeChunkSink, StreamKind as DriverStreamKind};
@@ -11,6 +12,8 @@ use crate::stream::{EmitOutcome, StreamDrain, StreamEmitter, StreamKind, StreamR
 /// Fan-out target: segment pipe bytes and push into a shared [`LocalRing`].
 pub struct AttemptPipeBridge {
     inner: Arc<Mutex<BridgeInner>>,
+    /// Chunks dropped because the ring lock was held (must not block drains).
+    lock_busy_drops: Arc<AtomicU64>,
 }
 
 struct BridgeInner {
@@ -27,6 +30,7 @@ impl AttemptPipeBridge {
                 stdout: StreamDrain::new(StreamKind::Stdout).expect("stdout topic"),
                 stderr: StreamDrain::new(StreamKind::Stderr).expect("stderr topic"),
             })),
+            lock_busy_drops: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -45,6 +49,11 @@ impl AttemptPipeBridge {
 
     pub fn pushed(&self) -> u64 {
         self.with_ring(|r| r.pushed())
+    }
+
+    /// Chunks skipped when `on_chunk` could not take the ring lock without waiting.
+    pub fn lock_busy_drops(&self) -> u64 {
+        self.lock_busy_drops.load(Ordering::Relaxed)
     }
 
     /// EOF flush for both drains (call after child exit / drain join).
@@ -71,13 +80,22 @@ impl Clone for AttemptPipeBridge {
     fn clone(&self) -> Self {
         Self {
             inner: Arc::clone(&self.inner),
+            lock_busy_drops: Arc::clone(&self.lock_busy_drops),
         }
     }
 }
 
 impl PipeChunkSink for AttemptPipeBridge {
     fn on_chunk(&self, kind: DriverStreamKind, chunk: &[u8]) {
-        let mut g = self.inner.lock().expect("pipe bridge lock");
+        // Never block pipe drains on telemetry inspection / contention (STL-18).
+        let mut g = match self.inner.try_lock() {
+            Ok(g) => g,
+            Err(TryLockError::WouldBlock) => {
+                self.lock_busy_drops.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+            Err(TryLockError::Poisoned(e)) => e.into_inner(),
+        };
         let now = Instant::now();
         let BridgeInner {
             ring,
