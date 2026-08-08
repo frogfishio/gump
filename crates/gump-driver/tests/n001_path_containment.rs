@@ -246,7 +246,7 @@ fn race_replace_command_with_symlink_fails_at_start() {
                 gump_driver::ResourceGrant {
                     max_processes: None,
                 },
-                &gump_driver::SecretPlan { deferred: true },
+                gump_driver::SecretPlan::deferred(),
             )
             .unwrap();
         let err = driver

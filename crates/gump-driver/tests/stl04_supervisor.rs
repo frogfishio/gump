@@ -85,7 +85,7 @@ fn start_native(
             ResourceGrant {
                 max_processes: Some(16),
             },
-            &SecretPlan { deferred: true },
+            SecretPlan::deferred(),
         )
         .unwrap();
     let running = driver

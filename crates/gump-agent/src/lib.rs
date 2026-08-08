@@ -3,11 +3,17 @@
 //! Process hardening for secret custody is applied at agent startup (STL-20 /
 //! SECURITY.md §8) before any future enrollment or Capsule materialization path
 //! holds plaintext secrets.
+//!
+//! Scoped secret delivery (GUMP-N009 / S07) lives in [`delivery`].
+
+mod delivery;
 
 use gump_types::{
     HardenError, HardenPolicy, ProcessHardenReport, prepare_for_custody_with_policy,
     prepare_service_for_custody,
 };
+
+pub use delivery::{DeliveryError, authorize_delivery, bind_secret_plan};
 
 /// Early agent process hardening. Uses [`prepare_service_for_custody`] (policy
 /// `required` by default; override with `GUMP_PROCESS_HARDEN`).

@@ -262,7 +262,7 @@ fn drive<D: Driver>(
             ResourceGrant {
                 max_processes: Some(64),
             },
-            &SecretPlan { deferred: true },
+            SecretPlan::deferred(),
         )
         .map_err(|e| CliError::new(CliErrorKind::Driver, e.to_string()))?;
     let mut running = driver

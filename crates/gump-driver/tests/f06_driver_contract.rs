@@ -66,7 +66,7 @@ fn run_contract<D: Driver>(
             ResourceGrant {
                 max_processes: Some(16),
             },
-            &SecretPlan { deferred: true },
+            SecretPlan::deferred(),
         )
         .unwrap();
     let mut running = driver
@@ -205,7 +205,7 @@ fn native_rejects_interpreter_and_shell_c() {
 }
 
 #[test]
-fn admit_requires_deferred_secrets() {
+fn admit_rejects_non_deferred_without_scope() {
     let root = tmp("secrets");
     write_executable(&root.join("bin/hello"), "#!/bin/sh\nexit 0\n");
     let release = ReleaseRoot::new(&root);
@@ -233,7 +233,11 @@ fn admit_requires_deferred_secrets() {
             ResourceGrant {
                 max_processes: None,
             },
-            &SecretPlan { deferred: false },
+            SecretPlan {
+                deferred: false,
+                scope: None,
+                values: vec![],
+            },
         )
         .unwrap_err();
     assert_eq!(err.kind(), DriverErrorKind::Policy);

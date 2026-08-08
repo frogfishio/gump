@@ -9,5 +9,7 @@ description = "gump.driver/1 trait, native/script lifecycle (F06)."
 
 [dependencies]
 gump-types = { workspace = true }
+tempfile = { workspace = true }
+libc = "0.2"
 
 [dev-dependencies]

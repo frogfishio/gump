@@ -874,6 +874,7 @@ dependencies = [
 name = "gump-agent"
 version = "0.1.0"
 dependencies = [
+ "gump-driver",
  "gump-types",
 ]
 
@@ -952,6 +953,8 @@ name = "gump-driver"
 version = "0.1.0"
 dependencies = [
  "gump-types",
+ "libc",
+ "tempfile",
 ]
 
 [[package]]

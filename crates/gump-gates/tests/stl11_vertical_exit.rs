@@ -438,7 +438,7 @@ async fn vertical_store_cluster_supervisor_telemetry() {
             ResourceGrant {
                 max_processes: Some(16),
             },
-            &SecretPlan { deferred: true },
+            SecretPlan::deferred(),
         )
         .unwrap();
     let mut running = driver

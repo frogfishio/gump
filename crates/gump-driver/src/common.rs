@@ -13,6 +13,7 @@ use crate::abi::{
 };
 use crate::error::{DriverError, DriverErrorKind};
 use crate::path_beneath::{self, PathKind};
+use crate::secrets::{self, InjectForm};
 use crate::supervisor::{self, PipeDrains};
 
 pub(crate) struct CommonDriver {
@@ -137,19 +138,18 @@ impl Driver for CommonDriver {
         &self,
         mut prepared: PreparedHandle,
         grant: ResourceGrant,
-        secrets: &SecretPlan,
+        secrets: SecretPlan,
     ) -> Result<Admission, DriverError> {
         if prepared.admitted {
             return Err(DriverError::new(DriverErrorKind::State, "already admitted"));
         }
-        if !secrets.deferred {
-            return Err(DriverError::new(
-                DriverErrorKind::Policy,
-                "F06 drivers require SecretPlan.deferred=true until S07",
-            ));
-        }
+        secrets::validate_for_admit(&secrets, &prepared.attempt_id)?;
         prepared.admitted = true;
-        Ok(Admission { prepared, grant })
+        Ok(Admission {
+            prepared,
+            grant,
+            secrets,
+        })
     }
 
     fn start(
@@ -164,6 +164,7 @@ impl Driver for CommonDriver {
                 "start without admission",
             ));
         }
+        secrets::validate_for_start(&admission.secrets, fence.generation)?;
         let mut cmd = Command::new(&admission.prepared.argv[0]);
         if admission.prepared.argv.len() > 1 {
             cmd.args(&admission.prepared.argv[1..]);
@@ -191,6 +192,23 @@ impl Driver for CommonDriver {
         if let Ok(path) = std::env::var("PATH") {
             cmd.env("PATH", path);
         }
+        // RUNTIME §8 / GUMP-N009: scoped env injection (values never land on disk roots).
+        if !admission.secrets.deferred {
+            for v in &admission.secrets.values {
+                if matches!(v.form, InjectForm::Env) {
+                    let s = std::str::from_utf8(v.bytes.expose()).map_err(|_| {
+                        DriverError::new(DriverErrorKind::Policy, "env value not UTF-8 at start")
+                    })?;
+                    cmd.env(&v.logical_name, s);
+                }
+            }
+        }
+        let prepared_fds = secrets::prepare_fds(&admission.secrets)?;
+        for fd in &prepared_fds {
+            if let Some((name, path)) = &fd.reference_env {
+                cmd.env(name, path);
+            }
+        }
         cmd.stdin(Stdio::null());
         cmd.stdout(if io.capture_stdout {
             Stdio::piped()
@@ -204,12 +222,42 @@ impl Driver for CommonDriver {
         });
         #[cfg(unix)]
         {
+            use std::os::fd::AsRawFd;
             use std::os::unix::process::CommandExt;
             cmd.process_group(0);
+            if !prepared_fds.is_empty() {
+                let inherit: Vec<(i32, i32)> = prepared_fds
+                    .iter()
+                    .map(|f| (f.target_fd, f.file.as_raw_fd()))
+                    .collect();
+                // SAFETY: runs between fork and exec; only dup2/close on known FDs.
+                #[allow(unsafe_code)]
+                unsafe {
+                    cmd.pre_exec(move || {
+                        for &(target, src) in &inherit {
+                            if libc::dup2(src, target) < 0 {
+                                return Err(std::io::Error::last_os_error());
+                            }
+                        }
+                        Ok(())
+                    });
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        if !prepared_fds.is_empty() {
+            return Err(DriverError::new(
+                DriverErrorKind::Start,
+                "fd secret injection requires unix",
+            ));
         }
         let mut child = cmd
             .spawn()
             .map_err(|e| DriverError::new(DriverErrorKind::Start, format!("spawn failed: {e}")))?;
+        // Parent closes anon FD copies immediately after successful spawn (RUNTIME §8).
+        drop(prepared_fds);
+        // Drop secret plan plaintext as soon as the child is launched.
+        drop(admission.secrets);
         // RUNTIME §9: start drains before the child can fill pipe buffers.
         let drains = PipeDrains::start_with(&mut child, io.pipe_sink.clone());
         Ok(RunningHandle {

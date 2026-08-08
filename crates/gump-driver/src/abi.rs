@@ -73,11 +73,7 @@ pub struct ResourceGrant {
     pub max_processes: Option<u32>,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct SecretPlan {
-    /// F06 contract suite: secrets are not delivered yet (R06/S07).
-    pub deferred: bool,
-}
+pub use crate::secrets::SecretPlan;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StartFence {
@@ -209,6 +205,7 @@ impl Drop for RunningHandle {
 pub struct Admission {
     pub(crate) prepared: PreparedHandle,
     pub(crate) grant: ResourceGrant,
+    pub(crate) secrets: SecretPlan,
 }
 
 /// Driver lifecycle trait (`gump.driver/1`).
@@ -226,7 +223,7 @@ pub trait Driver {
         &self,
         prepared: PreparedHandle,
         grant: ResourceGrant,
-        secrets: &SecretPlan,
+        secrets: SecretPlan,
     ) -> Result<Admission, DriverError>;
 
     fn start(

@@ -46,7 +46,7 @@ impl crate::Driver for ScriptDriver {
         &self,
         prepared: crate::PreparedHandle,
         grant: crate::ResourceGrant,
-        secrets: &crate::SecretPlan,
+        secrets: crate::SecretPlan,
     ) -> Result<crate::Admission, crate::DriverError> {
         self.inner.admit(prepared, grant, secrets)
     }
