@@ -129,6 +129,42 @@ fn concurrent_same_capsule_one_winner_preserves_publish() {
 }
 
 #[test]
+fn empty_destination_is_not_replaced() {
+    // STL-17: pre-existing empty target must fail closed (no wipe via POSIX empty-dir rename).
+    let state = tmp("empty-dest");
+    let archive = sample_archive();
+    let capsule = CapsuleId::new();
+    let target = state.join("apps").join(capsule.to_hyphenated());
+    fs::create_dir_all(&target).unwrap();
+    assert!(
+        fs::read_dir(&target).unwrap().next().is_none(),
+        "precondition: empty destination"
+    );
+
+    let err = materialize_application_archive(
+        &state,
+        capsule,
+        archive.as_slice(),
+        &ExtractLimits::default(),
+    )
+    .unwrap_err();
+    assert_eq!(err.kind(), ArchiveErrorKind::Io);
+    assert!(
+        target.is_dir() && fs::read_dir(&target).unwrap().next().is_none(),
+        "empty destination must remain empty (not replaced)"
+    );
+    for ent in fs::read_dir(state.join("apps")).unwrap() {
+        let name = ent.unwrap().file_name();
+        let s = name.to_string_lossy();
+        assert!(
+            !s.starts_with(".staging-"),
+            "staging must be cleaned on failed publish: {s}"
+        );
+    }
+    let _ = fs::remove_dir_all(state);
+}
+
+#[test]
 fn failed_extract_does_not_create_target_or_leave_staging() {
     let state = tmp("bad-archive");
     let capsule = CapsuleId::new();

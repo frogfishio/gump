@@ -83,7 +83,60 @@ fn create_exclusive_staging(apps: &Path) -> Result<PathBuf, ArchiveError> {
 }
 
 /// Atomically publish `staging` → `target` without replacing an existing tree.
+///
+/// Linux: `renameat2(..., RENAME_NOREPLACE)`. Apple: `renameatx_np(..., RENAME_EXCL)`.
+/// Ordinary `rename` is not sufficient — POSIX allows replacing an empty directory (STL-17).
 fn publish_no_replace(staging: &Path, target: &Path) -> Result<(), ArchiveError> {
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "android",
+        target_vendor = "apple",
+        target_os = "redox"
+    ))]
+    {
+        publish_no_replace_atomic(staging, target)
+    }
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "android",
+        target_vendor = "apple",
+        target_os = "redox"
+    )))]
+    {
+        publish_no_replace_fallback(staging, target)
+    }
+}
+
+#[cfg(any(
+    target_os = "linux",
+    target_os = "android",
+    target_vendor = "apple",
+    target_os = "redox"
+))]
+fn publish_no_replace_atomic(staging: &Path, target: &Path) -> Result<(), ArchiveError> {
+    use rustix::fs::{CWD, RenameFlags, renameat_with};
+    use rustix::io::Errno;
+
+    match renameat_with(CWD, staging, CWD, target, RenameFlags::NOREPLACE) {
+        Ok(()) => Ok(()),
+        Err(err) if err == Errno::EXIST || err == Errno::NOTEMPTY => Err(ArchiveError::new(
+            ArchiveErrorKind::Io,
+            format!("materialization already exists at {}", target.display()),
+        )),
+        Err(err) => Err(ArchiveError::new(
+            ArchiveErrorKind::Io,
+            format!("atomic materialize rename failed: {err}"),
+        )),
+    }
+}
+
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "android",
+    target_vendor = "apple",
+    target_os = "redox"
+)))]
+fn publish_no_replace_fallback(staging: &Path, target: &Path) -> Result<(), ArchiveError> {
     if target.exists() {
         return Err(ArchiveError::new(
             ArchiveErrorKind::Io,
@@ -91,10 +144,49 @@ fn publish_no_replace(staging: &Path, target: &Path) -> Result<(), ArchiveError>
         ));
     }
     fs::rename(staging, target).map_err(|e| {
-        // Concurrent winner: destination appeared between exists() and rename.
         ArchiveError::new(
             ArchiveErrorKind::Io,
             format!("atomic materialize rename failed: {e}"),
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn tmp(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("gump-stl17-{name}-{nanos}"));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn publish_no_replace_refuses_empty_destination() {
+        let root = tmp("empty-dest");
+        let staging = root.join("staging");
+        let target = root.join("target");
+        fs::create_dir(&staging).unwrap();
+        fs::write(staging.join("marker"), b"winner-bytes").unwrap();
+        // Empty destination — ordinary rename may replace this; NOREPLACE must not.
+        fs::create_dir(&target).unwrap();
+
+        let err = publish_no_replace(&staging, &target).unwrap_err();
+        assert_eq!(err.kind(), ArchiveErrorKind::Io);
+        assert!(
+            target.is_dir() && !target.join("marker").exists(),
+            "empty destination must not be replaced"
+        );
+        assert!(
+            staging.join("marker").exists(),
+            "failed publish must leave staging intact for caller cleanup"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
 }

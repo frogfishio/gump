@@ -883,6 +883,7 @@ dependencies = [
  "crc32fast",
  "gump-crypto",
  "gump-types",
+ "rustix",
  "unicode-normalization",
  "zstd",
 ]
