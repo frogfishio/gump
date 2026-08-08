@@ -55,6 +55,7 @@ fn placement(
         lifecycle_finite: finite,
         capsule_verified: true,
         lifecycle,
+        hiccup: None,
     }
 }
 

@@ -194,6 +194,7 @@ pub fn default_owner_crates() -> BTreeSet<&'static str> {
         "gump-agent",
         "gump-driver",
         "gump-telemetry",
+        "gump-hiccup",
         "gump-connectors",
         "gump-server",
     ]

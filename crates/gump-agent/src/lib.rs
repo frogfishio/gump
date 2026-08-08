@@ -10,6 +10,7 @@
 mod checks;
 mod delivery;
 mod fence;
+mod hiccup_bridge;
 mod lifecycle;
 mod reconcile;
 
@@ -23,6 +24,7 @@ pub use fence::{
     AuthorityState, DEFAULT_ISOLATION_GRACE_MS, EffectKind, FenceError, IsolationPolicy,
     STOP_ON_ISOLATION_CONFIRM_MS, allow_effect, isolation_grace_expired, require_fence,
 };
+pub use hiccup_bridge::{HealthOkCtx, HiccupPlacement, HiccupPlane};
 pub use lifecycle::{
     CheckKind, CheckRuntime, CheckSpec, DEFAULT_INITIAL_BACKOFF_MS, DEFAULT_JITTER_PCT,
     DEFAULT_MAX_BACKOFF_MS, LifecycleContract, RetryPolicy, TerminalReason, reasons,

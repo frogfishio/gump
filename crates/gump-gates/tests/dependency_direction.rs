@@ -25,6 +25,7 @@ const PRODUCT_CRATES: &[&str] = &[
     "gump-agent",
     "gump-driver",
     "gump-telemetry",
+    "gump-hiccup",
     "gump-connectors",
     "gump-server",
 ];
@@ -40,6 +41,7 @@ const LAYERS: &[(&str, u8)] = &[
     ("gump-transport", 1),
     ("gump-connectors", 1),
     ("gump-telemetry", 1),
+    ("gump-hiccup", 1),
     ("gump-memory", 2),
     ("gump-scheduler", 3),
     ("gump-agent", 4),

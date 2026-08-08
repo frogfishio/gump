@@ -13,6 +13,7 @@ members = [
     "crates/gump-agent",
     "crates/gump-driver",
     "crates/gump-telemetry",
+    "crates/gump-hiccup",
     "crates/gump-connectors",
     "crates/gump-server",
     "crates/gump-gates",
@@ -35,6 +36,7 @@ gump-cli = { path = "crates/gump-cli" }
 gump-connectors = { path = "crates/gump-connectors" }
 gump-crypto = { path = "crates/gump-crypto" }
 gump-driver = { path = "crates/gump-driver" }
+gump-hiccup = { path = "crates/gump-hiccup" }
 gump-manifest = { path = "crates/gump-manifest" }
 gump-memory = { path = "crates/gump-memory" }
 gump-protocol = { path = "crates/gump-protocol" }

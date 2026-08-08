@@ -13,9 +13,11 @@ fn main() -> Result<()> {
 
     let formats = proto_root.join("gump/v1/formats.proto");
     let cluster = proto_root.join("gump/v1/cluster.proto");
+    let hiccup = proto_root.join("gump/v1/hiccup.proto");
 
     println!("cargo:rerun-if-changed={}", formats.display());
     println!("cargo:rerun-if-changed={}", cluster.display());
+    println!("cargo:rerun-if-changed={}", hiccup.display());
 
     let protoc = protoc_bin_vendored::protoc_bin_path().map_err(|e| {
         std::io::Error::new(
@@ -27,6 +29,6 @@ fn main() -> Result<()> {
     let mut config = prost_build::Config::new();
     config.protoc_executable(protoc);
     // Keep wire bytes as Vec<u8> for exact golden compares.
-    config.compile_protos(&[formats, cluster], &[proto_root])?;
+    config.compile_protos(&[formats, cluster, hiccup], &[proto_root])?;
     Ok(())
 }

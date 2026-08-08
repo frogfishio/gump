@@ -53,6 +53,7 @@ fn placement(
         lifecycle_finite: finite,
         capsule_verified: verified,
         lifecycle: LifecycleContract::default(),
+        hiccup: None,
     }
 }
 

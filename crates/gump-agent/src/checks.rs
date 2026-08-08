@@ -94,7 +94,36 @@ fn probe_tcp(target: Option<&str>, timeout: Duration) -> Result<bool, String> {
     }
 }
 
+/// Result of an HTTP health exchange (status + optional Hiccup body).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HttpExchange {
+    pub ok: bool,
+    pub status: u16,
+    pub content_type: Option<String>,
+    pub body: Vec<u8>,
+}
+
+/// Outbound HTTP health request plan (GET offer or authenticated Hiccup POST).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum HttpRequestPlan {
+    GetOffer,
+    Post {
+        authorization: String,
+        content_type: String,
+        body: Vec<u8>,
+    },
+}
+
 fn probe_http(target: Option<&str>, timeout: Duration) -> Result<bool, String> {
+    Ok(http_exchange(target, timeout, &HttpRequestPlan::GetOffer)?.ok)
+}
+
+/// Full HTTP health exchange used by Hiccup (reads bounded body).
+pub fn http_exchange(
+    target: Option<&str>,
+    timeout: Duration,
+    plan: &HttpRequestPlan,
+) -> Result<HttpExchange, String> {
     let raw = target.ok_or_else(|| "http check missing target".to_string())?;
     let url = raw.strip_prefix("http://").unwrap_or(raw);
     let (hostport, path) = match url.split_once('/') {
@@ -114,24 +143,76 @@ fn probe_http(target: Option<&str>, timeout: Duration) -> Result<bool, String> {
         .set_write_timeout(Some(timeout))
         .map_err(|e| e.to_string())?;
     let host = hostport.split(':').next().unwrap_or(hostport);
-    let req = format!(
-        "GET {path} HTTP/1.1\r\nHost: {host}\r\nHiccup-Offer: 1\r\nConnection: close\r\n\r\n"
-    );
+    let req = match plan {
+        HttpRequestPlan::GetOffer => format!(
+            "GET {path} HTTP/1.1\r\nHost: {host}\r\nHiccup-Offer: 1\r\nConnection: close\r\n\r\n"
+        ),
+        HttpRequestPlan::Post {
+            authorization,
+            content_type,
+            body,
+        } => {
+            format!(
+                "POST {path} HTTP/1.1\r\nHost: {host}\r\nAuthorization: {authorization}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+        }
+    };
     stream
         .write_all(req.as_bytes())
         .map_err(|e| e.to_string())?;
-    let mut buf = [0u8; 128];
-    let n = stream.read(&mut buf).map_err(|e| e.to_string())?;
-    let head = std::str::from_utf8(&buf[..n]).unwrap_or("");
-    // HTTP/1.x 2xx / 3xx
-    let ok = head.contains(" 200 ")
-        || head.contains(" 201 ")
-        || head.contains(" 204 ")
-        || head.contains(" 301 ")
-        || head.contains(" 302 ")
-        || head.contains(" 307 ")
-        || head.contains(" 308 ");
-    Ok(ok)
+    if let HttpRequestPlan::Post { body, .. } = plan {
+        stream.write_all(body).map_err(|e| e.to_string())?;
+    }
+    // Bound read: status/headers + up to 64 KiB body (Hiccup declaration max).
+    let mut buf = Vec::new();
+    let mut tmp = [0u8; 4096];
+    loop {
+        match stream.read(&mut tmp) {
+            Ok(0) => break,
+            Ok(n) => {
+                buf.extend_from_slice(&tmp[..n]);
+                if buf.len() > 66 * 1024 {
+                    break;
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => break,
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    parse_http_exchange(&buf)
+}
+
+fn parse_http_exchange(raw: &[u8]) -> Result<HttpExchange, String> {
+    let text = std::str::from_utf8(raw).unwrap_or("");
+    let (head, body) = match text.split_once("\r\n\r\n") {
+        Some((h, b)) => (h, b.as_bytes()),
+        None => (text, &[][..]),
+    };
+    let status = head
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|s| s.parse::<u16>().ok())
+        .unwrap_or(0);
+    let mut content_type = None;
+    for line in head.lines().skip(1) {
+        if let Some(rest) = line
+            .split_once(':')
+            .filter(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+            .map(|(_, v)| v.trim().to_string())
+        {
+            content_type = Some(rest);
+        }
+    }
+    let ok = (200..400).contains(&status);
+    Ok(HttpExchange {
+        ok,
+        status,
+        content_type,
+        body: body.to_vec(),
+    })
 }
 
 fn probe_command(spec: &CheckSpec, timeout: Duration) -> Result<bool, String> {

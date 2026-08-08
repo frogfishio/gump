@@ -1,0 +1,16 @@
+[package]
+name = "gump-hiccup"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Hiccup discovery: health upgrade, presence board, tokens, and Rust reference SDK (GUMP-N017 / D016)."
+
+[dependencies]
+gump-types = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+blake3 = { workspace = true }
+zeroize = { workspace = true }
+getrandom = { workspace = true }

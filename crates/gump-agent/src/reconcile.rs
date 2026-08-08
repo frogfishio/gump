@@ -14,12 +14,14 @@ use gump_driver::{
 };
 use gump_types::{AttemptId, UnitId};
 
-use crate::checks::{CheckBudget, run_check};
+use crate::checks::{CheckBudget, HttpRequestPlan, http_exchange, run_check};
 use crate::fence::{
     AuthorityState, EffectKind, FenceError, IsolationPolicy, allow_effect, isolation_grace_expired,
     require_fence,
 };
-use crate::lifecycle::{CheckRuntime, LifecycleContract, TerminalReason, reasons};
+use crate::hiccup_bridge::{HealthOkCtx, HiccupPlacement, HiccupPlane};
+use crate::lifecycle::{CheckKind, CheckRuntime, LifecycleContract, TerminalReason, reasons};
+use gump_hiccup::OutboundHealth;
 
 /// Ceiling on concurrent live attempts tracked by one agent (bounded).
 pub const DEFAULT_MAX_LIVE_ATTEMPTS: usize = 4_096;
@@ -78,6 +80,8 @@ pub struct AcceptedPlacement {
     pub capsule_verified: bool,
     /// Optional checks / retry (GUMP-N013). Default = no health, no retry.
     pub lifecycle: LifecycleContract,
+    /// When set, successful HTTP health participates in one-node Hiccup (GUMP-N017).
+    pub hiccup: Option<HiccupPlacement>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -127,6 +131,7 @@ struct LiveAttempt {
     ready: Option<bool>,
     publication_eligible: Option<bool>,
     terminal_reason: Option<TerminalReason>,
+    hiccup: Option<HiccupPlacement>,
 }
 
 /// Agent-local reconciler: owns attempt roots and driver effects under a fence.
@@ -138,6 +143,7 @@ pub struct EffectExecutor<D: Driver> {
     live: BTreeMap<AttemptId, LiveAttempt>,
     max_live: usize,
     check_budget_ms: u64,
+    hiccup: HiccupPlane,
 }
 
 impl<D: Driver> EffectExecutor<D> {
@@ -150,7 +156,13 @@ impl<D: Driver> EffectExecutor<D> {
             live: BTreeMap::new(),
             max_live: DEFAULT_MAX_LIVE_ATTEMPTS,
             check_budget_ms: DEFAULT_CHECK_BUDGET_MS,
+            hiccup: HiccupPlane::new(),
         }
+    }
+
+    /// Shared one-node Hiccup presence board (GUMP-N017).
+    pub fn hiccup_plane(&self) -> &HiccupPlane {
+        &self.hiccup
     }
 
     pub fn with_isolation(mut self, policy: IsolationPolicy) -> Self {
@@ -363,6 +375,7 @@ impl<D: Driver> EffectExecutor<D> {
                 ready,
                 publication_eligible,
                 terminal_reason: None,
+                hiccup: p.hiccup.clone(),
             },
         );
         Ok(())
@@ -503,6 +516,7 @@ impl<D: Driver> EffectExecutor<D> {
                 lifecycle_finite: a.lifecycle_finite,
                 capsule_verified: a.capsule_verified,
                 lifecycle: a.lifecycle.clone(),
+                hiccup: a.hiccup.clone(),
             }
         };
         let next_index = self.live.get(&id).map(|a| a.attempt_index).unwrap_or(1);
@@ -536,7 +550,15 @@ impl<D: Driver> EffectExecutor<D> {
                 .map(|a| a.readiness.due(now_ms, started_ms, &spec))
                 .unwrap_or(false);
             if due {
-                let out = run_check(&spec, process_running, budget);
+                let hiccup_bind = self.live.get(&id).and_then(|a| a.hiccup.clone());
+                let unit_id = self.live.get(&id).map(|a| a.unit_id);
+                let fence = self.live.get(&id).map(|a| a.placement_fence).unwrap_or(0);
+                let out = match (spec.kind, hiccup_bind.as_ref(), unit_id) {
+                    (CheckKind::Http, Some(bind), Some(unit)) => {
+                        self.run_http_with_hiccup(id, &spec, bind, unit, fence, now_ms, budget)
+                    }
+                    _ => run_check(&spec, process_running, budget),
+                };
                 if let Some(a) = self.live.get_mut(&id) {
                     a.readiness.last_run_ms = now_ms;
                     a.readiness.record(out.ok, &spec);
@@ -659,6 +681,7 @@ impl<D: Driver> EffectExecutor<D> {
     }
 
     fn cleanup_live(&mut self, id: AttemptId) -> Result<(), AgentError> {
+        self.hiccup.remove_attempt(id);
         let Some(mut a) = self.live.remove(&id) else {
             return Ok(());
         };
@@ -669,6 +692,81 @@ impl<D: Driver> EffectExecutor<D> {
             remove_attempt_root(&a.attempt_root)?;
         }
         Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_http_with_hiccup(
+        &mut self,
+        id: AttemptId,
+        spec: &crate::lifecycle::CheckSpec,
+        placement: &HiccupPlacement,
+        unit_id: UnitId,
+        fence: u64,
+        now_ms: u64,
+        budget: &CheckBudget,
+    ) -> crate::checks::CheckOutcome {
+        if budget.exhausted() {
+            return crate::checks::CheckOutcome {
+                ok: false,
+                reason_code: reasons::CHECK_SKIPPED_BUDGET,
+                detail: "check skipped: reconcile budget exhausted".into(),
+                elapsed_ms: 0,
+            };
+        }
+        let timeout =
+            std::time::Duration::from_millis(spec.timeout_ms.max(1)).min(budget.remaining());
+        let start = std::time::Instant::now();
+        let plan = match self.hiccup.plan(id) {
+            Some(OutboundHealth::Post {
+                authorization,
+                body,
+                content_type,
+            }) => HttpRequestPlan::Post {
+                authorization,
+                content_type,
+                body,
+            },
+            _ => HttpRequestPlan::GetOffer,
+        };
+        let exchange = match http_exchange(spec.target.as_deref(), timeout, &plan) {
+            Ok(e) => e,
+            Err(detail) => {
+                return crate::checks::CheckOutcome {
+                    ok: false,
+                    reason_code: reasons::CHECK_TIMEOUT,
+                    detail,
+                    elapsed_ms: start.elapsed().as_millis() as u64,
+                };
+            }
+        };
+        if exchange.ok {
+            let _ = self.hiccup.on_health_ok(HealthOkCtx {
+                placement,
+                unit_id,
+                attempt_id: id,
+                fence,
+                content_type: exchange.content_type.as_deref(),
+                body: &exchange.body,
+                health_interval_ms: spec.interval_ms,
+                now_ms,
+            });
+        }
+        let elapsed_ms = start.elapsed().as_millis() as u64;
+        if exchange.ok {
+            crate::checks::CheckOutcome {
+                ok: true,
+                reason_code: "lifecycle.check_ok",
+                detail: "check succeeded".into(),
+                elapsed_ms,
+            }
+        } else {
+            crate::checks::CheckOutcome {
+                ok: false,
+                reason_code: reasons::READINESS_FAILED,
+                detail: format!("http status {}", exchange.status),
+                elapsed_ms,
+            }
+        }
     }
 
     pub fn attempt_root_exists(&self, id: AttemptId) -> bool {

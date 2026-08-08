@@ -30,6 +30,7 @@ crates/
   gump-agent/           materialization, secret delivery, driver supervision
   gump-driver/          stable driver trait and common lifecycle
   gump-telemetry/       Ratatouille capture, relay, subscription
+  gump-hiccup/          health upgrade, discovery board, keepers, SDK corpus
   gump-connectors/      object, identity, publication, output adapters
   gump-server/          role composition and process entry point
   gump-gates/           workspace quality gates (not a runtime dependency)
