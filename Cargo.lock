@@ -904,6 +904,7 @@ dependencies = [
  "gump-telemetry",
  "gump-types",
  "rand_core 0.10.1",
+ "tempfile",
 ]
 
 [[package]]

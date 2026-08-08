@@ -7,8 +7,11 @@
 //! - `GUMP_S3_BUCKET` (default `gump`)
 //! - `GUMP_S3_ACCESS_KEY` / `GUMP_S3_SECRET_KEY` (default `gump` / `gumpsecret`)
 //! - `GUMP_S3_REGION` (default `us-east-1`)
+//! - `GUMP_S3_REQUIRED=1` — fail instead of skip when the endpoint is missing/unreachable
+//!   (used by the CI `d02-minio` job / STL-25)
 //!
 //! When unset, tests skip (CI stays green without MinIO).
+//! CI: `.github/workflows/ci.yml` job `d02-minio` starts MinIO and sets the env above.
 
 use std::io::Read;
 use std::time::Duration;
@@ -80,9 +83,24 @@ fn ensure_bucket(cfg: &S3Config) -> bool {
     }
 }
 
+fn s3_required() -> bool {
+    match std::env::var("GUMP_S3_REQUIRED") {
+        Ok(v) => matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"),
+        Err(_) => false,
+    }
+}
+
 fn open_store() -> Option<S3ObjectStore> {
-    let cfg = live_config()?;
+    let Some(cfg) = live_config() else {
+        if s3_required() {
+            panic!("GUMP_S3_REQUIRED set but GUMP_S3_ENDPOINT is missing");
+        }
+        return None;
+    };
     if !ensure_bucket(&cfg) {
+        if s3_required() {
+            panic!("GUMP_S3_REQUIRED set but endpoint unreachable / CreateBucket failed");
+        }
         eprintln!("skip: GUMP_S3_ENDPOINT unreachable");
         return None;
     }
@@ -95,6 +113,9 @@ fn open_store() -> Option<S3ObjectStore> {
             panic!("S3 capability probe failed (STL-19): {e}");
         }
         Err(e) => {
+            if s3_required() {
+                panic!("GUMP_S3_REQUIRED set but S3ObjectStore::new failed: {e}");
+            }
             eprintln!("skip: S3ObjectStore::new failed: {e}");
             None
         }

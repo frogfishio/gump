@@ -125,8 +125,38 @@ fn archive_from_manifest_is_deterministic() {
     write_fixture(&ws);
     let a = local_parity_plan(&ws, &PathBuf::from("gump.toml")).unwrap();
     let b = local_parity_plan(&ws, &PathBuf::from("gump.toml")).unwrap();
-    assert_eq!(a.archive, b.archive);
-    assert!(!a.archive.is_empty());
+    let a_bytes = a.read_archive_bytes().unwrap();
+    let b_bytes = b.read_archive_bytes().unwrap();
+    assert_eq!(a_bytes, b_bytes);
+    assert!(!a_bytes.is_empty());
+    assert!(a.archive_spill_path().is_file());
+    assert!(b.archive_spill_path().is_file());
+    let _ = fs::remove_dir_all(ws);
+}
+
+#[test]
+fn local_plan_packs_to_spill_and_run_streams_read() {
+    // STL-26: compressed archive lives on a private spill; run_local opens it as Read.
+    let ws = tmp_workspace("spill-run");
+    write_fixture(&ws);
+    let plan = local_parity_plan(&ws, &PathBuf::from("gump.toml")).unwrap();
+    assert!(
+        plan.archive_spill_path().is_file(),
+        "expected archive spill file"
+    );
+    assert!(
+        fs::metadata(plan.archive_spill_path()).unwrap().len() > 0,
+        "spill must be non-empty"
+    );
+    drop(plan); // run_local builds its own spill independently
+    let report = run_local(LocalRunOptions {
+        workspace: ws.clone(),
+        manifest_path: PathBuf::from("gump.toml"),
+        state_root: Some(ws.join("state")),
+    })
+    .unwrap();
+    assert_eq!(report.mode, "run");
+    assert!(report.release_root.join("bin/hello").is_file());
     let _ = fs::remove_dir_all(ws);
 }
 

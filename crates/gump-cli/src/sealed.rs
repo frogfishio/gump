@@ -78,7 +78,9 @@ pub fn build_sealed_capsule<R: CryptoRng>(
         .to_string();
 
     let public_metadata = br#"gump.release/1-local-test"#.to_vec();
-    let archive = plan.archive.clone();
+    // Capsule segment write still needs a contiguous slice; spill avoids holding
+    // the archive on LocalParityPlan for the local run path (STL-26).
+    let archive = plan.read_archive_bytes()?;
     let pub_digest = *blake3::hash(&public_metadata).as_bytes();
     let arch_digest = *blake3::hash(&archive).as_bytes();
 

@@ -39,3 +39,46 @@ jobs:
 
       - name: Prove missing requirements fail strict CI gate (W04)
         run: cargo run -p gump-gates --bin check-traceability -- --prove-missing
+
+  # Optional live S3 path (STL-07 / STL-19 / D02). Default `check` stays green without MinIO.
+  s3-minio:
+    name: d02-minio
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (MSRV)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.85.0"
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Start MinIO
+        run: |
+          docker run -d --name gump-minio \
+            -p 9000:9000 \
+            -e MINIO_ROOT_USER=gump \
+            -e MINIO_ROOT_PASSWORD=gumpsecret \
+            minio/minio:RELEASE.2025-04-22T22-12-26Z server /data --console-address ":9001"
+          for i in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:9000/minio/health/live >/dev/null; then
+              echo "MinIO healthy"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "MinIO failed to become healthy" >&2
+          docker logs gump-minio || true
+          exit 1
+
+      - name: D02 quarantine→promote against MinIO
+        env:
+          GUMP_S3_ENDPOINT: http://127.0.0.1:9000
+          GUMP_S3_BUCKET: gump
+          GUMP_S3_ACCESS_KEY: gump
+          GUMP_S3_SECRET_KEY: gumpsecret
+          GUMP_S3_REGION: us-east-1
+          GUMP_S3_REQUIRED: "1"
+        run: cargo test -p gump-connectors --test d02_s3_publish -- --nocapture

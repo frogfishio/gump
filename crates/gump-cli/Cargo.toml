@@ -21,5 +21,6 @@ gump-telemetry = { workspace = true }
 blake3 = { workspace = true }
 rand_core = { workspace = true }
 getrandom = { workspace = true }
+tempfile = { workspace = true }
 
 [dev-dependencies]

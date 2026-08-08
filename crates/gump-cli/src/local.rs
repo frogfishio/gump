@@ -1,11 +1,13 @@
 //! Local unsealed `gump run` path (D014 / CONFORMANCE §6).
 
 use std::fs;
+use std::fs::File;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use gump_capsule::archive::{
-    ArchiveEntry, ExtractLimits, materialize_application_archive, pack_archive,
+    ArchiveEntry, ExtractLimits, materialize_application_archive, pack_archive_to,
 };
 use gump_driver::{
     AttemptContext, Driver, DriverKind, HostProbe, IoEndpoints, NativeDriver, ReleaseRoot,
@@ -41,15 +43,38 @@ pub struct LocalRunReport {
 }
 
 /// Normalized local parity plan shared by `run` and sealed `test`.
-#[derive(Clone, Debug)]
+///
+/// The compressed application archive lives on a private spill file (STL-26 /
+/// STL-14 residual) — not as an owned `Vec<u8>` on the plan.
+#[derive(Debug)]
 pub struct LocalParityPlan {
     pub manifest: Manifest,
-    pub archive: Vec<u8>,
+    /// Path to ustar+zstd spill produced by [`local_parity_plan`].
+    archive_spill: PathBuf,
+    /// Keeps the spill directory alive for the plan lifetime.
+    _archive_tmpdir: tempfile::TempDir,
     pub command_vector: Vec<String>,
     pub workdir_rel: Option<String>,
     pub driver_kind: DriverKind,
     pub interpreter: Option<Vec<String>>,
     pub telemetry_filter: Option<String>,
+}
+
+impl LocalParityPlan {
+    /// Spill path for streaming materialize / digest (STL-26).
+    pub fn archive_spill_path(&self) -> &Path {
+        &self.archive_spill
+    }
+
+    /// Load spill bytes when a slice is still required (sealed Capsule assemble).
+    pub fn read_archive_bytes(&self) -> Result<Vec<u8>, CliError> {
+        fs::read(&self.archive_spill).map_err(|e| {
+            CliError::new(
+                CliErrorKind::Io,
+                format!("read archive spill {}: {e}", self.archive_spill.display()),
+            )
+        })
+    }
 }
 
 pub fn local_parity_plan(
@@ -92,8 +117,21 @@ pub fn local_parity_plan(
     }
 
     let entries = virtual_tree_to_archive_entries(&tree)?;
-    let archive =
-        pack_archive(&entries).map_err(|e| CliError::new(CliErrorKind::Archive, e.to_string()))?;
+    let archive_tmpdir = tempfile::Builder::new()
+        .prefix("gump-cli-archive-")
+        .tempdir()
+        .map_err(|e| CliError::new(CliErrorKind::Io, format!("create archive spill dir: {e}")))?;
+    let archive_spill = archive_tmpdir.path().join("app.ustar.zst");
+    {
+        let file = File::create(&archive_spill).map_err(|e| {
+            CliError::new(
+                CliErrorKind::Io,
+                format!("create archive spill {}: {e}", archive_spill.display()),
+            )
+        })?;
+        pack_archive_to(&entries, file)
+            .map_err(|e| CliError::new(CliErrorKind::Archive, e.to_string()))?;
+    }
 
     let (driver_kind, interpreter) = match manifest.runtime.driver {
         ManifestDriver::Native => (DriverKind::Native, None),
@@ -133,7 +171,8 @@ pub fn local_parity_plan(
     Ok(LocalParityPlan {
         telemetry_filter: manifest.telemetry.as_ref().and_then(|t| t.filter.clone()),
         manifest,
-        archive,
+        archive_spill,
+        _archive_tmpdir: archive_tmpdir,
         command_vector,
         workdir_rel,
         driver_kind,
@@ -143,13 +182,9 @@ pub fn local_parity_plan(
 
 pub fn run_local(opts: LocalRunOptions) -> Result<LocalRunReport, CliError> {
     let plan = local_parity_plan(&opts.workspace, &opts.manifest_path)?;
-    execute_plan(
-        &opts.workspace,
-        opts.state_root,
-        "run",
-        &plan,
-        &plan.archive,
-    )
+    let archive = File::open(plan.archive_spill_path())
+        .map_err(|e| CliError::new(CliErrorKind::Io, format!("open archive spill: {e}")))?;
+    execute_plan(&opts.workspace, opts.state_root, "run", &plan, archive)
 }
 
 pub(crate) fn execute_plan(
@@ -157,7 +192,7 @@ pub(crate) fn execute_plan(
     state_root: Option<PathBuf>,
     mode: &'static str,
     plan: &LocalParityPlan,
-    archive: &[u8],
+    archive: impl Read,
 ) -> Result<LocalRunReport, CliError> {
     let state = state_root.unwrap_or_else(|| workspace.join(".gump").join("state"));
     let capsule_id = CapsuleId::new();
