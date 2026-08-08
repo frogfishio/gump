@@ -88,6 +88,37 @@ impl SegmentTable {
         })
     }
 
+    /// Build a table from precomputed digests/lengths (streaming pack; GUMP-N002).
+    pub fn from_hashed_parts(
+        parts: [(SegmentType, u64, u64, [u8; 32]); SEGMENT_COUNT as usize],
+    ) -> Result<Self, CapsuleDialectError> {
+        let mut offset = u64::from(TABLE_BYTE_LEN);
+        let mut descriptors = Vec::with_capacity(5);
+        for (i, (ty, stored_length, logical_length, digest)) in parts.into_iter().enumerate() {
+            let expected = SegmentType::from_u16((i + 1) as u16)?;
+            if ty != expected {
+                return Err(CapsuleDialectError::new(
+                    CapsuleDialectErrorKind::Table,
+                    format!("segments must be types 1..=5 in order, got {:?}", ty),
+                ));
+            }
+            descriptors.push(SegmentDescriptor {
+                segment_type: ty,
+                flags: 0,
+                offset,
+                stored_length,
+                logical_length,
+                digest,
+            });
+            offset = offset.checked_add(stored_length).ok_or_else(|| {
+                CapsuleDialectError::new(CapsuleDialectErrorKind::Table, "segment offset overflow")
+            })?;
+        }
+        Ok(Self {
+            descriptors: descriptors.try_into().expect("exactly five descriptors"),
+        })
+    }
+
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(TABLE_BYTE_LEN as usize);
         out.extend_from_slice(MAGIC);

@@ -1,0 +1,11 @@
+# Non-secret configuration only. Keep DIGITALOCEAN_TOKEN in macrun.
+ssh_key_fingerprints = ["replace:with:digitalocean:ssh:key:fingerprint"]
+admin_cidrs          = ["203.0.113.10/32"]
+
+# Optional overrides:
+# region               = "sgp1"
+# instance_type        = "s-1vcpu-2gb"
+# ssh_private_key_path = "/absolute/path/to/private/key"
+# gump_cluster_port    = 7443
+# workload_port_range  = "20000-20999"
+

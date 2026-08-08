@@ -1,29 +1,33 @@
-# Terraform
-.terraform/
-.terraform.lock.hcl      !  # DO commit this file (remove this line if your tooling ignores by default)
+# Terraform working data and local inputs
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/*.tfplan
+terraform/*.tfvars
+terraform/*.auto.tfvars
+terraform/crash.log
 
-# State
-terraform.tfstate
-terraform.tfstate.*
-*.tfstate
-*.tfstate.*
+# Generated inventory and test evidence
+ansible/inventory/*
+!ansible/inventory/.gitkeep
+evidence/*
+!evidence/.gitkeep
 
-# Plans
-*.tfplan
-
-# Vars (often sensitive)
-*.tfvars
-*.tfvars.json
-*.auto.tfvars
-*.auto.tfvars.json
-
-# Misc
-crash.log
-override.tf
-override.tf.json
-*_override.tf
-*_override.tf.json
-ansible/inventory/terraform.ini
+# Local secret/config material must never be added
+.env
+.env.*
 .envrc
 .vault-init.json
-services/.constellation-secrets.yml
+*.secret
+*.secrets.*
+*.vault.yml
+*.env.macrun
+
+# Build artifacts and copied binaries
+artifacts/
+*.tar
+*.tar.gz
+*.capsule
+
+# Editor/OS noise
+.DS_Store

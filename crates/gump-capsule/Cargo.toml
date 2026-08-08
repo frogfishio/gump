@@ -20,3 +20,4 @@ unicode-normalization = { workspace = true }
 rustix = { version = "1", features = ["fs"] }
 
 [dev-dependencies]
+tempfile = { workspace = true }

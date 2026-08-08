@@ -197,6 +197,13 @@ pub(crate) fn encode_cbor_bstr(inner: &[u8]) -> Vec<u8> {
     out
 }
 
+/// CBOR bstr header for a payload of `inner_len` bytes (no content).
+pub(crate) fn encode_cbor_bstr_prefix(inner_len: usize) -> Vec<u8> {
+    let mut out = Vec::with_capacity(9);
+    encode_len(&mut out, 2, inner_len);
+    out
+}
+
 /// Decode a single CBOR byte string; reject trailing items.
 pub(crate) fn decode_cbor_bstr(bytes: &[u8]) -> Result<Vec<u8>, CapsuleDialectError> {
     let mut cur = Cursor::new(bytes);

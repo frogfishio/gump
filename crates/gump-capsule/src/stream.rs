@@ -1,12 +1,16 @@
 //! Streaming Capsule v0001 reader/writer for the Gump dialect.
 
-use std::io::{Read, Write};
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
 
 use capsule_lib::{Capsule, Encoding, ParseOptions, Version};
 use crc32fast::Hasher as Crc32;
 
 use crate::error::{CapsuleDialectError, CapsuleDialectErrorKind};
-use crate::header::{GumpCapsuleHeader, decode_cbor_bstr, encode_cbor_bstr};
+use crate::header::{
+    GumpCapsuleHeader, decode_cbor_bstr, encode_cbor_bstr, encode_cbor_bstr_prefix,
+};
 use crate::segment::{SegmentTable, SegmentType, TABLE_BYTE_LEN};
 
 /// Default bounded read chunk for streaming verify / segment extract (STL-03).
@@ -389,36 +393,253 @@ fn read_cbor_bstr_prefix<R: Read>(r: &mut R) -> Result<(Vec<u8>, u64), CapsuleDi
 }
 
 /// Incremental writer that accepts segments then finalizes framing.
+/// Segment body for streaming pack — bytes in memory or a private spill path (GUMP-N002).
+#[derive(Clone, Debug)]
+pub enum SegmentSource<'a> {
+    Bytes(&'a [u8]),
+    Path(&'a Path),
+}
+
+/// Result of a streaming Capsule write (no full Capsule/`inner` retention).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CapsuleWriteReport {
+    pub header: GumpCapsuleHeader,
+    pub table: SegmentTable,
+    pub peak_buffer_bytes: usize,
+    pub bytes_written: u64,
+}
+
+/// Incremental writer that accepts segments then finalizes framing.
 pub struct StreamingCapsuleWriter {
     header: GumpCapsuleHeader,
-    segments: [Vec<u8>; 5],
+    segments: [OwnedSegment; 5],
     logical_lengths: [u64; 5],
+}
+
+#[derive(Clone, Debug, Default)]
+enum OwnedSegment {
+    #[default]
+    Empty,
+    Bytes(Vec<u8>),
+    Path(PathBuf),
 }
 
 impl StreamingCapsuleWriter {
     pub fn new(header: GumpCapsuleHeader) -> Self {
         Self {
             header,
-            segments: [Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new()],
+            segments: Default::default(),
             logical_lengths: [0; 5],
         }
     }
 
     pub fn set_segment(&mut self, ty: SegmentType, bytes: impl Into<Vec<u8>>, logical_length: u64) {
         let idx = (ty.as_u16() - 1) as usize;
-        self.segments[idx] = bytes.into();
+        self.segments[idx] = OwnedSegment::Bytes(bytes.into());
         self.logical_lengths[idx] = logical_length;
     }
 
+    /// Pin a segment to a spill file (application archive); not loaded into a `Vec` (N002).
+    pub fn set_segment_path(
+        &mut self,
+        ty: SegmentType,
+        path: impl Into<PathBuf>,
+        logical_length: u64,
+    ) {
+        let idx = (ty.as_u16() - 1) as usize;
+        self.segments[idx] = OwnedSegment::Path(path.into());
+        self.logical_lengths[idx] = logical_length;
+    }
+
+    /// Buffered finish for small Capsules / goldens (loads segment bytes).
     pub fn finish<W: Write>(self, writer: &mut W) -> Result<GumpCapsuleView, CapsuleDialectError> {
+        if self
+            .segments
+            .iter()
+            .any(|s| matches!(s, OwnedSegment::Path(_)))
+        {
+            return Err(CapsuleDialectError::new(
+                CapsuleDialectErrorKind::Framing,
+                "StreamingCapsuleWriter::finish cannot load Path segments; use finish_streaming",
+            ));
+        }
+        let owned: [Vec<u8>; 5] = std::array::from_fn(|i| match &self.segments[i] {
+            OwnedSegment::Bytes(b) => b.clone(),
+            OwnedSegment::Empty | OwnedSegment::Path(_) => Vec::new(),
+        });
         let refs = [
-            self.segments[0].as_slice(),
-            self.segments[1].as_slice(),
-            self.segments[2].as_slice(),
-            self.segments[3].as_slice(),
-            self.segments[4].as_slice(),
+            owned[0].as_slice(),
+            owned[1].as_slice(),
+            owned[2].as_slice(),
+            owned[3].as_slice(),
+            owned[4].as_slice(),
         ];
         write_gump_capsule(writer, &self.header, refs, self.logical_lengths)
+    }
+
+    /// Stream Capsule framing to `writer` without retaining segment payloads (GUMP-N002).
+    ///
+    /// `writer` must be seekable so the body CRC can be patched after streaming.
+    /// On short-read / IO error the writer may contain a truncated Capsule — callers
+    /// should write to a private temp and only publish after `Ok`.
+    pub fn finish_streaming<W: Write + Seek>(
+        self,
+        writer: &mut W,
+    ) -> Result<CapsuleWriteReport, CapsuleDialectError> {
+        let sources: [SegmentSource<'_>; 5] = std::array::from_fn(|i| match &self.segments[i] {
+            OwnedSegment::Empty => SegmentSource::Bytes(&[]),
+            OwnedSegment::Bytes(b) => SegmentSource::Bytes(b.as_slice()),
+            OwnedSegment::Path(p) => SegmentSource::Path(p.as_path()),
+        });
+        write_gump_capsule_streaming(writer, &self.header, sources, self.logical_lengths)
+    }
+}
+
+/// Write a Capsule by streaming segment sources (GUMP-N002 / F03–F04).
+pub fn write_gump_capsule_streaming<W: Write + Seek>(
+    writer: &mut W,
+    header: &GumpCapsuleHeader,
+    sources: [SegmentSource<'_>; 5],
+    logical_lengths: [u64; 5],
+) -> Result<CapsuleWriteReport, CapsuleDialectError> {
+    let mut peak = DEFAULT_STREAM_CHUNK_BYTES;
+    let mut hashed = [(SegmentType::PublicMetadata, 0u64, 0u64, [0u8; 32]); 5];
+    let types = [
+        SegmentType::PublicMetadata,
+        SegmentType::ApplicationArchive,
+        SegmentType::ProtectedConfig,
+        SegmentType::KeyEnvelope,
+        SegmentType::ReleaseSignature,
+    ];
+    for i in 0..5 {
+        let (stored, digest) = hash_source(&sources[i], &mut peak)?;
+        hashed[i] = (types[i], stored, logical_lengths[i], digest);
+    }
+    let table = SegmentTable::from_hashed_parts(hashed)?;
+    let table_bytes = table.encode();
+    let inner_len = u64::from(TABLE_BYTE_LEN) + hashed.iter().map(|(_, s, _, _)| *s).sum::<u64>();
+    let inner_len_usize = usize::try_from(inner_len).map_err(|_| {
+        CapsuleDialectError::new(CapsuleDialectErrorKind::Framing, "inner payload too large")
+    })?;
+    let header_cbor = header.encode_cbor()?;
+    // Validate header CBOR via capsule-lib (matches write_gump_capsule).
+    Capsule::from_decoded(
+        Version(1),
+        Encoding::Cbor,
+        None,
+        &header_cbor,
+        // Minimal empty bstr payload for header validation only.
+        &encode_cbor_bstr(&[]),
+    )?;
+    let bstr_prefix = encode_cbor_bstr_prefix(inner_len_usize);
+
+    let start = writer.stream_position().map_err(map_io)?;
+    writer.write_all(b"CAPSULE").map_err(map_io)?;
+    writer.write_all(b"0001").map_err(map_io)?;
+    writer.write_all(b"C").map_err(map_io)?;
+    let header_len = header_cbor.len();
+    if header_len > u16::MAX as usize {
+        return Err(CapsuleDialectError::new(
+            CapsuleDialectErrorKind::Framing,
+            "header too large",
+        ));
+    }
+    writer
+        .write_all(format!("{header_len:04X}").as_bytes())
+        .map_err(map_io)?;
+    let crc_pos = writer.stream_position().map_err(map_io)?;
+    writer.write_all(b"00000000").map_err(map_io)?;
+
+    let mut crc = Crc32::new();
+    writer.write_all(&header_cbor).map_err(map_io)?;
+    crc.update(&header_cbor);
+    writer.write_all(&bstr_prefix).map_err(map_io)?;
+    crc.update(&bstr_prefix);
+    writer.write_all(&table_bytes).map_err(map_io)?;
+    crc.update(&table_bytes);
+    peak = peak
+        .max(table_bytes.len())
+        .max(header_cbor.len())
+        .max(bstr_prefix.len());
+
+    for src in &sources {
+        copy_source_crc(src, writer, &mut crc, &mut peak)?;
+    }
+
+    let crc_val = crc.finalize();
+    let end = writer.stream_position().map_err(map_io)?;
+    writer.seek(SeekFrom::Start(crc_pos)).map_err(map_io)?;
+    writer
+        .write_all(format!("{crc_val:08X}").as_bytes())
+        .map_err(map_io)?;
+    writer.seek(SeekFrom::Start(end)).map_err(map_io)?;
+
+    Ok(CapsuleWriteReport {
+        header: header.clone(),
+        table,
+        peak_buffer_bytes: peak,
+        bytes_written: end.saturating_sub(start),
+    })
+}
+
+fn map_io(e: std::io::Error) -> CapsuleDialectError {
+    CapsuleDialectError::new(CapsuleDialectErrorKind::Io, e.to_string())
+}
+
+fn hash_source(
+    src: &SegmentSource<'_>,
+    peak: &mut usize,
+) -> Result<(u64, [u8; 32]), CapsuleDialectError> {
+    match src {
+        SegmentSource::Bytes(b) => {
+            *peak = (*peak).max(b.len().min(DEFAULT_STREAM_CHUNK_BYTES));
+            Ok((b.len() as u64, *blake3::hash(b).as_bytes()))
+        }
+        SegmentSource::Path(path) => {
+            let mut file = File::open(path).map_err(map_io)?;
+            let mut hasher = blake3::Hasher::new();
+            let mut buf = vec![0u8; DEFAULT_STREAM_CHUNK_BYTES];
+            *peak = (*peak).max(buf.len());
+            let mut total = 0u64;
+            loop {
+                let n = file.read(&mut buf).map_err(map_io)?;
+                if n == 0 {
+                    break;
+                }
+                hasher.update(&buf[..n]);
+                total += n as u64;
+            }
+            Ok((total, *hasher.finalize().as_bytes()))
+        }
+    }
+}
+
+fn copy_source_crc<W: Write>(
+    src: &SegmentSource<'_>,
+    writer: &mut W,
+    crc: &mut Crc32,
+    peak: &mut usize,
+) -> Result<(), CapsuleDialectError> {
+    match src {
+        SegmentSource::Bytes(b) => {
+            writer.write_all(b).map_err(map_io)?;
+            crc.update(b);
+            Ok(())
+        }
+        SegmentSource::Path(path) => {
+            let mut file = File::open(path).map_err(map_io)?;
+            let mut buf = vec![0u8; DEFAULT_STREAM_CHUNK_BYTES];
+            *peak = (*peak).max(buf.len());
+            loop {
+                let n = file.read(&mut buf).map_err(map_io)?;
+                if n == 0 {
+                    break;
+                }
+                writer.write_all(&buf[..n]).map_err(map_io)?;
+                crc.update(&buf[..n]);
+            }
+            Ok(())
+        }
     }
 }
 
@@ -471,5 +692,76 @@ mod tests {
             buffered.segment(SegmentType::ReleaseSignature)
         );
         assert!(meta.peak_buffer_bytes <= TABLE_BYTE_LEN as usize); // table dominates tiny chunk
+    }
+
+    #[test]
+    fn streaming_write_matches_buffered_and_bounds_peak() {
+        use std::io::Cursor;
+        let segments = [
+            b"meta".as_slice(),
+            b"archive-payload",
+            b"prot",
+            b"keye",
+            b"signatur",
+        ];
+        let logical = [4u64, 15, 4, 4, 8];
+        let mut buffered = Vec::new();
+        write_gump_capsule(&mut buffered, &sample_header(), segments, logical).unwrap();
+
+        let mut streamed = Cursor::new(Vec::new());
+        let report = write_gump_capsule_streaming(
+            &mut streamed,
+            &sample_header(),
+            [
+                SegmentSource::Bytes(segments[0]),
+                SegmentSource::Bytes(segments[1]),
+                SegmentSource::Bytes(segments[2]),
+                SegmentSource::Bytes(segments[3]),
+                SegmentSource::Bytes(segments[4]),
+            ],
+            logical,
+        )
+        .unwrap();
+        assert_eq!(streamed.get_ref().as_slice(), buffered.as_slice());
+        assert_eq!(report.table, read_gump_capsule(&buffered).unwrap().table);
+        assert!(
+            report.peak_buffer_bytes <= DEFAULT_STREAM_CHUNK_BYTES.max(TABLE_BYTE_LEN as usize)
+        );
+    }
+
+    #[test]
+    fn streaming_write_from_spill_path_multi_mib() {
+        use std::io::Cursor;
+        let dir = tempfile::tempdir().unwrap();
+        let spill = dir.path().join("arch.bin");
+        // 4 MiB synthetic archive — must not require holding it in SegmentSource::Bytes.
+        let size = 4 * 1024 * 1024usize;
+        {
+            let mut f = File::create(&spill).unwrap();
+            let chunk = vec![0xABu8; 64 * 1024];
+            let mut left = size;
+            while left > 0 {
+                let n = left.min(chunk.len());
+                f.write_all(&chunk[..n]).unwrap();
+                left -= n;
+            }
+        }
+        let mut w = StreamingCapsuleWriter::new(sample_header());
+        w.set_segment(SegmentType::PublicMetadata, b"meta", 4);
+        w.set_segment_path(SegmentType::ApplicationArchive, &spill, size as u64);
+        w.set_segment(SegmentType::ProtectedConfig, b"prot", 4);
+        w.set_segment(SegmentType::KeyEnvelope, b"keye", 4);
+        w.set_segment(SegmentType::ReleaseSignature, b"signatur", 8);
+        let mut out = Cursor::new(Vec::new());
+        let report = w.finish_streaming(&mut out).unwrap();
+        assert_eq!(report.table.descriptors[1].stored_length, size as u64);
+        assert!(
+            report.peak_buffer_bytes <= DEFAULT_STREAM_CHUNK_BYTES + TABLE_BYTE_LEN as usize + 64,
+            "peak {} exceeds streaming envelope",
+            report.peak_buffer_bytes
+        );
+        let view = read_gump_capsule(out.get_ref()).unwrap();
+        assert_eq!(view.segment(SegmentType::ApplicationArchive).len(), size);
+        assert_eq!(view.table, report.table);
     }
 }

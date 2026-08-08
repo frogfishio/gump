@@ -22,7 +22,8 @@ pub use segment::{
     TABLE_PREFIX_LEN,
 };
 pub use stream::{
-    DEFAULT_STREAM_CHUNK_BYTES, GumpCapsuleMeta, GumpCapsuleView, MAX_SIGNATURE_SEGMENT_BYTES,
-    StreamingCapsuleReader, StreamingCapsuleWriter, read_gump_capsule, write_gump_capsule,
+    CapsuleWriteReport, DEFAULT_STREAM_CHUNK_BYTES, GumpCapsuleMeta, GumpCapsuleView,
+    MAX_SIGNATURE_SEGMENT_BYTES, SegmentSource, StreamingCapsuleReader, StreamingCapsuleWriter,
+    read_gump_capsule, write_gump_capsule, write_gump_capsule_streaming,
 };
 pub use verify::{release_signing_transcript, verify_release_signature};

@@ -1,57 +1,62 @@
-.PHONY: help clean destroy infra setup smoke services up terraform stage2 layer3
+.PHONY: help init plan infra configure-base install-gump configure verify form smoke destroy
 
-VAULT_INIT_FILE ?= .vault-init.json
-TERRAFORM_DIR := terraform
-ANSIBLE_DIR := ansible
-ANSIBLE_INVENTORY := ansible/inventory/terraform.ini
-SERVICES_DIR := services
-SERVICES_TARGET ?= frogfish01
-SERVICES_VARS := $(SERVICES_DIR)/group_vars/constellation.yml
-SERVICES_VARS_EXAMPLE := $(SERVICES_DIR)/group_vars/constellation.example.yml
-SERVICES_ONLY ?=
+ROOT_DIR := $(abspath .)
+TERRAFORM_DIR := $(ROOT_DIR)/terraform
+ANSIBLE_DIR := $(ROOT_DIR)/ansible
+INVENTORY := $(ANSIBLE_DIR)/inventory/terraform.ini
+MACRUN := $(ROOT_DIR)/scripts/macrun-exec.sh
+GUMP_ARTIFACT ?=
+GUMP_ARTIFACT_SHA256 ?=
 
 help:
 	@printf '%s\n' \
-	  'Targets:' \
-	  '  make infra     Run terraform init and terraform apply.' \
-	  '  make setup     Run the Stage 2 Ansible bootstrap and smoke test.' \
-	  '  make smoke     Run the Nomad smoke test only.' \
-	  '  make services  Run the stage-3 app deploy playbook.' \
-	  '                  Set SERVICES_ONLY=k2db-api to deploy one service.' \
-	  '  make up        Run infra, setup, then services.' \
-	  '  make clean    Destroy the cluster and remove local bootstrap artifacts.' \
-	  '  make destroy  Alias for make clean.'
+	  'Gump three-node test cluster' \
+	  '' \
+	  '  make init       Initialize Terraform providers.' \
+	  '  make plan       Plan infrastructure through macrun infra scope.' \
+	  '  make infra      Apply infrastructure and wait until all hosts are ready.' \
+	  '  make configure-base  Harden hosts without requiring a Gump artifact.' \
+	  '  make install-gump    Install GUMP_ARTIFACT after the server contract lands.' \
+	  '  make configure       Run configure-base and install-gump together.' \
+	  '  make verify     Verify the substrate and installed artifact.' \
+	  '  make form       Form Gump cluster (enabled when CLI contract lands).' \
+	  '  make smoke      Run current live acceptance ladder.' \
+	  '  make destroy    Destroy compute; requires CONFIRM_DESTROY=YES.'
+
+init:
+	terraform -chdir="$(TERRAFORM_DIR)" init
+
+plan:
+	"$(MACRUN)" infra terraform -chdir="$(TERRAFORM_DIR)" plan
 
 infra:
-	cd "$(TERRAFORM_DIR)" && terraform init
-	cd "$(TERRAFORM_DIR)" && terraform apply
+	"$(MACRUN)" infra terraform -chdir="$(TERRAFORM_DIR)" apply
+	cd "$(ANSIBLE_DIR)" && ansible gump -m wait_for_connection -a 'timeout=600'
+	cd "$(ANSIBLE_DIR)" && ansible gump -m ping
 
-setup:
-	cd "$(ANSIBLE_DIR)" && ansible-inventory -i inventory/terraform.ini --graph
-	cd "$(ANSIBLE_DIR)" && ansible frogfish -m ping
-	cd "$(ANSIBLE_DIR)" && ansible-playbook site.yml
-	$(MAKE) smoke
+configure-base:
+	cd "$(ANSIBLE_DIR)" && ansible-playbook site.yml --tags base
+
+install-gump:
+	@test -n "$(GUMP_ARTIFACT)" || { echo 'GUMP_ARTIFACT=/absolute/path/to/linux/gump is required' >&2; exit 2; }
+	cd "$(ANSIBLE_DIR)" && ansible-inventory --graph
+	cd "$(ANSIBLE_DIR)" && ansible gump -m ping
+	cd "$(ANSIBLE_DIR)" && ansible-playbook site.yml \
+	  --tags gump \
+	  -e "gump_artifact_path=$(abspath $(GUMP_ARTIFACT))" \
+	  $(if $(GUMP_ARTIFACT_SHA256),-e "gump_artifact_sha256=$(GUMP_ARTIFACT_SHA256)",)
+
+configure: configure-base install-gump
+
+verify:
+	"$(ROOT_DIR)/scripts/verify-substrate.sh"
+
+form:
+	"$(MACRUN)" cluster "$(ROOT_DIR)/scripts/form.sh"
 
 smoke:
-	./smoke-test.sh run
+	"$(ROOT_DIR)/scripts/smoke.sh"
 
-clean:
-	cd terraform && terraform destroy
-	rm -f "$(VAULT_INIT_FILE)" "$(ANSIBLE_INVENTORY)" "$(SERVICES_DIR)/.constellation-secrets.yml"
-
-destroy: clean
-
-services:
-	@if [ ! -f "$(SERVICES_VARS)" ]; then cp "$(SERVICES_VARS_EXAMPLE)" "$(SERVICES_VARS)"; fi
-	cd "$(SERVICES_DIR)" && ansible-playbook -i ../$(ANSIBLE_INVENTORY) site.yml \
-	  -e constellation_layer3_target=$(SERVICES_TARGET) \
-	  -e constellation_layer3_only_csv=$(SERVICES_ONLY) \
-	  -e @group_vars/constellation.yml
-
-up: infra setup services
-
-terraform: infra
-
-stage2: setup
-
-layer3: services
+destroy:
+	@test "$(CONFIRM_DESTROY)" = YES || { echo 'Refusing: rerun with CONFIRM_DESTROY=YES' >&2; exit 2; }
+	"$(MACRUN)" infra terraform -chdir="$(TERRAFORM_DIR)" destroy

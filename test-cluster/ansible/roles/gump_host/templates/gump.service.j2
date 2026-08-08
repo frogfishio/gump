@@ -1,0 +1,27 @@
+[Unit]
+Description=Gump memory-only workload node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=gump
+Group=gump
+UMask=0077
+RuntimeDirectory=gump
+RuntimeDirectoryMode=0700
+Environment=GUMP_RUNTIME_DIR={{ gump_runtime_dir }}
+ExecStart={{ gump_server_command }}
+LimitCORE=0
+LimitMEMLOCK=infinity
+LimitNOFILE=65536
+Restart=no
+StandardOutput=null
+StandardError=null
+
+[Install]
+WantedBy=multi-user.target
+
+# Formation is deliberately external until Gump has stable --init/--join and
+# secure --params-fd contracts. No secret may be added to this unit.
+

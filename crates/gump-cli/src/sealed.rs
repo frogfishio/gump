@@ -1,8 +1,13 @@
 //! `gump test --sealed` local Capsule build/verify/unseal-then-run (D014 / X01).
 
-use std::path::PathBuf;
+use std::fs::File;
+use std::io::Cursor;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 
-use gump_capsule::{GumpCapsuleHeader, SegmentType, verify_release_signature, write_gump_capsule};
+use gump_capsule::{
+    GumpCapsuleHeader, SegmentType, StreamingCapsuleWriter, verify_release_signature,
+};
 use gump_crypto::{
     DEK_LEN, Dek, NONCE_LEN, SegmentDigestRef, build_protected_aad,
     build_release_signing_transcript, generate_signing_key, generate_x25519_keypair, hpke_info,
@@ -78,11 +83,9 @@ pub fn build_sealed_capsule<R: CryptoRng>(
         .to_string();
 
     let public_metadata = br#"gump.release/1-local-test"#.to_vec();
-    // Capsule segment write still needs a contiguous slice; spill avoids holding
-    // the archive on LocalParityPlan for the local run path (STL-26).
-    let archive = plan.read_archive_bytes()?;
     let pub_digest = *blake3::hash(&public_metadata).as_bytes();
-    let arch_digest = *blake3::hash(&archive).as_bytes();
+    // GUMP-N002: hash + stream archive from spill — do not load into a Vec.
+    let arch_digest = blake3_file(plan.archive_spill_path())?;
 
     let aad = build_protected_aad(
         capsule_id.as_bytes(),
@@ -152,20 +155,32 @@ pub fn build_sealed_capsule<R: CryptoRng>(
         0,
         0,
     ];
-    let mut buf = Vec::new();
-    let provisional = write_gump_capsule(
-        &mut buf,
-        &header,
-        [
-            public_metadata.as_slice(),
-            archive.as_slice(),
-            protected.as_slice(),
-            key_envelope.as_slice(),
-            placeholder_sig.as_slice(),
-        ],
-        logical,
-    )
-    .map_err(|e| CliError::new(CliErrorKind::Capsule, e.to_string()))?;
+    let archive_len = std::fs::metadata(plan.archive_spill_path())
+        .map_err(|e| CliError::new(CliErrorKind::Io, e.to_string()))?
+        .len();
+    let provisional = {
+        let mut w = StreamingCapsuleWriter::new(header.clone());
+        w.set_segment(
+            SegmentType::PublicMetadata,
+            public_metadata.clone(),
+            logical[0],
+        );
+        w.set_segment_path(
+            SegmentType::ApplicationArchive,
+            plan.archive_spill_path(),
+            archive_len,
+        );
+        w.set_segment(SegmentType::ProtectedConfig, protected.clone(), logical[2]);
+        w.set_segment(SegmentType::KeyEnvelope, key_envelope.clone(), logical[3]);
+        w.set_segment(
+            SegmentType::ReleaseSignature,
+            placeholder_sig.to_vec(),
+            logical[4],
+        );
+        let mut sink = Cursor::new(Vec::new());
+        w.finish_streaming(&mut sink)
+            .map_err(|e| CliError::new(CliErrorKind::Capsule, e.to_string()))?
+    };
 
     let segs = [
         SegmentDigestRef {
@@ -197,23 +212,25 @@ pub fn build_sealed_capsule<R: CryptoRng>(
     sig_seg.extend_from_slice(&verifying.0);
     sig_seg.extend_from_slice(&signature);
 
-    let mut sealed_bytes = Vec::new();
-    let sealed_view = write_gump_capsule(
-        &mut sealed_bytes,
-        &header,
-        [
-            public_metadata.as_slice(),
-            archive.as_slice(),
-            protected.as_slice(),
-            key_envelope.as_slice(),
-            sig_seg.as_slice(),
-        ],
-        logical,
-    )
-    .map_err(|e| CliError::new(CliErrorKind::Capsule, e.to_string()))?;
-
-    verify_release_signature(&header_cbor, &sealed_view.table, &verifying.0, &signature)
-        .map_err(|e| CliError::new(CliErrorKind::Capsule, e.to_string()))?;
+    let sealed_bytes = {
+        let mut w = StreamingCapsuleWriter::new(header);
+        w.set_segment(SegmentType::PublicMetadata, public_metadata, logical[0]);
+        w.set_segment_path(
+            SegmentType::ApplicationArchive,
+            plan.archive_spill_path(),
+            archive_len,
+        );
+        w.set_segment(SegmentType::ProtectedConfig, protected, logical[2]);
+        w.set_segment(SegmentType::KeyEnvelope, key_envelope, logical[3]);
+        w.set_segment(SegmentType::ReleaseSignature, sig_seg, logical[4]);
+        let mut sink = Cursor::new(Vec::new());
+        let report = w
+            .finish_streaming(&mut sink)
+            .map_err(|e| CliError::new(CliErrorKind::Capsule, e.to_string()))?;
+        verify_release_signature(&header_cbor, &report.table, &verifying.0, &signature)
+            .map_err(|e| CliError::new(CliErrorKind::Capsule, e.to_string()))?;
+        sink.into_inner()
+    };
 
     Ok(BuiltSealedCapsule {
         bytes: sealed_bytes,
@@ -260,4 +277,28 @@ pub fn run_sealed_test(opts: SealedTestOptions) -> Result<LocalRunReport, CliErr
     let mut rng = SysRng;
     let built = build_sealed_capsule(&plan, CapsuleId::new(), ClusterId::new(), &mut rng)?;
     run_verified_sealed(&opts.workspace, opts.state_root, &plan, &built)
+}
+
+fn blake3_file(path: &Path) -> Result<[u8; 32], CliError> {
+    let mut file = File::open(path).map_err(|e| {
+        CliError::new(
+            CliErrorKind::Io,
+            format!("open archive spill {}: {e}", path.display()),
+        )
+    })?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut buf).map_err(|e| {
+            CliError::new(
+                CliErrorKind::Io,
+                format!("read archive spill {}: {e}", path.display()),
+            )
+        })?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(*hasher.finalize().as_bytes())
 }

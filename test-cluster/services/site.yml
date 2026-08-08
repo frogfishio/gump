@@ -1,6 +1,0 @@
----
-- name: Constellation layer 3 bootstrap
-  hosts: "{{ constellation_layer3_target | default('constellation_layer3_control') }}"
-  gather_facts: false
-  roles:
-    - role: constellation_layer3

@@ -296,9 +296,9 @@ explicit child process. It is not installed on cluster nodes and does not
 replace Gump's protected Capsule segment, unseal authority, or in-memory
 custody.
 
-Use macrun only in `exec`-style flows. The harness must not call `macrun get`,
-`macrun env`, or another command that prints resolved values for capture by a
-shell, JSON parser, Make variable, Ansible fact, or log.
+Use macrun only in `run`-style flows. The harness must not call any command that
+prints resolved values for capture by a shell, JSON parser, Make variable,
+Ansible fact, or log.
 
 Recommended scopes are separate so each child receives only the class of
 secrets it needs:
@@ -309,9 +309,9 @@ secrets it needs:
 | `gump-test/cluster` | local Gump formation client | S3 connector and recovery/unseal bootstrap values |
 | `gump-test/fixtures` | `gump deploy` | application values used by test Capsules |
 
-The precise scope syntax should follow the simplified macrun CLI when it is
-released. Scripts should centralize that syntax in one small launcher rather
-than embedding it across Terraform, Make, Ansible, and every test.
+macrun 2.x uses `macrun run PROJECT ENVIRONMENT -- COMMAND`. Scripts centralize
+that syntax in one small launcher rather than embedding it across Terraform,
+Make, Ansible, and every test.
 
 ### Infrastructure flow
 
@@ -319,15 +319,14 @@ Terraform should be invoked as the macrun child so the DigitalOcean provider
 reads `DIGITALOCEAN_TOKEN` directly from its process environment:
 
 ```text
-macrun <infra-scope> exec -- terraform -chdir=test-cluster/terraform plan
-macrun <infra-scope> exec -- terraform -chdir=test-cluster/terraform apply
+macrun run gump-test-cluster infra -- terraform -chdir=test-cluster/terraform plan
+macrun run gump-test-cluster infra -- terraform -chdir=test-cluster/terraform apply
 ```
 
-The exact command is illustrative until the new CLI lands. Sensitive provider
-values must not be copied into `terraform.tfvars`, `TF_VAR_*` files, Make
-variables, or command-line arguments. Non-sensitive settings such as region,
-size, SSH fingerprint, and administrative CIDRs may remain ordinary Terraform
-inputs.
+Sensitive provider values must not be copied into `terraform.tfvars`,
+`TF_VAR_*` files, Make variables, or command-line arguments. Non-sensitive
+settings such as region, size, SSH fingerprint, and administrative CIDRs may
+remain ordinary Terraform inputs.
 
 ### Cluster formation flow
 
@@ -346,7 +345,7 @@ arguments remained secret-free.
 The intended developer path is direct:
 
 ```text
-macrun <fixture-scope> exec -- gump deploy <fixture>
+macrun run gump-test-cluster fixtures -- gump deploy <fixture>
 ```
 
 Gump reads only the values declared by the manifest, constructs the protected
@@ -522,7 +521,7 @@ clearly at an unavailable Gump interface until that interface lands.
    exact deletion list.
 6. Add binary build/install verification.
 7. Add T0 substrate checks.
-8. Integrate the simplified macrun CLI through one local launcher.
+8. Verify the macrun 2.x scopes through the one local launcher.
 9. Add formation commands as the matching Gump CLI interfaces land.
 10. Grow the acceptance ladder from T1 upward; never simulate a missing Gump
     feature with an old platform dependency.

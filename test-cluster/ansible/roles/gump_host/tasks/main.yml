@@ -1,0 +1,104 @@
+---
+- name: Require an explicit Gump artifact
+  ansible.builtin.assert:
+    that:
+      - gump_artifact_path | length > 0
+    fail_msg: "Pass gump_artifact_path or use make configure GUMP_ARTIFACT=..."
+  run_once: true
+
+- name: Inspect local Gump artifact
+  ansible.builtin.stat:
+    path: "{{ gump_artifact_path }}"
+    checksum_algorithm: sha256
+  delegate_to: localhost
+  become: false
+  register: local_gump_artifact
+  run_once: true
+
+- name: Inspect local Gump artifact architecture
+  ansible.builtin.command:
+    argv:
+      - file
+      - "{{ gump_artifact_path }}"
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  register: local_gump_artifact_file
+  run_once: true
+
+- name: Validate local Gump artifact and optional expected digest
+  ansible.builtin.assert:
+    that:
+      - local_gump_artifact.stat.exists
+      - local_gump_artifact.stat.isreg
+      - "'ELF 64-bit' in local_gump_artifact_file.stdout"
+      - "'x86-64' in local_gump_artifact_file.stdout or 'x86_64' in local_gump_artifact_file.stdout"
+      - gump_artifact_sha256 | length == 0 or local_gump_artifact.stat.checksum == gump_artifact_sha256
+    fail_msg: "Gump artifact is missing, not regular, or has the wrong SHA-256 digest."
+  run_once: true
+
+- name: Create unprivileged Gump account
+  ansible.builtin.user:
+    name: gump
+    system: true
+    create_home: false
+    shell: /usr/sbin/nologin
+
+- name: Create private transient runtime directory
+  ansible.builtin.file:
+    path: "{{ gump_runtime_dir }}"
+    state: directory
+    owner: gump
+    group: gump
+    mode: "0700"
+
+- name: Upload Gump artifact to staging path
+  ansible.builtin.copy:
+    src: "{{ gump_artifact_path }}"
+    dest: /usr/local/bin/gump.next
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Inspect staged Gump artifact
+  ansible.builtin.stat:
+    path: /usr/local/bin/gump.next
+    checksum_algorithm: sha256
+  register: staged_gump_artifact
+
+- name: Require identical artifact bytes on every node
+  ansible.builtin.assert:
+    that:
+      - staged_gump_artifact.stat.checksum == local_gump_artifact.stat.checksum
+    fail_msg: "Remote Gump artifact digest differs from the controller artifact."
+
+- name: Install Gump artifact atomically
+  ansible.builtin.command: >-
+    install -o root -g root -m 0755
+    /usr/local/bin/gump.next /usr/local/bin/gump
+  changed_when: true
+
+- name: Remove artifact staging path
+  ansible.builtin.file:
+    path: /usr/local/bin/gump.next
+    state: absent
+
+- name: Install dormant Gump service unit
+  ansible.builtin.template:
+    src: gump.service.j2
+    dest: /etc/systemd/system/gump.service
+    owner: root
+    group: root
+    mode: "0644"
+  register: gump_unit
+
+- name: Reload systemd for Gump unit
+  ansible.builtin.systemd:
+    daemon_reload: true
+  when: gump_unit is changed
+
+- name: Keep Gump stopped until explicit cluster formation
+  ansible.builtin.service:
+    name: gump
+    enabled: false
+    state: stopped
