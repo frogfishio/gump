@@ -43,7 +43,8 @@ pub struct FakeFaults {
 /// Object store for tests. Capsule bytes spill to disk (no desired-state map).
 #[derive(Debug)]
 pub struct FakeObjectStore {
-    root: PathBuf,
+    /// Declared first so it drops last (after uploads close FDs). STL-21.
+    temp: tempfile::TempDir,
     objects: BTreeMap<ObjectKey, StoredObject>,
     uploads: BTreeMap<UploadId, OpenUpload>,
     next_upload: u64,
@@ -56,25 +57,14 @@ impl Default for FakeObjectStore {
     }
 }
 
-impl Drop for FakeObjectStore {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.root);
-    }
-}
-
 impl FakeObjectStore {
     pub fn new() -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "gump-fake-store-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        ));
-        let _ = fs::create_dir_all(&root);
+        let temp = tempfile::Builder::new()
+            .prefix("gump-fake-store-")
+            .tempdir()
+            .expect("FakeObjectStore: create unique temp dir (STL-21)");
         Self {
-            root,
+            temp,
             objects: BTreeMap::new(),
             uploads: BTreeMap::new(),
             next_upload: 0,
@@ -96,7 +86,7 @@ impl FakeObjectStore {
     }
 
     fn spill_path(&self, tag: &str) -> PathBuf {
-        self.root.join(tag)
+        self.temp.path().join(tag)
     }
 
     fn map_io(e: std::io::Error) -> ObjectStoreError {

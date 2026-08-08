@@ -16,6 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 gump-memory = { workspace = true }
+gump-types = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 libc = "0.2"

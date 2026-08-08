@@ -7,6 +7,7 @@ use std::process::ExitCode;
 
 use gump_server::peer::{peer_cred_of, PeerAllowlist};
 use gump_server::serve::{bootstrap_controller, serve_connection, LocalDaemon};
+use gump_server::harden_daemon_startup;
 
 fn main() -> ExitCode {
     match run(env::args().skip(1).collect()) {
@@ -19,6 +20,10 @@ fn main() -> ExitCode {
 }
 
 fn run(args: Vec<String>) -> Result<(), String> {
+    // SECURITY §8 / STL-20: harden before any service work (fail closed when policy requires).
+    let harden = harden_daemon_startup().map_err(|e| e.to_string())?;
+    eprintln!("gump-server: process harden: {harden}");
+
     let socket = parse_socket(&args)?;
     if let Some(parent) = socket.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;

@@ -873,6 +873,9 @@ dependencies = [
 [[package]]
 name = "gump-agent"
 version = "0.1.0"
+dependencies = [
+ "gump-types",
+]
 
 [[package]]
 name = "gump-capsule"
@@ -914,6 +917,7 @@ dependencies = [
  "rand_core 0.10.1",
  "rustix",
  "rusty-s3",
+ "tempfile",
  "ureq",
  "url",
 ]
@@ -1005,6 +1009,7 @@ name = "gump-server"
 version = "0.1.0"
 dependencies = [
  "gump-memory",
+ "gump-types",
  "libc",
  "serde",
  "serde_json",
@@ -2462,6 +2467,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

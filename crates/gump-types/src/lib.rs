@@ -29,5 +29,8 @@ pub use id::{
     MessageId, NodeId, OperationId, PlacementGroupId, UnitId, WorkloadId,
 };
 pub use policy::{Action, Decision, DecisionEffect, PolicyEngine, PolicyError, PrincipalId, Role};
-pub use process::{ProcessHardenReport, prepare_for_custody};
+pub use process::{
+    HardenError, HardenPolicy, ProcessHardenReport, SERVICE_HARDEN_POLICY, prepare_for_custody,
+    prepare_for_custody_with_policy, prepare_service_for_custody,
+};
 pub use secret::Secret;

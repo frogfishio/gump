@@ -38,13 +38,15 @@ fn sample_identity() -> CanonicalIdentity {
 #[test]
 fn upstream_ndjson_callback_corpus() {
     let shared = CallbackAdapter::new(sample_identity()).into_shared();
-    let mut config = LoggerConfig::default();
-    config.filter = Some("app*,gump/*".into());
-    config.format = Format::Ndjson;
-    config.source = SourceIdentity {
-        app: Some("accounts".into()),
-        r#where: Some("local".into()),
-        instance: Some("run-1".into()),
+    let config = LoggerConfig {
+        filter: Some("app*,gump/*".into()),
+        format: Format::Ndjson,
+        source: SourceIdentity {
+            app: Some("accounts".into()),
+            r#where: Some("local".into()),
+            instance: Some("run-1".into()),
+        },
+        ..Default::default()
     };
 
     let mut logger = Logger::with_sink(config, shared.as_fn_sink());
@@ -65,13 +67,15 @@ fn upstream_ndjson_callback_corpus() {
 #[test]
 fn source_forgery_cannot_replace_canonical_identity() {
     let shared = CallbackAdapter::new(sample_identity()).into_shared();
-    let mut config = LoggerConfig::default();
-    config.filter = Some("*".into());
-    config.format = Format::Ndjson;
-    config.source = SourceIdentity {
-        app: Some("evil-other-app".into()),
-        r#where: Some("forged-where".into()),
-        instance: Some("forged-instance".into()),
+    let config = LoggerConfig {
+        filter: Some("*".into()),
+        format: Format::Ndjson,
+        source: SourceIdentity {
+            app: Some("evil-other-app".into()),
+            r#where: Some("forged-where".into()),
+            instance: Some("forged-instance".into()),
+        },
+        ..Default::default()
     };
 
     let mut logger = Logger::with_sink(config, shared.as_fn_sink());

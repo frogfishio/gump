@@ -71,3 +71,4 @@ openraft = { version = "=0.9.25", features = ["serde", "storage-v2"] }
 tracing = "0.1"
 # Pin for MSRV 1.85 (openraft pulls newer validit needing rustc 1.88).
 validit = "=0.2.4"
+tempfile = "3"

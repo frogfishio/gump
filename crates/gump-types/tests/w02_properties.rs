@@ -10,10 +10,10 @@ use uuid::Uuid;
 fn label_property_charset_and_length() {
     // Accept only lowercase alnum/hyphen shapes within 63 bytes.
     for len in 1..=63 {
-        let s: String = std::iter::repeat('a').take(len).collect();
+        let s = "a".repeat(len);
         assert!(Label::parse(&s).is_ok(), "len={len}");
     }
-    assert!(Label::parse(&"a".repeat(64)).is_err());
+    assert!(Label::parse("a".repeat(64)).is_err());
 
     for bad in ['A', '_', '.', '/', ' '] {
         let s = format!("a{bad}b");

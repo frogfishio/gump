@@ -165,7 +165,7 @@ mod tests {
             Err(LabelError::InvalidByte { .. })
         ));
         assert!(matches!(
-            Label::parse(&"a".repeat(64)),
+            Label::parse("a".repeat(64)),
             Err(LabelError::TooLong { .. })
         ));
     }

@@ -53,7 +53,13 @@ impl TryRng for ReplayRng {
 impl TryCryptoRng for ReplayRng {}
 
 fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        out.push(DIGITS[(b >> 4) as usize] as char);
+        out.push(DIGITS[(b & 0xf) as usize] as char);
+    }
+    out
 }
 
 fn unhex(s: &str) -> Vec<u8> {

@@ -119,9 +119,8 @@ fn transfer_join_moves_window_to_new_keeper() {
     let moved = mesh.transfer_join(99, shard);
     assert!(moved >= 1);
     // Dedup: re-relay same sequences must not inflate visible count wrongly.
-    let again = mesh.relay(&batch(shard, &[10])).unwrap();
-    // newly accepted across keepers may be 0 if already present on all targets
-    assert!(again == 0 || again > 0);
+    // Re-relay may accept 0 if sequences already present on all keepers.
+    let _ = mesh.relay(&batch(shard, &[10])).unwrap();
     let keepers = mesh.keepers_for(shard);
     assert!(keepers.iter().any(|&k| {
         mesh.store(k)
