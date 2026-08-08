@@ -16,13 +16,13 @@ pub fn harden_daemon_startup() -> Result<ProcessHardenReport, HardenError> {
     prepare_service_for_custody()
 }
 
-pub use framing::{read_frame, write_frame, FrameError, MAX_FRAME_BYTES};
+pub use framing::{FrameError, MAX_FRAME_BYTES, read_frame, write_frame};
 pub use machine::{
-    sample_explain, sample_hello_response, sample_status, unauthorized_error, ErrorBody,
-    LocalRequest, LocalResponse, MachineOutputV1, StatusBody, PROTOCOL_MAJOR, PROTOCOL_MINOR,
+    ErrorBody, LocalRequest, LocalResponse, MachineOutputV1, PROTOCOL_MAJOR, PROTOCOL_MINOR,
+    StatusBody, sample_explain, sample_hello_response, sample_status, unauthorized_error,
 };
 pub use peer::{PeerAllowlist, PeerAuthError, PeerCred};
-pub use serve::{handle_request, serve_connection, LocalDaemon, ServeError};
+pub use serve::{LocalDaemon, ServeError, handle_request, serve_connection};
 
 #[cfg(test)]
 mod stl20_tests {

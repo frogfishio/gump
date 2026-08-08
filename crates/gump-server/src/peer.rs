@@ -29,11 +29,7 @@ impl std::fmt::Display for PeerAuthError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Denied { peer, reason } => {
-                write!(
-                    f,
-                    "peer uid={} gid={} denied: {reason}",
-                    peer.uid, peer.gid
-                )
+                write!(f, "peer uid={} gid={} denied: {reason}", peer.uid, peer.gid)
             }
             Self::Io(e) => write!(f, "peer credential I/O: {e}"),
         }
@@ -111,7 +107,14 @@ mod cred {
         from_fd_inner(fd).map_err(PeerAuthError::from)
     }
 
-    #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd", target_os = "dragonfly"))]
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly"
+    ))]
     fn from_fd_inner(fd: std::os::fd::RawFd) -> io::Result<PeerCred> {
         let mut uid: libc::uid_t = 0;
         let mut gid: libc::gid_t = 0;

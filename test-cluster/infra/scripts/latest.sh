@@ -1,0 +1,1 @@
+npm install --save @frogfish/k2error@latest @frogfish/ratatouille@latest

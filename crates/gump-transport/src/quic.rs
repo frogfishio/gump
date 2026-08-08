@@ -8,7 +8,7 @@ use quinn::{ClientConfig as QuinnClientConfig, Endpoint, RecvStream, SendStream,
 
 use crate::identity::TransportIdentity;
 use crate::limits::{TransportLimitError, TransportLimits};
-use crate::tls::{identity_from_cert, CaBundle, IdentityMaterial, TlsBuildError};
+use crate::tls::{CaBundle, IdentityMaterial, TlsBuildError, identity_from_cert};
 
 #[derive(Debug)]
 pub enum TransportError {
@@ -60,9 +60,7 @@ impl QuicEndpoint {
         bind: SocketAddr,
         limits: TransportLimits,
     ) -> Result<Self, TransportError> {
-        let server_crypto = material
-            .server_config(trust)
-            .map_err(TransportError::Tls)?;
+        let server_crypto = material.server_config(trust).map_err(TransportError::Tls)?;
         let mut server_config = ServerConfig::with_crypto(Arc::new(
             quinn::crypto::rustls::QuicServerConfig::try_from(server_crypto)
                 .map_err(|e| TransportError::QuinnAccept(e.to_string()))?,
@@ -84,9 +82,7 @@ impl QuicEndpoint {
         bind: SocketAddr,
         limits: TransportLimits,
     ) -> Result<Self, TransportError> {
-        let client_crypto = material
-            .client_config(trust)
-            .map_err(TransportError::Tls)?;
+        let client_crypto = material.client_config(trust).map_err(TransportError::Tls)?;
         let mut endpoint = Endpoint::client(bind).map_err(TransportError::Io)?;
         let quinn_client = QuinnClientConfig::new(Arc::new(
             quinn::crypto::rustls::QuicClientConfig::try_from(client_crypto)
@@ -105,11 +101,7 @@ impl QuicEndpoint {
     }
 
     pub async fn accept(&self) -> Result<QuicSession, TransportError> {
-        let incoming = self
-            .endpoint
-            .accept()
-            .await
-            .ok_or(TransportError::Closed)?;
+        let incoming = self.endpoint.accept().await.ok_or(TransportError::Closed)?;
         let conn = incoming
             .await
             .map_err(|e| TransportError::QuinnAccept(e.to_string()))?;
@@ -203,9 +195,9 @@ impl QuicSession {
 }
 
 fn peer_identity(conn: &quinn::Connection) -> Result<TransportIdentity, TransportError> {
-    let iids = conn.peer_identity().ok_or_else(|| {
-        TransportError::PeerIdentity("missing peer identity after mTLS".into())
-    })?;
+    let iids = conn
+        .peer_identity()
+        .ok_or_else(|| TransportError::PeerIdentity("missing peer identity after mTLS".into()))?;
     let certs = iids
         .downcast_ref::<Vec<rustls::pki_types::CertificateDer<'static>>>()
         .ok_or_else(|| TransportError::PeerIdentity("unexpected peer identity type".into()))?;

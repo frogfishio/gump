@@ -1,29 +1,29 @@
-requirement_id	document	section	owner_crate	test_name	evidence_path	status
-INV-001	docs/v1/CONFORMANCE.md	3	gump-crypto	pending	pending	missing
-INV-002	docs/v1/CONFORMANCE.md	3	gump-capsule	pending	pending	missing
-INV-003	docs/v1/CONFORMANCE.md	3	gump-server	pending	pending	missing
-INV-004	docs/v1/CONFORMANCE.md	3	gump-memory	pending	pending	missing
-INV-005	docs/v1/CONFORMANCE.md	3	gump-server	pending	pending	missing
-INV-006	docs/v1/CONFORMANCE.md	3	gump-memory	pending	pending	missing
-INV-007	docs/v1/CONFORMANCE.md	3	gump-protocol	pending	pending	missing
-INV-008	docs/v1/CONFORMANCE.md	3	gump-scheduler	pending	pending	missing
-INV-009	docs/v1/CONFORMANCE.md	3	gump-telemetry	pending	pending	missing
-INV-010	docs/v1/CONFORMANCE.md	3	gump-server	pending	pending	missing
-INV-011	docs/v1/CONFORMANCE.md	3	gump-connectors	pending	pending	missing
-INV-012	docs/v1/CONFORMANCE.md	3	gump-driver	pending	pending	missing
-INV-013	docs/v1/CONFORMANCE.md	3	gump-agent	pending	pending	missing
-INV-014	docs/v1/CONFORMANCE.md	3	gump-agent	pending	pending	missing
-INV-015	docs/v1/CONFORMANCE.md	3	gump-memory	pending	pending	missing
-INV-016	docs/v1/CONFORMANCE.md	3	gump-memory	pending	pending	missing
-INV-017	docs/v1/CONFORMANCE.md	3	gump-capsule	pending	pending	missing
-INV-018	docs/v1/CONFORMANCE.md	3	gump-cli	pending	pending	missing
-INV-019	docs/v1/CONFORMANCE.md	3	gump-agent	pending	pending	blocked
-INV-020	docs/v1/CONFORMANCE.md	3	gump-agent	pending	pending	blocked
-INV-021	docs/v1/CONFORMANCE.md	3	gump-agent	pending	pending	blocked
-INV-022	docs/v1/CONFORMANCE.md	3	gump-agent	pending	pending	blocked
-INV-023	docs/v1/CONFORMANCE.md	3	gump-agent	pending	pending	blocked
-INV-024	docs/v1/CONFORMANCE.md	3	gump-agent	pending	pending	blocked
-INV-025	docs/v1/CONFORMANCE.md	3	gump-agent	pending	pending	blocked
-INV-026	docs/v1/CONFORMANCE.md	3	gump-agent	pending	pending	blocked
-INV-027	docs/v1/CONFORMANCE.md	3	gump-agent	pending	pending	blocked
-INV-028	docs/v1/CONFORMANCE.md	3	gump-scheduler	pending	pending	missing
+requirement_id	document	section	owner_crate	test_name	evidence_path	status	ticket
+INV-001	docs/v1/CONFORMANCE.md	3	gump-crypto	pending	pending	missing	GUMP-N007
+INV-002	docs/v1/CONFORMANCE.md	3	gump-capsule	pending	pending	missing	GUMP-N001
+INV-003	docs/v1/CONFORMANCE.md	3	gump-server	pending	pending	missing	GUMP-N016
+INV-004	docs/v1/CONFORMANCE.md	3	gump-memory	pending	pending	missing	GUMP-N005
+INV-005	docs/v1/CONFORMANCE.md	3	gump-server	pending	pending	missing	GUMP-N005
+INV-006	docs/v1/CONFORMANCE.md	3	gump-memory	pending	pending	missing	GUMP-N005
+INV-007	docs/v1/CONFORMANCE.md	3	gump-protocol	pending	pending	missing	GUMP-N005
+INV-008	docs/v1/CONFORMANCE.md	3	gump-scheduler	pending	pending	missing	GUMP-N011
+INV-009	docs/v1/CONFORMANCE.md	3	gump-telemetry	pending	pending	missing	GUMP-N014
+INV-010	docs/v1/CONFORMANCE.md	3	gump-server	pending	pending	missing	GUMP-N004
+INV-011	docs/v1/CONFORMANCE.md	3	gump-connectors	pending	pending	missing	GUMP-N025
+INV-012	docs/v1/CONFORMANCE.md	3	gump-driver	pending	pending	missing	GUMP-N022
+INV-013	docs/v1/CONFORMANCE.md	3	gump-agent	pending	pending	missing	GUMP-N009
+INV-014	docs/v1/CONFORMANCE.md	3	gump-agent	pending	pending	missing	GUMP-N012
+INV-015	docs/v1/CONFORMANCE.md	3	gump-memory	pending	pending	missing	GUMP-N005
+INV-016	docs/v1/CONFORMANCE.md	3	gump-memory	pending	pending	missing	GUMP-N016
+INV-017	docs/v1/CONFORMANCE.md	3	gump-capsule	pending	pending	missing	GUMP-N002
+INV-018	docs/v1/CONFORMANCE.md	3	gump-cli	pending	pending	missing	GUMP-N016
+INV-019	docs/v1/CONFORMANCE.md	3	gump-agent	pending	pending	blocked	GUMP-N017
+INV-020	docs/v1/CONFORMANCE.md	3	gump-agent	pending	pending	blocked	GUMP-N017
+INV-021	docs/v1/CONFORMANCE.md	3	gump-agent	pending	pending	blocked	GUMP-N017
+INV-022	docs/v1/CONFORMANCE.md	3	gump-agent	pending	pending	blocked	GUMP-N017
+INV-023	docs/v1/CONFORMANCE.md	3	gump-agent	pending	pending	blocked	GUMP-N017
+INV-024	docs/v1/CONFORMANCE.md	3	gump-agent	pending	pending	blocked	GUMP-N017
+INV-025	docs/v1/CONFORMANCE.md	3	gump-agent	pending	pending	blocked	GUMP-N023
+INV-026	docs/v1/CONFORMANCE.md	3	gump-agent	pending	pending	blocked	GUMP-N023
+INV-027	docs/v1/CONFORMANCE.md	3	gump-agent	pending	pending	blocked	GUMP-N023
+INV-028	docs/v1/CONFORMANCE.md	3	gump-scheduler	pending	pending	missing	GUMP-N021

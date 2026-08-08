@@ -2,9 +2,7 @@
 
 use core::fmt;
 
-use rcgen::{
-    BasicConstraints, CertificateParams, DistinguishedName, DnType, IsCa, KeyPair,
-};
+use rcgen::{BasicConstraints, CertificateParams, DistinguishedName, DnType, IsCa, KeyPair};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::{ClientConfig, RootCertStore, ServerConfig};
 use x509_parser::prelude::*;
@@ -126,9 +124,9 @@ fn clone_key(key: &PrivateKeyDer<'static>) -> PrivateKeyDer<'static> {
         PrivateKeyDer::Sec1(k) => PrivateKeyDer::Sec1(rustls_pki_types::PrivateSec1KeyDer::from(
             k.secret_sec1_der().to_vec(),
         )),
-        PrivateKeyDer::Pkcs1(k) => PrivateKeyDer::Pkcs1(rustls_pki_types::PrivatePkcs1KeyDer::from(
-            k.secret_pkcs1_der().to_vec(),
-        )),
+        PrivateKeyDer::Pkcs1(k) => PrivateKeyDer::Pkcs1(
+            rustls_pki_types::PrivatePkcs1KeyDer::from(k.secret_pkcs1_der().to_vec()),
+        ),
         _ => panic!("unsupported private key encoding"),
     }
 }
@@ -176,8 +174,8 @@ pub fn mint_identity_pair(
 
 /// Extract peer identity from the leaf certificate's DNS SANs.
 pub fn identity_from_cert(cert: &CertificateDer<'_>) -> Result<TransportIdentity, TlsBuildError> {
-    let (_, x509) = X509Certificate::from_der(cert.as_ref())
-        .map_err(|e| TlsBuildError::X509(e.to_string()))?;
+    let (_, x509) =
+        X509Certificate::from_der(cert.as_ref()).map_err(|e| TlsBuildError::X509(e.to_string()))?;
     let mut names = Vec::new();
     if let Ok(Some(san)) = x509.subject_alternative_name() {
         for name in &san.value.general_names {

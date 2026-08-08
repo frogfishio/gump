@@ -1,0 +1,37 @@
+{
+  email admin@ramblerbooks.com
+  # debug
+}
+
+# HTTP listener: only permanent redirect to HTTPS
+http://api.ramblerbooks.com {
+  redir https://{host}{uri} 308
+
+  log {
+    output stdout
+    format console
+  }
+}
+
+# HTTPS site (Let’s Encrypt cert, proxy via Consul SRV)
+api.ramblerbooks.com {
+  encode zstd gzip
+
+  reverse_proxy {
+    dynamic srv _rambler-api._tcp.service.consul {
+      resolvers 127.0.0.1:8600
+      refresh 10s
+    }
+    lb_policy random
+    transport http {
+      dial_timeout 3s
+      response_header_timeout 10s
+      keepalive 30s
+    }
+  }
+
+  log {
+    output stdout
+    format console
+  }
+}

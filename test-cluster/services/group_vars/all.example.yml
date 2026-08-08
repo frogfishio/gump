@@ -1,0 +1,99 @@
+cluster_nomad_namespace: default
+cluster_nomad_datacenters:
+  - "*"
+cluster_manager_host: manager@159.223.37.147
+cluster_consul_http_addr: 127.0.0.1:8500
+cluster_consul_dns_addr: 127.0.0.1:8600
+cluster_vault_enabled: false
+cluster_docker_registry: docker.io/frogfishio
+
+public_domains:
+  k2db: k2db.frogfish.io
+  auth: auth.frogfish.io
+  login: login.frogfish.io
+  hello: hello.frogfish.io
+  hello_alt: replace-me
+
+edge:
+  generic_caddy_enabled: true
+  caddy_admin_email: replace-me@example.com
+  consul_dns_addr: "{{ cluster_consul_dns_addr }}"
+  consul_http_addr: "{{ cluster_consul_http_addr }}"
+  prepared_query_template_src: infra/edge/consul-edge-query-template.json
+  generic_caddy_src: infra/edge/caddy-edge-generic-prepared-query.Caddyfile
+  ask_helper_script_src: infra/edge/caddy-consul-ask.py
+  ask_helper_unit_src: infra/edge/caddy-consul-ask.service
+
+services:
+  k2db:
+    job_name: k2db-api
+    image_repo: "{{ cluster_docker_registry }}/k2db-api-server"
+    image_tag: replace-me
+    domain: "{{ public_domains.k2db }}"
+    system_db_name: k2db
+    vault_role: k2db-api
+    mongo_uri_secret_ref: replace-me
+    nomad_var_path: nomad/jobs/k2db-api
+    nomad_var_keys:
+      - K2DB_SYSTEM_DB_NAME
+
+  rbac:
+    job_name: k2rbac-api
+    image_repo: "{{ cluster_docker_registry }}/k2rbac-api-server"
+    image_tag: replace-me
+    auth_domain: "{{ public_domains.auth }}"
+    excluded_host: replace-me
+    vault_role: k2rbac-api
+    jwt_secret_ref: replace-me
+    k2db_api_key_ref: replace-me
+    k2mx_api_key_ref: replace-me
+    k2db_key_database: k2rbac
+    nomad_var_path: nomad/jobs/k2rbac-api
+    nomad_var_keys:
+      - RBAC_JWT_SECRET
+      - RBAC_K2DB_API_KEY
+
+  k2login:
+    job_name: k2login
+    image_repo: "{{ cluster_docker_registry }}/k2login-server"
+    image_tag: replace-me
+    login_domain: "{{ public_domains.login }}"
+    auth_domain: "{{ public_domains.auth }}"
+    hello_domain: "{{ public_domains.hello }}"
+    hello_alt_domain: "{{ public_domains.hello_alt }}"
+    vault_role: k2login
+    rbac_api_key_ref: replace-me
+    nomad_var_path: nomad/jobs/k2login
+    nomad_var_keys:
+      - K2LOGIN_RBAC_API_KEY
+
+  k2hello:
+    job_name: k2hello
+    image_repo: "{{ cluster_docker_registry }}/k2hello"
+    image_tag: replace-me
+    hello_domain: "{{ public_domains.hello }}"
+    login_domain: "{{ public_domains.login }}"
+    vault_role: k2hello
+    session_secret_ref: replace-me
+    nomad_var_path: nomad/jobs/k2hello
+    nomad_var_keys:
+      - HELLO_SESSION_SECRET
+
+  k2mx:
+    job_name: k2mx-api
+    image_repo: "{{ cluster_docker_registry }}/k2mx-api-server"
+    image_tag: replace-me
+    runtime_port: 3001
+    admin_port: 3002
+    ui_port: 4181
+    network_mode: host
+    vault_role: k2mx-api
+    k2db_api_key_ref: replace-me
+    k2db_key_database: k2mx
+    bootstrap_token_ref: replace-me
+    ui_session_secret_ref: replace-me
+    nomad_var_path: nomad/jobs/k2mx-api
+    nomad_var_keys:
+      - K2MX_BOOTSTRAP_TOKEN
+      - K2MX_K2DB_API_KEY
+      - K2MX_UI_SESSION_SECRET

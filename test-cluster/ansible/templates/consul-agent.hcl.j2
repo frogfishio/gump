@@ -1,0 +1,22 @@
+datacenter  = "{{ consul_datacenter }}"
+node_name   = "{{ inventory_hostname }}"
+data_dir    = "/var/lib/consul"
+
+server           = true
+bootstrap_expect = {{ groups['frogfish'] | length }}
+
+# Bind to private NIC for cluster traffic
+bind_addr      = "{{ hostvars[inventory_hostname]['cluster_private_ip'] | default(ansible_facts['default_ipv4']['address']) }}"
+advertise_addr = "{{ hostvars[inventory_hostname]['cluster_private_ip'] | default(ansible_facts['default_ipv4']['address']) }}"
+
+client_addr = "127.0.0.1"
+ports { dns = 8600 }
+
+retry_join = [
+{% for host in groups['frogfish'] %}
+	"{{ hostvars[host]['cluster_private_ip'] }}"{% if not loop.last %},{% endif %}
+{% endfor %}
+]
+
+ui_config  { enabled = true }
+dns_config { only_passing = true }

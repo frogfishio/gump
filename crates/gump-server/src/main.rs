@@ -5,9 +5,9 @@ use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use gump_server::peer::{peer_cred_of, PeerAllowlist};
-use gump_server::serve::{bootstrap_controller, serve_connection, LocalDaemon};
 use gump_server::harden_daemon_startup;
+use gump_server::peer::{PeerAllowlist, peer_cred_of};
+use gump_server::serve::{LocalDaemon, bootstrap_controller, serve_connection};
 
 fn main() -> ExitCode {
     match run(env::args().skip(1).collect()) {

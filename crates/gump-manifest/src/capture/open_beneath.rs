@@ -13,10 +13,7 @@ use super::plan::{CaptureError, CaptureErrorKind};
 use super::tree::{CapturedBlob, FileIdentity};
 
 /// Open `rel` under `root` without following any symlink component; return bytes.
-pub(super) fn read_regular_beneath(
-    root: &Path,
-    rel: &str,
-) -> Result<CapturedBlob, CaptureError> {
+pub(super) fn read_regular_beneath(root: &Path, rel: &str) -> Result<CapturedBlob, CaptureError> {
     let components = rel_components(rel)?;
     #[cfg(unix)]
     {
@@ -157,11 +154,7 @@ fn open_leaf_beneath(
 fn map_open_err(err: rustix::io::Errno, rel: &str) -> CaptureError {
     use rustix::io::Errno;
     // Symlink / resolve-beneath failures fail closed as Escape.
-    if err == Errno::LOOP
-        || err == Errno::XDEV
-        || err == Errno::NOTDIR
-        || err == Errno::INVAL
-    {
+    if err == Errno::LOOP || err == Errno::XDEV || err == Errno::NOTDIR || err == Errno::INVAL {
         CaptureError::new(
             CaptureErrorKind::Escape,
             format!("symlink or escape rejected at open: {rel} ({err})"),

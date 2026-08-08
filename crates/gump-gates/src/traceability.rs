@@ -17,6 +17,7 @@ pub const HEADER: &[&str] = &[
     "test_name",
     "evidence_path",
     "status",
+    "ticket",
 ];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -28,6 +29,8 @@ pub struct Row {
     pub test_name: String,
     pub evidence_path: String,
     pub status: String,
+    /// Owning delivery ticket (`GUMP-N###`) required while status is missing/blocked (N003 / W04).
+    pub ticket: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -93,6 +96,7 @@ pub fn parse_tsv(text: &str) -> Result<Vec<Row>, String> {
             test_name: parts[4].to_string(),
             evidence_path: parts[5].to_string(),
             status: parts[6].to_string(),
+            ticket: parts[7].to_string(),
         });
     }
     Ok(rows)
@@ -142,9 +146,26 @@ pub fn check_rows(rows: &[Row], known_crates: &BTreeSet<&str>, mode: Mode) -> Re
                 row.requirement_id
             ));
         }
+        // Ordinary / PR CI: every non-implemented invariant must name an owned ticket
+        // so the release ledger cannot sit open against an empty work queue (N003).
+        if (row.status == "missing" || row.status == "blocked") && !is_owned_ticket(&row.ticket) {
+            report.errors.push(format!(
+                "line {line_no}: {} status {} requires ticket GUMP-N### (got {:?})",
+                row.requirement_id, row.status, row.ticket
+            ));
+        }
     }
 
     report
+}
+
+/// Delivery ticket id from `docs/v1/NEXT_ACTIONS.md` (`GUMP-N001` …).
+pub fn is_owned_ticket(ticket: &str) -> bool {
+    let rest = match ticket.strip_prefix("GUMP-N") {
+        Some(r) => r,
+        None => return false,
+    };
+    rest.len() == 3 && rest.chars().all(|c| c.is_ascii_digit())
 }
 
 /// Load ledger from disk and check.
@@ -188,10 +209,10 @@ mod tests {
         let mut s = HEADER.join("\t");
         s.push('\n');
         s.push_str(
-            "INV-001\tdocs/v1/CONFORMANCE.md\t3\tgump-crypto\tcanary_scan\tspec/v1/evidence/inv001.md\timplemented\n",
+            "INV-001\tdocs/v1/CONFORMANCE.md\t3\tgump-crypto\tcanary_scan\tspec/v1/evidence/inv001.md\timplemented\t\n",
         );
         s.push_str(
-            "INV-002\tdocs/v1/CONFORMANCE.md\t3\tgump-capsule\tcorrupt_layers\tspec/v1/evidence/inv002.md\timplemented\n",
+            "INV-002\tdocs/v1/CONFORMANCE.md\t3\tgump-capsule\tcorrupt_layers\tspec/v1/evidence/inv002.md\timplemented\t\n",
         );
         s
     }
@@ -232,7 +253,7 @@ mod tests {
     fn rejects_duplicate_ids() {
         let mut text = sample_ok_ledger();
         text.push_str(
-            "INV-001\tdocs/v1/CONFORMANCE.md\t3\tgump-crypto\tother\tspec/v1/evidence/x.md\timplemented\n",
+            "INV-001\tdocs/v1/CONFORMANCE.md\t3\tgump-crypto\tother\tspec/v1/evidence/x.md\timplemented\t\n",
         );
         let rows = parse_tsv(&text).unwrap();
         let report = check_rows(&rows, &default_owner_crates(), Mode::Structural);
@@ -244,7 +265,7 @@ mod tests {
     fn rejects_unknown_crate() {
         let mut s = HEADER.join("\t");
         s.push('\n');
-        s.push_str("INV-001\tdocs/v1/CONFORMANCE.md\t3\tnot-a-crate\tt\te\timplemented\n");
+        s.push_str("INV-001\tdocs/v1/CONFORMANCE.md\t3\tnot-a-crate\tt\te\timplemented\t\n");
         let rows = parse_tsv(&s).unwrap();
         let report = check_rows(&rows, &default_owner_crates(), Mode::Structural);
         assert!(!report.ok());
@@ -254,6 +275,32 @@ mod tests {
                 .iter()
                 .any(|e| e.contains("unknown owner_crate"))
         );
+    }
+
+    #[test]
+    fn missing_status_requires_owned_ticket() {
+        let mut s = HEADER.join("\t");
+        s.push('\n');
+        s.push_str(
+            "INV-001\tdocs/v1/CONFORMANCE.md\t3\tgump-crypto\tpending\tpending\tmissing\t\n",
+        );
+        let rows = parse_tsv(&s).unwrap();
+        let report = check_rows(&rows, &default_owner_crates(), Mode::Structural);
+        assert!(!report.ok(), "{report}");
+        assert!(
+            report.errors.iter().any(|e| e.contains("requires ticket")),
+            "{report}"
+        );
+    }
+
+    #[test]
+    fn owned_ticket_shape() {
+        assert!(is_owned_ticket("GUMP-N003"));
+        assert!(is_owned_ticket("GUMP-N017"));
+        assert!(!is_owned_ticket(""));
+        assert!(!is_owned_ticket("N003"));
+        assert!(!is_owned_ticket("GUMP-N3"));
+        assert!(!is_owned_ticket("GUMP-N0003"));
     }
 
     #[test]

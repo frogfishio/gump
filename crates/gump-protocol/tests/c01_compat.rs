@@ -8,8 +8,8 @@ use gump_protocol::goldens::{
 };
 use gump_protocol::pb::{EnvelopeV1, ErrorCode, HelloV1, MessageType};
 use gump_protocol::{
-    local_hello, negotiate_hello, validate_envelope, FrameKind, NegotiateError, ProtocolSupport,
-    MAX_CONTROL_FRAME, MAX_HELLO_FRAME, PROTOCOL_MAJOR, PROTOCOL_MINOR,
+    FrameKind, MAX_CONTROL_FRAME, MAX_HELLO_FRAME, NegotiateError, PROTOCOL_MAJOR, PROTOCOL_MINOR,
+    ProtocolSupport, local_hello, negotiate_hello, validate_envelope,
 };
 use prost::Message;
 

@@ -59,7 +59,9 @@ impl TransportLimits {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TransportLimitError {
-    Empty { kind: &'static str },
+    Empty {
+        kind: &'static str,
+    },
     ExceedsCeiling {
         kind: &'static str,
         length: usize,

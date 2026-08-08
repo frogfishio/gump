@@ -694,12 +694,9 @@ fn copy_object_if_none_match(
                 "precondition failed",
             )),
             Ok(r) => Err(http_status_err(r)),
-            Err(UreqErr(ureq::Error::Status(code, _))) if code == 412 || code == 409 => {
-                Err(ObjectStoreError::new(
-                    ObjectStoreErrorKind::Conflict,
-                    "precondition failed",
-                ))
-            }
+            Err(UreqErr(ureq::Error::Status(code, _))) if code == 412 || code == 409 => Err(
+                ObjectStoreError::new(ObjectStoreErrorKind::Conflict, "precondition failed"),
+            ),
             Err(e) => map_ureq(Err(e)),
         }
     })
@@ -1285,8 +1282,8 @@ mod stl19_tests {
     use super::*;
     use std::io::{Read, Write};
     use std::net::TcpListener;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::thread;
     use std::time::Duration;
 

@@ -7,11 +7,11 @@ use std::path::PathBuf;
 
 use gump_server::framing::{read_frame, write_frame};
 use gump_server::machine::{
-    sample_explain, sample_hello_response, sample_status, LocalRequest, LocalResponse,
-    MachineOutputV1,
+    LocalRequest, LocalResponse, MachineOutputV1, sample_explain, sample_hello_response,
+    sample_status,
 };
 use gump_server::peer::{PeerAllowlist, PeerCred};
-use gump_server::serve::{handle_request, serve_connection, LocalDaemon};
+use gump_server::serve::{LocalDaemon, handle_request, serve_connection};
 
 fn golden_path(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

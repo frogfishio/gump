@@ -232,8 +232,10 @@ cannot be waived as performance tuning.
 The implementation maintains `spec/v1/traceability.tsv` with columns:
 
 ```text
-requirement_id  document  section  owner_crate  test_name  evidence_path  status
+requirement_id  document  section  owner_crate  test_name  evidence_path  status  ticket
 ```
 
-CI rejects duplicate IDs, unknown tests, missing MUST coverage, stale evidence,
-and a release build with any `blocked` or `missing` v1 requirement.
+CI rejects duplicate IDs, unknown owner crates, missing MUST coverage, stale
+evidence, and any `missing`/`blocked` row without an owned `GUMP-N###` ticket
+reference. Release/tag builds additionally reject any `blocked` or `missing`
+v1 requirement (`check-traceability --strict`).

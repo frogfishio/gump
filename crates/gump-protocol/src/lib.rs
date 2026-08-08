@@ -19,6 +19,6 @@ pub use frame::{
     decode_frame_prefix, encode_frame,
 };
 pub use negotiate::{
-    local_hello, negotiate_hello, validate_envelope, NegotiateError, NegotiatedSession,
-    ProtocolSupport, PROTOCOL_MAJOR, PROTOCOL_MINOR,
+    NegotiateError, NegotiatedSession, PROTOCOL_MAJOR, PROTOCOL_MINOR, ProtocolSupport,
+    local_hello, negotiate_hello, validate_envelope,
 };

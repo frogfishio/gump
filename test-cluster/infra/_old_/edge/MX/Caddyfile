@@ -1,0 +1,71 @@
+{
+    email info@ramblerbooks.com
+    acme_ca https://acme-v02.api.letsencrypt.org/directory
+    on_demand_tls {
+        # Permission check (200 = allow). Uses Consul's local HTTP endpoint.
+        ask http://127.0.0.1:8500/v1/status/leader
+    }
+}
+
+:80 {
+    redir https://{host}{uri} 308
+}
+
+:443 {
+    tls {
+        on_demand
+    }
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        -Server
+    }
+
+    encode zstd gzip
+
+    # Route api.ramblerbooks.com to rambler-api; sg-k2-api.frogfish.io to k2-api; everything else to rambler-render
+    @api host api.ramblerbooks.com
+    @k2api host sg-k2-api.frogfish.io
+
+    reverse_proxy @api {
+        dynamic srv _rambler-api._tcp.service.consul {
+            resolvers 127.0.0.1:8600
+            refresh 10s
+        }
+        lb_policy random
+        transport http {
+            dial_timeout 3s
+            response_header_timeout 10s
+            keepalive 30s
+        }
+    }
+
+    reverse_proxy @k2api {
+        dynamic srv _k2-api._tcp.service.consul {
+            resolvers 127.0.0.1:8600
+            refresh 10s
+        }
+        lb_policy random
+        transport http {
+            dial_timeout 3s
+            response_header_timeout 10s
+            keepalive 30s
+        }
+    }
+
+    reverse_proxy {
+        dynamic srv _rambler-render._tcp.service.consul {
+            resolvers 127.0.0.1:8600
+            refresh 10s
+        }
+        lb_policy random
+        transport http {
+            dial_timeout 3s
+            response_header_timeout 10s
+            keepalive 30s
+        }
+    }
+}

@@ -4,9 +4,9 @@ use std::io::{Read, Write};
 
 use gump_memory::{ControllerAuthority, LeaseTable};
 
-use crate::framing::{read_frame, write_frame, FrameError};
+use crate::framing::{FrameError, read_frame, write_frame};
 use crate::machine::{
-    unauthorized_error, ErrorBody, LocalRequest, LocalResponse, MachineOutputV1, StatusBody,
+    ErrorBody, LocalRequest, LocalResponse, MachineOutputV1, StatusBody, unauthorized_error,
 };
 use crate::peer::{PeerAllowlist, PeerAuthError, PeerCred};
 

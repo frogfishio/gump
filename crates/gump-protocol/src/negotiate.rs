@@ -98,9 +98,9 @@ impl NegotiateError {
             Self::IncompatibleVersion { .. } | Self::EnvelopeVersion { .. } => {
                 ErrorCode::IncompatibleVersion
             }
-            Self::InvalidHello(_)
-            | Self::EnvelopeMessageType { .. }
-            | Self::EnvelopeField(_) => ErrorCode::InvalidArgument,
+            Self::InvalidHello(_) | Self::EnvelopeMessageType { .. } | Self::EnvelopeField(_) => {
+                ErrorCode::InvalidArgument
+            }
         }
     }
 }
@@ -240,9 +240,7 @@ pub fn validate_envelope(
         });
     }
     if envelope.cluster_id.as_slice() != expected_cluster_id {
-        return Err(NegotiateError::EnvelopeField(
-            "cluster_id mismatch".into(),
-        ));
+        return Err(NegotiateError::EnvelopeField("cluster_id mismatch".into()));
     }
     for (name, bytes) in [
         ("cluster_incarnation", &envelope.cluster_incarnation),
@@ -270,7 +268,9 @@ pub fn validate_envelope(
         }
     }
     if envelope.body.is_empty() {
-        return Err(NegotiateError::EnvelopeField("body must be non-empty".into()));
+        return Err(NegotiateError::EnvelopeField(
+            "body must be non-empty".into(),
+        ));
     }
     Ok(())
 }

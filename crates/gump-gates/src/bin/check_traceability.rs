@@ -1,7 +1,7 @@
 //! CLI entry for CI: validate `spec/v1/traceability.tsv`.
 //!
 //! Usage:
-//!   check-traceability                 # structural (default)
+//!   check-traceability                 # structural + ticket ownership (default)
 //!   check-traceability --strict        # fail on missing/blocked (release)
 //!   check-traceability --prove-missing # exit 1 iff ledger has missing (W04 demo)
 

@@ -1,0 +1,12 @@
+---
+- name: Ensure layer 3 render directory exists
+  ansible.builtin.file:
+    path: "{{ constellation_layer3_render_dir }}"
+    state: directory
+    mode: '0755'
+
+- name: Deploy each enabled layer 3 service
+  ansible.builtin.include_tasks: deploy_service.yml
+  loop: "{{ constellation_layer3_deploy_services }}"
+  loop_control:
+    loop_var: constellation_layer3_service_name

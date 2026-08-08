@@ -1,0 +1,36 @@
+constellation_layer3_deploy_mode: nomad-var
+constellation_layer3_nomad_namespace: default
+constellation_layer3_nomad_addr: http://127.0.0.1:4646
+constellation_layer3_consul_http_addr: http://127.0.0.1:8500
+constellation_layer3_vault_addr: http://127.0.0.1:8200
+constellation_layer3_render_dir: /tmp/frogfish-layer3
+constellation_layer3_use_published_images: true
+constellation_layer3_only_csv: ""
+constellation_layer3_local_secrets_file: "{{ playbook_dir }}/.constellation-secrets.yml"
+
+constellation_layer3_install_order:
+  - k2db-api
+  - k2mx-api
+  - k2rbac-api
+  - k2login
+  - k2hello
+
+constellation_layer3_services: {}
+
+constellation_layer3_core_init:
+  enabled: false
+  k2db_action: skip
+  reconcile_runtime_config: false
+  rbac_bootstrap_admin: false
+  k2db_runtime_config:
+    api_listen_host: 0.0.0.0
+    api_listen_port: 3000
+    admin_api_enabled: false
+  rbac_first_admin:
+    email: admin@example.net
+    password: CHANGE_ME_NOW
+
+constellation_layer3_acceptance:
+  enabled: true
+  wait_retries: 30
+  wait_delay: 10

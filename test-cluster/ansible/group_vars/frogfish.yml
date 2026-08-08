@@ -1,0 +1,18 @@
+ansible_user: manager
+ansible_python_interpreter: /usr/bin/python3
+consul_datacenter: dc1
+vault_init_file: "{{ lookup('env', 'VAULT_INIT_FILE') | default(playbook_dir ~ '/../.vault-init.json', true) }}"
+vault_unseal_key_count: 3
+valkey_pass: "{{ lookup('password', 'secrets/rambler_valkey_pass length=32 chars=ascii_letters,digits') }}"
+caddy_contact_email: ""
+caddy_acme_ca: https://acme-v02.api.letsencrypt.org/directory
+caddy_consul_http_addr: http://127.0.0.1:8500
+caddy_consul_dns_addr: 127.0.0.1:8600
+caddy_ask_listen_host: 127.0.0.1
+caddy_ask_listen_port: 9123
+valkey_maxmemory_mb: 512
+enable_swap: true
+swap_mb: 1024
+install_docker: true
+install_nomad: true
+install_vault: true

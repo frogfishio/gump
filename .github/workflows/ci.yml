@@ -35,9 +35,11 @@ jobs:
         run: cargo test --workspace
 
       - name: Traceability structural gate
+        # Includes ticket ownership on missing/blocked (GUMP-N003). Strict is release-only.
         run: cargo run -p gump-gates --bin check-traceability
 
       - name: Prove missing requirements fail strict CI gate (W04)
+        # Self-test only — not a completion signal (must keep failing while ledger open).
         run: cargo run -p gump-gates --bin check-traceability -- --prove-missing
 
   # Optional live S3 path (STL-07 / STL-19 / D02). Default `check` stays green without MinIO.

@@ -6,9 +6,9 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use gump_transport::{
-    mint_identity, mint_identity_pair, prefer_session, NodeRole, OrderingPrefer, QuicEndpoint,
-    ReconnectDecision, ReconnectPolicy, RotationAction, SessionSlot, TransportIdentity,
-    TransportLimits,
+    NodeRole, OrderingPrefer, QuicEndpoint, ReconnectDecision, ReconnectPolicy, RotationAction,
+    SessionSlot, TransportIdentity, TransportLimits, mint_identity, mint_identity_pair,
+    prefer_session,
 };
 use gump_types::{ClusterId, IncarnationId, NodeId};
 
@@ -42,9 +42,7 @@ fn limits_reject_oversize_before_alloc() {
         err,
         gump_transport::TransportLimitError::ExceedsCeiling { .. }
     ));
-    assert!(limits
-        .check_bulk_chunk(limits.max_bulk_chunk + 1)
-        .is_err());
+    assert!(limits.check_bulk_chunk(limits.max_bulk_chunk + 1).is_err());
     assert!(limits.check_hello(0).is_err());
 }
 
@@ -91,10 +89,7 @@ fn certificate_rotation_drains_previous_generation() {
         ..a
     };
     let (plan, action) = slot.begin_rotation(rotated, 2).unwrap();
-    assert_eq!(
-        action,
-        RotationAction::BeginDrain { from: 1, to: 2 }
-    );
+    assert_eq!(action, RotationAction::BeginDrain { from: 1, to: 2 });
     assert!(matches!(plan.previous, SessionSlot::Draining { .. }));
     let (final_slot, done) = SessionSlot::complete_drain(&plan);
     assert_eq!(done, RotationAction::Complete { active: 2 });
@@ -136,13 +131,8 @@ async fn mtls_loopback_exchanges_control_frame() {
     )
     .unwrap();
     let addr = server.local_addr().unwrap();
-    let client = QuicEndpoint::client(
-        &client_mat,
-        &ca,
-        "127.0.0.1:0".parse().unwrap(),
-        limits,
-    )
-    .unwrap();
+    let client =
+        QuicEndpoint::client(&client_mat, &ca, "127.0.0.1:0".parse().unwrap(), limits).unwrap();
 
     let server_task = tokio::spawn(async move {
         let sess = server.accept().await.unwrap();
@@ -208,10 +198,7 @@ async fn mtls_rejects_untrusted_peer_ca() {
         }
         Err(err) => {
             let msg = err.to_string();
-            assert!(
-                !msg.is_empty(),
-                "expected non-empty transport error"
-            );
+            assert!(!msg.is_empty(), "expected non-empty transport error");
         }
     }
     accept.abort();
@@ -223,21 +210,11 @@ async fn reconnect_after_close_establishes_new_session() {
     let client_id = identity(32, 33, &[NodeRole::Agent]);
     let (server_mat, client_mat, ca) = mint_identity_pair(server_id.clone(), client_id).unwrap();
     let limits = TransportLimits::default();
-    let server = QuicEndpoint::server(
-        &server_mat,
-        &ca,
-        "127.0.0.1:0".parse().unwrap(),
-        limits,
-    )
-    .unwrap();
+    let server =
+        QuicEndpoint::server(&server_mat, &ca, "127.0.0.1:0".parse().unwrap(), limits).unwrap();
     let addr = server.local_addr().unwrap();
-    let client = QuicEndpoint::client(
-        &client_mat,
-        &ca,
-        "127.0.0.1:0".parse().unwrap(),
-        limits,
-    )
-    .unwrap();
+    let client =
+        QuicEndpoint::client(&client_mat, &ca, "127.0.0.1:0".parse().unwrap(), limits).unwrap();
 
     let accept_loop = tokio::spawn(async move {
         for _ in 0..2 {

@@ -1,0 +1,42 @@
+---
+- name: Initialize ordered enabled service list
+  ansible.builtin.set_fact:
+    constellation_layer3_deploy_services: []
+
+- name: Default requested service list to install order
+  ansible.builtin.set_fact:
+    constellation_layer3_requested_services: "{{ constellation_layer3_install_order }}"
+
+- name: Override requested service list from runtime filter
+  ansible.builtin.set_fact:
+    constellation_layer3_requested_services: >-
+      {{
+        constellation_layer3_only_csv.split(',')
+        | map('trim')
+        | reject('equalto', '')
+        | list
+      }}
+  when: constellation_layer3_only_csv | trim | length > 0
+
+- name: Build final ordered enabled service list
+  ansible.builtin.set_fact:
+    constellation_layer3_deploy_services: "{{ constellation_layer3_deploy_services + [item] }}"
+  loop: "{{ constellation_layer3_requested_services }}"
+  when:
+    - item in constellation_layer3_effective_services
+    - constellation_layer3_effective_services[item].enabled | default(false)
+
+- name: Show layer 3 deploy plan
+  ansible.builtin.debug:
+    msg:
+      deploy_mode: "{{ constellation_layer3_deploy_mode }}"
+      render_dir: "{{ constellation_layer3_render_dir }}"
+      use_published_images: "{{ constellation_layer3_use_published_images }}"
+      requested_services: "{{ constellation_layer3_requested_services }}"
+      install_order: "{{ constellation_layer3_deploy_services }}"
+
+- name: Show enabled service matrix
+  ansible.builtin.debug:
+    msg: >-
+      {{ item.key }} enabled={{ item.value.enabled | default(false) }} image={{ item.value.image_repo | default('') }}:{{ item.value.image_tag | default('') }}
+  loop: "{{ constellation_layer3_effective_services | dict2items }}"

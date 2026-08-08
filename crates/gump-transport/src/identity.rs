@@ -81,11 +81,11 @@ impl TransportIdentity {
                         .map_err(|_| IdentityParseError::BadUuid { field: "node" })?,
                 );
             } else if let Some(rest) = name.strip_prefix("gump.inc.") {
-                incarnation = Some(
-                    IncarnationId::from_str(rest).map_err(|_| IdentityParseError::BadUuid {
+                incarnation = Some(IncarnationId::from_str(rest).map_err(|_| {
+                    IdentityParseError::BadUuid {
                         field: "incarnation",
-                    })?,
-                );
+                    }
+                })?);
             } else if let Some(rest) = name.strip_prefix("gump.role.") {
                 let role = NodeRole::parse(rest).ok_or(IdentityParseError::BadRole)?;
                 roles.push(role);
@@ -127,10 +127,7 @@ impl fmt::Display for IdentityParseError {
 impl std::error::Error for IdentityParseError {}
 
 /// Prefer the session from the lexicographically smaller `(node_id, nonce)`.
-pub fn prefer_session(
-    a: &(NodeId, [u8; 16]),
-    b: &(NodeId, [u8; 16]),
-) -> OrderingPrefer {
+pub fn prefer_session(a: &(NodeId, [u8; 16]), b: &(NodeId, [u8; 16])) -> OrderingPrefer {
     match a.cmp(b) {
         core::cmp::Ordering::Less => OrderingPrefer::KeepA,
         core::cmp::Ordering::Greater => OrderingPrefer::KeepB,

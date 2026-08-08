@@ -1,0 +1,29 @@
+# Terraform
+.terraform/
+.terraform.lock.hcl      !  # DO commit this file (remove this line if your tooling ignores by default)
+
+# State
+terraform.tfstate
+terraform.tfstate.*
+*.tfstate
+*.tfstate.*
+
+# Plans
+*.tfplan
+
+# Vars (often sensitive)
+*.tfvars
+*.tfvars.json
+*.auto.tfvars
+*.auto.tfvars.json
+
+# Misc
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+ansible/inventory/terraform.ini
+.envrc
+.vault-init.json
+services/.constellation-secrets.yml
