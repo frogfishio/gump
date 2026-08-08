@@ -226,6 +226,80 @@ fn tampered_signature_rejects_before_run() {
     let _ = fs::remove_dir_all(ws);
 }
 
+fn write_fixture_with_secret_var(ws: &std::path::Path, with_local_literal: bool) {
+    write_fixture(ws);
+    let mut toml = fs::read_to_string(ws.join("gump.toml")).unwrap();
+    toml.push_str(
+        r#"
+[runtime.variables.TOKEN]
+source = "env:GUMP_X01_N007_TOKEN"
+required = true
+classification = "secret"
+encoding = "utf8"
+max_bytes = "4KiB"
+inject = "env"
+"#,
+    );
+    if with_local_literal {
+        toml.push_str(
+            r#"
+[local.variables.TOKEN]
+source = "literal:n007-e2e-canary-SECRET-7c2e"
+"#,
+        );
+    }
+    fs::write(ws.join("gump.toml"), toml).unwrap();
+}
+
+#[test]
+fn sealed_packaging_keeps_canary_out_of_public_bytes() {
+    let ws = tmp_workspace("n007-canary");
+    write_fixture_with_secret_var(&ws, true);
+    let plan = local_parity_plan(&ws, &PathBuf::from("gump.toml")).unwrap();
+    let canary = b"n007-e2e-canary-SECRET-7c2e";
+    let mut rng = ReplayRng::new(X01_RNG_SEED);
+    let built = build_sealed_capsule(
+        &plan,
+        CapsuleId::from_bytes(fixed_v7(0x21)).unwrap(),
+        ClusterId::from_bytes(fixed_v7(0x22)).unwrap(),
+        &mut rng,
+    )
+    .unwrap();
+    verify_sealed_capsule(&built).unwrap();
+
+    // Public metadata is segment 1; scan whole Capsule for accidental plaintext leak
+    // of the canary (ciphertext may coincidentally contain short patterns — canary is long).
+    assert!(
+        !built
+            .bytes
+            .windows(canary.len())
+            .any(|w| w == canary.as_slice()),
+        "canary must not appear in sealed Capsule bytes"
+    );
+    let _ = fs::remove_dir_all(ws);
+}
+
+#[test]
+fn sealed_packaging_fails_closed_when_required_var_unset() {
+    let ws = tmp_workspace("n007-unset");
+    write_fixture_with_secret_var(&ws, false);
+    let plan = local_parity_plan(&ws, &PathBuf::from("gump.toml")).unwrap();
+    let mut rng = ReplayRng::new(X01_RNG_SEED);
+    let err = build_sealed_capsule(
+        &plan,
+        CapsuleId::from_bytes(fixed_v7(0x23)).unwrap(),
+        ClusterId::from_bytes(fixed_v7(0x24)).unwrap(),
+        &mut rng,
+    )
+    .unwrap_err();
+    assert_eq!(err.kind(), gump_cli::CliErrorKind::Policy);
+    assert!(
+        !err.to_string().contains("n007-e2e-canary"),
+        "errors must not echo secret values"
+    );
+    let _ = fs::remove_dir_all(ws);
+}
+
 #[test]
 fn unsealed_run_and_sealed_path_share_command_vector() {
     let ws = tmp_workspace("parity");

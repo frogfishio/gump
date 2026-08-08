@@ -7,6 +7,7 @@ mod cmd;
 mod error;
 mod local;
 mod local_api;
+mod packaging;
 mod sealed;
 
 pub use cmd::{dispatch_cli, print_help, try_dispatch_cli};

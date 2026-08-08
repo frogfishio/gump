@@ -19,6 +19,7 @@ use rand_core::{CryptoRng, TryCryptoRng, TryRng};
 
 use crate::error::{CliError, CliErrorKind};
 use crate::local::{LocalParityPlan, LocalRunReport, execute_plan, local_parity_plan};
+use crate::packaging::package_release_config;
 
 /// OS CSPRNG adapter for rand_core 0.10 / HPKE / ed25519-dalek.
 struct SysRng;
@@ -82,7 +83,9 @@ pub fn build_sealed_capsule<R: CryptoRng>(
         .unwrap_or(fp.as_str())
         .to_string();
 
-    let public_metadata = br#"gump.release/1-local-test"#.to_vec();
+    // GUMP-N007: real public contracts + protected plaintext from manifest vars.
+    let packaged = package_release_config(&plan.manifest, capsule_id, cluster_id)?;
+    let public_metadata = packaged.public_metadata;
     let pub_digest = *blake3::hash(&public_metadata).as_bytes();
     // GUMP-N002: hash + stream archive from spill — do not load into a Vec.
     let arch_digest = blake3_file(plan.archive_spill_path())?;
@@ -102,7 +105,7 @@ pub fn build_sealed_capsule<R: CryptoRng>(
     for b in &mut dek_bytes {
         *b = 0;
     }
-    let plaintext = br#"{"schema":"gump.protected/1","local":true}"#;
+    let plaintext = packaged.protected_plaintext.expose();
     let protected = seal_protected(dek.expose(), &nonce, &aad, plaintext)
         .map_err(|e| CliError::new(CliErrorKind::Crypto, e.to_string()))?;
 
@@ -122,7 +125,7 @@ pub fn build_sealed_capsule<R: CryptoRng>(
     .map_err(|e| CliError::new(CliErrorKind::Crypto, e.to_string()))?;
     let opened_pt = open_protected(opened_dek.expose(), &nonce, &aad, &protected)
         .map_err(|e| CliError::new(CliErrorKind::Crypto, e.to_string()))?;
-    if opened_pt.expose().as_slice() != plaintext {
+    if opened_pt.expose().as_slice() != packaged.protected_plaintext.expose() {
         return Err(CliError::new(
             CliErrorKind::Crypto,
             "protected plaintext mismatch after local unseal",
@@ -151,7 +154,7 @@ pub fn build_sealed_capsule<R: CryptoRng>(
     let logical = [
         public_metadata.len() as u64,
         0,
-        plaintext.len() as u64,
+        packaged.protected_plaintext.expose().len() as u64,
         0,
         0,
     ];

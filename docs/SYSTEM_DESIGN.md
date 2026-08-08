@@ -12,6 +12,9 @@ The distributed K/V contract is refined separately in [Gump Cluster Memory](CLUS
 The user-facing state and recovery contract is refined separately in [Gump CLI and Lifecycle](CLI_LIFECYCLE.md).
 The native observability contract is refined separately in [Gump Telemetry with Ratatouille](TELEMETRY.md).
 
+The native mTLS administration model is refined separately in
+[Gump Native Management Plane](MANAGEMENT_APP.md).
+
 ## 1. System thesis
 
 Gump is a workload deployment, placement, and supervision system for Unix hosts. It accepts an immutable application capsule, records execution intent in distributed K/V memory, places execution units on eligible nodes, and supervises their declared lifecycle. It does not assume that a workload is a network service, long-running, independently replicated, port-bearing, or CPU-only. When publication is requested, it reconciles eligible endpoints through an available publication provider; Kismet is the first-class integration.

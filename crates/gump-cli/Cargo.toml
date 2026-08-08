@@ -12,6 +12,8 @@ gump-types = { workspace = true }
 gump-manifest = { workspace = true }
 gump-capsule = { workspace = true }
 gump-crypto = { workspace = true }
+gump-protocol = { workspace = true }
+prost = "0.14"
 gump-driver = { workspace = true }
 gump-telemetry = { workspace = true }
 blake3 = { workspace = true }
