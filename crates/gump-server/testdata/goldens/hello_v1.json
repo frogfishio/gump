@@ -1,7 +1,7 @@
 {
   "schema": "gump.local.machine.v1",
   "protocol_major": 1,
-  "protocol_minor": 2,
+  "protocol_minor": 3,
   "body": {
     "kind": "hello",
     "daemon": "gump-server",

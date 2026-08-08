@@ -21,7 +21,8 @@ pub enum LocalClientError {
     Io(String),
     Frame(FrameError),
     Json(String),
-    Protocol(LocalResponse),
+    /// Boxed: `LocalResponse` is large (deploy receipt stages).
+    Protocol(Box<LocalResponse>),
     Interrupted,
 }
 
@@ -31,10 +32,10 @@ impl std::fmt::Display for LocalClientError {
             Self::Io(e) => write!(f, "{e}"),
             Self::Frame(e) => write!(f, "{e}"),
             Self::Json(e) => write!(f, "json: {e}"),
-            Self::Protocol(LocalResponse::Error(e)) => {
-                write!(f, "{} ({})", e.code, e.reason)
-            }
-            Self::Protocol(other) => write!(f, "unexpected protocol body {other:?}"),
+            Self::Protocol(boxed) => match boxed.as_ref() {
+                LocalResponse::Error(e) => write!(f, "{} ({})", e.code, e.reason),
+                other => write!(f, "unexpected protocol body {other:?}"),
+            },
             Self::Interrupted => write!(f, "interrupted"),
         }
     }
@@ -114,7 +115,7 @@ impl LocalClient {
                 || err.code == "DEADLINE_EXCEEDED"
                 || err.code == "CANCELLED"
             {
-                return Err(LocalClientError::Protocol(out.body));
+                return Err(LocalClientError::Protocol(Box::new(out.body)));
             }
         }
         Ok(out.body)

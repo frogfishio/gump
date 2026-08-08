@@ -3,8 +3,8 @@
 use serde::{Deserialize, Serialize};
 
 pub const PROTOCOL_MAJOR: u32 = 1;
-/// Minor 2: telemetry recent-window poll (GUMP-N014) on top of minor-1 ops.
-pub const PROTOCOL_MINOR: u32 = 2;
+/// Minor 3: deploy receipt stages + explain compaction disclosure (GUMP-N015).
+pub const PROTOCOL_MINOR: u32 = 3;
 
 /// Client→daemon call with protocol negotiation, deadline, and cancel bit.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -80,6 +80,9 @@ pub enum LocalRequest {
         /// (GUMP-N010). Omit only when the final object already exists.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         capsule_hex: Option<String>,
+        /// Wait condition (`intent_accepted` default). See GUMP-N015 / D05.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        wait: Option<String>,
     },
     Lifecycle {
         action: String,
@@ -122,6 +125,11 @@ pub enum LocalResponse {
         subject: String,
         reason_code: String,
         message: String,
+        /// `committed_cluster_memory` or `observed` — never invents history.
+        observation_source: String,
+        /// True when the explain path discloses compaction / loss of detail.
+        compaction_disclosed: bool,
+        durability_note: String,
     },
     Observe {
         subject: String,
@@ -134,11 +142,21 @@ pub enum LocalResponse {
         reason_code: String,
         safe_message: String,
         desired_generation: Option<u64>,
+        content_digest_hex: String,
+        durability_note: String,
+        wait: DeployWaitBody,
+        stages: Vec<DeployStageBody>,
+        /// Interrupt/cancel/deadline never imply Capsule rollback (PROTOCOL §13).
+        interrupted_implies_rollback: bool,
     },
     Lifecycle {
         action: String,
         subject: String,
         state: String,
+        /// Always false; cancel/interrupt do not roll back published Capsules.
+        interrupted_implies_rollback: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
     },
     Recovery {
         action: String,
@@ -196,6 +214,20 @@ pub struct StatusBody {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DeployWaitBody {
+    pub condition: String,
+    pub default_for_contract: String,
+    pub matched_default: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DeployStageBody {
+    pub name: String,
+    pub status: String,
+    pub detail: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ErrorBody {
     pub code: String,
     pub reason: String,
@@ -225,6 +257,9 @@ pub fn sample_explain() -> LocalResponse {
         subject: "unit/1".into(),
         reason_code: "placement.hard_filter".into(),
         message: "no eligible node matched hard requirements".into(),
+        observation_source: "committed_cluster_memory".into(),
+        compaction_disclosed: true,
+        durability_note: "1 memory member; live intent has zero failure tolerance".into(),
     }
 }
 
@@ -271,12 +306,21 @@ pub fn sample_observe() -> LocalResponse {
 }
 
 pub fn sample_deploy() -> LocalResponse {
+    use crate::local_api::receipt::{intent_accepted_stages, wait_body};
     LocalResponse::Deploy {
         operation_id: "00000000-0000-4000-8000-0000000000aa".into(),
         phase: "intent_accepted".into(),
         reason_code: "deploy.intent_accepted".into(),
-        safe_message: "upload→publish→intent committed; placement/execution is N011/N012".into(),
+        safe_message:
+            "upload→publish→intent committed; placement/execution remains observed separately"
+                .into(),
         desired_generation: Some(1),
+        content_digest_hex: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            .into(),
+        durability_note: "1 memory member; live intent has zero failure tolerance".into(),
+        wait: wait_body(None),
+        stages: intent_accepted_stages(false),
+        interrupted_implies_rollback: false,
     }
 }
 
@@ -285,6 +329,10 @@ pub fn sample_lifecycle() -> LocalResponse {
         action: "interrupt".into(),
         subject: "attempt/1".into(),
         state: "acknowledged".into(),
+        interrupted_implies_rollback: false,
+        note: Some(
+            "interrupt acknowledges loss of wait/observation; Capsule not rolled back".into(),
+        ),
     }
 }
 

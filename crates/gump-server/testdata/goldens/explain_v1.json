@@ -1,11 +1,14 @@
 {
   "schema": "gump.local.machine.v1",
   "protocol_major": 1,
-  "protocol_minor": 2,
+  "protocol_minor": 3,
   "body": {
     "kind": "explain",
     "subject": "unit/1",
     "reason_code": "placement.hard_filter",
-    "message": "no eligible node matched hard requirements"
+    "message": "no eligible node matched hard requirements",
+    "observation_source": "committed_cluster_memory",
+    "compaction_disclosed": true,
+    "durability_note": "1 memory member; live intent has zero failure tolerance"
   }
 }

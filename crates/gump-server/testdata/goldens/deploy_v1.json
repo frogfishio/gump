@@ -1,13 +1,63 @@
 {
   "schema": "gump.local.machine.v1",
   "protocol_major": 1,
-  "protocol_minor": 2,
+  "protocol_minor": 3,
   "body": {
     "kind": "deploy",
     "operation_id": "00000000-0000-4000-8000-0000000000aa",
     "phase": "intent_accepted",
     "reason_code": "deploy.intent_accepted",
-    "safe_message": "upload→publish→intent committed; placement/execution is N011/N012",
-    "desired_generation": 1
+    "safe_message": "upload→publish→intent committed; placement/execution remains observed separately",
+    "desired_generation": 1,
+    "content_digest_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "durability_note": "1 memory member; live intent has zero failure tolerance",
+    "wait": {
+      "condition": "intent_accepted",
+      "default_for_contract": "intent_accepted",
+      "matched_default": true
+    },
+    "stages": [
+      {
+        "name": "persistence",
+        "status": "completed",
+        "detail": "sealed Capsule published to object store"
+      },
+      {
+        "name": "intent_acceptance",
+        "status": "completed",
+        "detail": "live desired intent committed in cluster memory"
+      },
+      {
+        "name": "scheduling",
+        "status": "pending",
+        "detail": "placement not yet observed"
+      },
+      {
+        "name": "start",
+        "status": "pending",
+        "detail": "execution start not yet observed"
+      },
+      {
+        "name": "readiness",
+        "status": "not_observed",
+        "detail": "readiness never inferred when undeclared"
+      },
+      {
+        "name": "publication",
+        "status": "not_observed",
+        "detail": "publication never inferred when undeclared"
+      },
+      {
+        "name": "completion",
+        "status": "pending",
+        "detail": "workload completion not yet observed"
+      },
+      {
+        "name": "observation",
+        "status": "available",
+        "detail": "lossy; interruption or deadline does not imply rollback"
+      }
+    ],
+    "interrupted_implies_rollback": false
   }
 }

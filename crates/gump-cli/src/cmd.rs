@@ -24,8 +24,16 @@ enum Command {
         socket: PathBuf,
         request: LocalRequest,
         deadline_ms: Option<u64>,
+        /// `machine` (default JSON) or `human` (stable text; never prints secrets).
+        format: OutputFormat,
     },
     Help,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OutputFormat {
+    Machine,
+    Human,
 }
 
 /// Dispatch CLI arguments. Returns `None` when the verb is owned by the process entry
@@ -49,6 +57,7 @@ pub fn try_dispatch_cli(args: &[String]) -> Option<Result<ExitCode, String>> {
             | "recovery"
             | "cluster"
             | "telemetry"
+            | "explain"
     ) {
         return None;
     }
@@ -94,12 +103,18 @@ pub fn dispatch_cli(args: &[String]) -> Result<ExitCode, String> {
             socket,
             request,
             deadline_ms,
+            format,
         } => {
             let client = LocalClient::new(socket);
             let deadline = deadline_ms.map(Duration::from_millis);
             let body = client.call(request, deadline).map_err(|e| e.to_string())?;
-            let out = MachineOutputV1::wrap(body);
-            println!("{}", out.to_canonical_json().map_err(|e| e.to_string())?);
+            match format {
+                OutputFormat::Machine => {
+                    let out = MachineOutputV1::wrap(body);
+                    println!("{}", out.to_canonical_json().map_err(|e| e.to_string())?);
+                }
+                OutputFormat::Human => print_human(&body),
+            }
             Ok(ExitCode::SUCCESS)
         }
     }
@@ -114,30 +129,11 @@ fn parse_args(args: &[String]) -> Result<Command, String> {
     match verb.as_str() {
         "run" | "test" => parse_local_parity(verb, iter),
         "status" => parse_api_simple(iter, LocalRequest::Status),
+        "explain" => {
+            parse_subject_api(iter, "cluster", |subject| LocalRequest::Explain { subject })
+        }
         "observe" => {
-            let mut socket = PathBuf::from("/tmp/gump.sock");
-            let mut subject = "cluster".to_string();
-            let mut deadline_ms = None;
-            while let Some(a) = iter.next() {
-                match a.as_str() {
-                    "--socket" => {
-                        socket = PathBuf::from(iter.next().ok_or("--socket needs a path")?);
-                    }
-                    "--subject" => {
-                        subject = iter.next().ok_or("--subject needs a value")?.clone();
-                    }
-                    "--deadline-ms" => {
-                        deadline_ms =
-                            Some(parse_u64(iter.next().ok_or("--deadline-ms needs ms")?)?);
-                    }
-                    other => return Err(format!("unknown flag {other}")),
-                }
-            }
-            Ok(Command::Api {
-                socket,
-                request: LocalRequest::Observe { subject },
-                deadline_ms,
-            })
+            parse_subject_api(iter, "cluster", |subject| LocalRequest::Observe { subject })
         }
         "deploy" => parse_deploy(iter),
         "lifecycle" => {
@@ -145,82 +141,30 @@ fn parse_args(args: &[String]) -> Result<Command, String> {
                 .next()
                 .ok_or("lifecycle needs action (cancel|interrupt|wait)")?
                 .clone();
-            let mut socket = PathBuf::from("/tmp/gump.sock");
-            let mut subject = "attempt".to_string();
-            let mut deadline_ms = None;
-            while let Some(a) = iter.next() {
-                match a.as_str() {
-                    "--socket" => {
-                        socket = PathBuf::from(iter.next().ok_or("--socket needs a path")?);
-                    }
-                    "--subject" => {
-                        subject = iter.next().ok_or("--subject needs a value")?.clone();
-                    }
-                    "--deadline-ms" => {
-                        deadline_ms =
-                            Some(parse_u64(iter.next().ok_or("--deadline-ms needs ms")?)?);
-                    }
-                    other => return Err(format!("unknown flag {other}")),
-                }
-            }
-            Ok(Command::Api {
-                socket,
-                request: LocalRequest::Lifecycle { action, subject },
-                deadline_ms,
+            parse_subject_api(iter, "attempt", move |subject| LocalRequest::Lifecycle {
+                action: action.clone(),
+                subject,
             })
         }
         "recovery" => {
             let action = iter.next().cloned().unwrap_or_else(|| "status".into());
-            let mut socket = PathBuf::from("/tmp/gump.sock");
-            let mut deadline_ms = None;
-            while let Some(a) = iter.next() {
-                match a.as_str() {
-                    "--socket" => {
-                        socket = PathBuf::from(iter.next().ok_or("--socket needs a path")?);
-                    }
-                    "--deadline-ms" => {
-                        deadline_ms =
-                            Some(parse_u64(iter.next().ok_or("--deadline-ms needs ms")?)?);
-                    }
-                    other => return Err(format!("unknown flag {other}")),
-                }
-            }
-            Ok(Command::Api {
-                socket,
-                request: LocalRequest::Recovery {
+            parse_api_simple(
+                iter,
+                LocalRequest::Recovery {
                     action,
                     provider: None,
                     key_id: None,
                     recovery_secret_hex: None,
                 },
-                deadline_ms,
-            })
+            )
         }
         "cluster" => {
             let action = iter.next().cloned().unwrap_or_else(|| "members".into());
-            let mut socket = PathBuf::from("/tmp/gump.sock");
-            let mut deadline_ms = None;
-            while let Some(a) = iter.next() {
-                match a.as_str() {
-                    "--socket" => {
-                        socket = PathBuf::from(iter.next().ok_or("--socket needs a path")?);
-                    }
-                    "--deadline-ms" => {
-                        deadline_ms =
-                            Some(parse_u64(iter.next().ok_or("--deadline-ms needs ms")?)?);
-                    }
-                    other => return Err(format!("unknown flag {other}")),
-                }
-            }
-            Ok(Command::Api {
-                socket,
-                request: LocalRequest::ClusterAdmin { action },
-                deadline_ms,
-            })
+            parse_api_simple(iter, LocalRequest::ClusterAdmin { action })
         }
         "telemetry" => parse_telemetry(iter),
         other => Err(format!(
-            "unknown command {other:?}; try gump run|test|status|observe|telemetry|server"
+            "unknown command {other:?}; try gump run|test|status|explain|observe|deploy|telemetry|server"
         )),
     }
 }
@@ -230,6 +174,7 @@ fn parse_telemetry<'a>(mut iter: impl Iterator<Item = &'a String>) -> Result<Com
     let mut filter = None;
     let mut max_events = None;
     let mut deadline_ms = None;
+    let mut format = OutputFormat::Machine;
     while let Some(a) = iter.next() {
         match a.as_str() {
             "--socket" => {
@@ -245,6 +190,10 @@ fn parse_telemetry<'a>(mut iter: impl Iterator<Item = &'a String>) -> Result<Com
             "--deadline-ms" => {
                 deadline_ms = Some(parse_u64(iter.next().ok_or("--deadline-ms needs ms")?)?);
             }
+            "--format" => {
+                format = parse_format(iter.next().ok_or("--format needs machine|human")?)?;
+            }
+            "--human" => format = OutputFormat::Human,
             other => return Err(format!("unknown flag {other}")),
         }
     }
@@ -252,6 +201,7 @@ fn parse_telemetry<'a>(mut iter: impl Iterator<Item = &'a String>) -> Result<Com
         socket,
         request: LocalRequest::Telemetry { filter, max_events },
         deadline_ms,
+        format,
     })
 }
 
@@ -301,6 +251,7 @@ fn parse_api_simple<'a>(
 ) -> Result<Command, String> {
     let mut socket = PathBuf::from("/tmp/gump.sock");
     let mut deadline_ms = None;
+    let mut format = OutputFormat::Machine;
     while let Some(a) = iter.next() {
         match a.as_str() {
             "--socket" => {
@@ -309,6 +260,10 @@ fn parse_api_simple<'a>(
             "--deadline-ms" => {
                 deadline_ms = Some(parse_u64(iter.next().ok_or("--deadline-ms needs ms")?)?);
             }
+            "--format" => {
+                format = parse_format(iter.next().ok_or("--format needs machine|human")?)?;
+            }
+            "--human" => format = OutputFormat::Human,
             other => return Err(format!("unknown flag {other}")),
         }
     }
@@ -316,6 +271,42 @@ fn parse_api_simple<'a>(
         socket,
         request,
         deadline_ms,
+        format,
+    })
+}
+
+fn parse_subject_api<'a>(
+    mut iter: impl Iterator<Item = &'a String>,
+    default_subject: &str,
+    build: impl FnOnce(String) -> LocalRequest,
+) -> Result<Command, String> {
+    let mut socket = PathBuf::from("/tmp/gump.sock");
+    let mut subject = default_subject.to_string();
+    let mut deadline_ms = None;
+    let mut format = OutputFormat::Machine;
+    while let Some(a) = iter.next() {
+        match a.as_str() {
+            "--socket" => {
+                socket = PathBuf::from(iter.next().ok_or("--socket needs a path")?);
+            }
+            "--subject" => {
+                subject = iter.next().ok_or("--subject needs a value")?.clone();
+            }
+            "--deadline-ms" => {
+                deadline_ms = Some(parse_u64(iter.next().ok_or("--deadline-ms needs ms")?)?);
+            }
+            "--format" => {
+                format = parse_format(iter.next().ok_or("--format needs machine|human")?)?;
+            }
+            "--human" => format = OutputFormat::Human,
+            other => return Err(format!("unknown flag {other}")),
+        }
+    }
+    Ok(Command::Api {
+        socket,
+        request: build(subject),
+        deadline_ms,
+        format,
     })
 }
 
@@ -326,7 +317,9 @@ fn parse_deploy<'a>(mut iter: impl Iterator<Item = &'a String>) -> Result<Comman
     let mut app = "app".to_string();
     let mut content_digest_hex = String::new();
     let mut capsule_hex = None;
+    let mut wait = None;
     let mut deadline_ms = None;
+    let mut format = OutputFormat::Machine;
     while let Some(a) = iter.next() {
         match a.as_str() {
             "--socket" => {
@@ -347,9 +340,16 @@ fn parse_deploy<'a>(mut iter: impl Iterator<Item = &'a String>) -> Result<Comman
             "--capsule-hex" => {
                 capsule_hex = Some(iter.next().ok_or("--capsule-hex needs hex")?.clone());
             }
+            "--wait" => {
+                wait = Some(iter.next().ok_or("--wait needs a condition")?.clone());
+            }
             "--deadline-ms" => {
                 deadline_ms = Some(parse_u64(iter.next().ok_or("--deadline-ms needs ms")?)?);
             }
+            "--format" => {
+                format = parse_format(iter.next().ok_or("--format needs machine|human")?)?;
+            }
+            "--human" => format = OutputFormat::Human,
             other => return Err(format!("unknown flag {other}")),
         }
     }
@@ -364,9 +364,136 @@ fn parse_deploy<'a>(mut iter: impl Iterator<Item = &'a String>) -> Result<Comman
             app,
             content_digest_hex,
             capsule_hex,
+            wait,
         },
         deadline_ms,
+        format,
     })
+}
+
+fn parse_format(s: &str) -> Result<OutputFormat, String> {
+    match s {
+        "machine" | "json" => Ok(OutputFormat::Machine),
+        "human" | "text" => Ok(OutputFormat::Human),
+        other => Err(format!("unknown --format {other:?}; use machine|human")),
+    }
+}
+
+fn print_human(body: &LocalResponse) {
+    match body {
+        LocalResponse::Status(s) => {
+            println!("cluster {}", s.cluster_id);
+            println!("controller_epoch {}", s.controller_epoch);
+            println!("memory_voters {}", s.memory_voters);
+            println!("durability {}", s.durability_note);
+        }
+        LocalResponse::Explain {
+            subject,
+            reason_code,
+            message,
+            observation_source,
+            compaction_disclosed,
+            durability_note,
+        } => {
+            println!("subject {subject}");
+            println!("reason {reason_code}");
+            println!("source {observation_source}");
+            println!("compaction_disclosed {compaction_disclosed}");
+            println!("durability {durability_note}");
+            println!("{message}");
+        }
+        LocalResponse::Deploy {
+            operation_id,
+            phase,
+            reason_code,
+            safe_message,
+            desired_generation,
+            content_digest_hex,
+            durability_note,
+            wait,
+            stages,
+            interrupted_implies_rollback,
+        } => {
+            println!("deploy {operation_id}");
+            println!("phase {phase}");
+            println!("reason {reason_code}");
+            println!("digest {content_digest_hex}");
+            if let Some(g) = desired_generation {
+                println!("desired_generation {g}");
+            }
+            println!("durability {durability_note}");
+            println!(
+                "wait {} (default {})",
+                wait.condition, wait.default_for_contract
+            );
+            println!("interrupted_implies_rollback {interrupted_implies_rollback}");
+            for st in stages {
+                println!("stage {}={} — {}", st.name, st.status, st.detail);
+            }
+            println!("{safe_message}");
+        }
+        LocalResponse::Lifecycle {
+            action,
+            subject,
+            state,
+            interrupted_implies_rollback,
+            note,
+        } => {
+            println!("lifecycle {action} subject={subject} state={state}");
+            println!("interrupted_implies_rollback {interrupted_implies_rollback}");
+            if let Some(n) = note {
+                println!("{n}");
+            }
+        }
+        LocalResponse::Telemetry {
+            profile,
+            memory_only,
+            pushed,
+            dropped_oldest,
+            caught_up,
+            identity_note,
+            events,
+            ..
+        } => {
+            println!("telemetry profile={profile} memory_only={memory_only}");
+            println!("pushed={pushed} dropped_oldest={dropped_oldest} caught_up={caught_up}");
+            println!("{identity_note}");
+            for ev in events {
+                match ev {
+                    crate::local_api::TelemetryEventBody::Record {
+                        topic,
+                        stream_sequence,
+                        text,
+                        ..
+                    } => {
+                        // Prefer text when present; never invent secrets from hex.
+                        if let Some(t) = text {
+                            println!("record {topic}#{stream_sequence} {t}");
+                        } else {
+                            println!("record {topic}#{stream_sequence} <binary>");
+                        }
+                    }
+                    crate::local_api::TelemetryEventBody::Gap {
+                        topic,
+                        from_sequence,
+                        to_sequence,
+                        reason,
+                    } => println!("gap {topic} {from_sequence}..{to_sequence} ({reason})"),
+                }
+            }
+        }
+        LocalResponse::Error(e) => {
+            println!("error {} ({})", e.code, e.reason);
+            println!("{}", e.safe_message);
+        }
+        other => {
+            // Fallback: machine JSON without claiming human formatting for rare kinds.
+            let out = MachineOutputV1::wrap(other.clone());
+            if let Ok(json) = out.to_canonical_json() {
+                println!("{json}");
+            }
+        }
+    }
 }
 
 fn parse_u64(s: &str) -> Result<u64, String> {
@@ -388,17 +515,22 @@ Usage:
   gump run [--manifest PATH] [--workspace DIR]
   gump test --sealed [--manifest PATH] [--workspace DIR]
   gump server --init [--socket PATH] [--role ROLE[,ROLE...]]
-  gump status [--socket PATH] [--deadline-ms N]
-  gump observe [--socket PATH] [--subject NAME] [--deadline-ms N]
-  gump deploy --operation-id ID --digest HEX [--capsule-hex HEX] [--namespace NS] [--app APP] [--socket PATH]
-  gump lifecycle cancel|interrupt|wait --subject NAME [--socket PATH]
+  gump status [--socket PATH] [--deadline-ms N] [--format machine|human]
+  gump explain [--subject NAME] [--socket PATH] [--format machine|human]
+  gump observe [--socket PATH] [--subject NAME] [--deadline-ms N] [--format machine|human]
+  gump deploy --operation-id ID --digest HEX [--capsule-hex HEX] [--wait CONDITION]
+              [--namespace NS] [--app APP] [--socket PATH] [--format machine|human]
+  gump lifecycle cancel|interrupt|wait --subject NAME [--socket PATH] [--format machine|human]
   gump recovery [status|reseal] [--socket PATH]
   gump cluster [members|status] [--socket PATH]
-  gump telemetry [--filter TOPIC|prefix*] [--max-events N] [--socket PATH]
+  gump telemetry [--filter TOPIC|prefix*] [--max-events N] [--socket PATH] [--format machine|human]
 
 API verbs are clients of the local Unix protocol (GUMP-N006); they do not duplicate
 server semantics. Incompatible protocol versions fail with PROTOCOL_MISMATCH.
-Telemetry is memory-only recent-window state (GUMP-N014); it is not a durable log.
+Deploy receipts distinguish persistence vs intent vs later observed stages (GUMP-N015).
+Default --wait is intent_accepted. Interrupt/cancel never imply Capsule rollback.
+Telemetry is memory-only recent-window state; it is not a durable log.
+Human format never prints recovery secrets or Capsule ciphertext.
 "
     );
 }

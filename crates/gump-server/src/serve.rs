@@ -6,8 +6,8 @@ use std::time::Instant;
 
 use gump_cli::{
     LocalCall, LocalRequest, LocalResponse, MachineOutputV1, PROTOCOL_MAJOR, PROTOCOL_MINOR,
-    TelemetryEventBody, cancelled_error, deadline_exceeded_error, protocol_mismatch_error,
-    read_frame, unauthorized_error, write_frame,
+    TelemetryEventBody, cancelled_error, deadline_exceeded_error, intent_accepted_stages,
+    protocol_mismatch_error, read_frame, unauthorized_error, wait_body, write_frame,
 };
 use gump_connectors::{FakeObjectStore, OrphanCapsule};
 use gump_memory::{ControllerAuthority, LeaseTable};
@@ -201,11 +201,9 @@ pub fn handle_request(daemon: &LocalDaemon, req: LocalRequest) -> LocalResponse 
                 format!("{memory_voters} memory voters; majority required for new commits")
             },
         }),
-        LocalRequest::Explain { subject } => LocalResponse::Explain {
-            subject,
-            reason_code: "status.ok".into(),
-            message: "no outstanding explainable fault".into(),
-        },
+        LocalRequest::Explain { subject } => {
+            handle_explain(daemon, subject, controller_epoch, memory_voters, leader)
+        }
         LocalRequest::Observe { subject } => LocalResponse::Observe {
             subject: subject.clone(),
             state: if memory_voters >= 1 {
@@ -224,6 +222,7 @@ pub fn handle_request(daemon: &LocalDaemon, req: LocalRequest) -> LocalResponse 
             app,
             content_digest_hex,
             capsule_hex,
+            wait,
         } => handle_deploy(
             daemon,
             operation_id,
@@ -231,6 +230,7 @@ pub fn handle_request(daemon: &LocalDaemon, req: LocalRequest) -> LocalResponse 
             app,
             content_digest_hex,
             capsule_hex,
+            wait,
         ),
         LocalRequest::Lifecycle { action, subject } => {
             let state = match action.as_str() {
@@ -244,10 +244,23 @@ pub fn handle_request(daemon: &LocalDaemon, req: LocalRequest) -> LocalResponse 
                     safe_message: format!("unknown lifecycle action {action:?}"),
                 })
             } else {
+                let note = match action.as_str() {
+                    "interrupt" | "cancel" => Some(
+                        "acknowledged; does not roll back published Capsules or committed intent"
+                            .into(),
+                    ),
+                    "wait" => Some(
+                        "wait observes declared conditions only; loss of observation ≠ rollback"
+                            .into(),
+                    ),
+                    _ => None,
+                };
                 LocalResponse::Lifecycle {
                     action,
                     subject,
                     state: state.into(),
+                    interrupted_implies_rollback: false,
+                    note,
                 }
             }
         }
@@ -459,6 +472,47 @@ fn parse_recovery_secret_hex(hex: &str) -> Result<gump_crypto::RecoverySecret, S
     Ok(gump_crypto::RecoverySecret::from_bytes(out))
 }
 
+fn handle_explain(
+    daemon: &LocalDaemon,
+    subject: String,
+    controller_epoch: u64,
+    memory_voters: u32,
+    leader: Option<u64>,
+) -> LocalResponse {
+    let durability_note = if memory_voters <= 1 {
+        "1 memory member; live intent has zero failure tolerance".into()
+    } else {
+        format!("{memory_voters} memory voters; majority required for new commits")
+    };
+    // Explain reads committed/observed cluster view only; detail may be compacted.
+    let compaction_disclosed = memory_voters <= 1 || daemon.memory_cluster.is_none();
+    let (reason_code, message, observation_source) = if daemon.memory_cluster.is_some() {
+        (
+            "status.ok".into(),
+            format!(
+                "subject={subject}; controller_epoch={controller_epoch}; voters={memory_voters}; leader={leader:?}; no outstanding explainable fault in committed view"
+            ),
+            "committed_cluster_memory".into(),
+        )
+    } else {
+        (
+            "status.degraded".into(),
+            format!(
+                "subject={subject}; no live memory cluster; observation limited to local daemon fields"
+            ),
+            "observed".into(),
+        )
+    };
+    LocalResponse::Explain {
+        subject,
+        reason_code,
+        message,
+        observation_source,
+        compaction_disclosed,
+        durability_note,
+    }
+}
+
 fn handle_deploy(
     daemon: &LocalDaemon,
     operation_id: String,
@@ -466,6 +520,7 @@ fn handle_deploy(
     app: String,
     content_digest_hex: String,
     capsule_hex: Option<String>,
+    wait: Option<String>,
 ) -> LocalResponse {
     if let Some(custody) = &daemon.custody {
         let sealed = custody.lock().map(|g| g.is_sealed()).unwrap_or(true);
@@ -554,6 +609,14 @@ fn handle_deploy(
         }
     };
 
+    let (_, _, memory_voters, _) = daemon.live_status_fields();
+    let durability_note = if memory_voters <= 1 {
+        "1 memory member; live intent has zero failure tolerance".into()
+    } else {
+        format!("{memory_voters} memory voters; majority required for new commits")
+    };
+    let wait_info = wait_body(wait.as_deref());
+
     match run_deploy_txn(&mut store_guard, cluster, &mut orphans_guard, req) {
         DeployTxnOutcome::Success {
             desired_generation,
@@ -572,11 +635,16 @@ fn handle_deploy(
                 "deploy.intent_accepted".into()
             },
             safe_message: if replayed {
-                "replayed committed deploy receipt from cluster memory (Raft Idempotent)".into()
+                "replayed committed deploy receipt from cluster memory (Raft Idempotent); later stages remain observed separately".into()
             } else {
-                "upload→publish→intent committed; placement/execution is N011/N012".into()
+                "upload→publish→intent committed; scheduling/start/readiness/publication/completion remain observed separately".into()
             },
             desired_generation: Some(desired_generation),
+            content_digest_hex,
+            durability_note,
+            wait: wait_info,
+            stages: intent_accepted_stages(replayed),
+            interrupted_implies_rollback: false,
         },
         DeployTxnOutcome::Conflict { .. } => LocalResponse::Error(ErrorBody {
             code: "CONFLICT".into(),
@@ -673,6 +741,7 @@ mod n008_tests {
                 app: "app".into(),
                 content_digest_hex: digest.clone(),
                 capsule_hex: Some(capsule_hex.clone()),
+                wait: None,
             },
         );
         match sealed_err {
@@ -712,6 +781,7 @@ mod n008_tests {
                 app: "app".into(),
                 content_digest_hex: digest,
                 capsule_hex: Some(capsule_hex),
+                wait: None,
             },
         );
         assert!(matches!(deployed, LocalResponse::Deploy { .. }));

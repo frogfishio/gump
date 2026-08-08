@@ -1,11 +1,13 @@
 {
   "schema": "gump.local.machine.v1",
   "protocol_major": 1,
-  "protocol_minor": 2,
+  "protocol_minor": 3,
   "body": {
     "kind": "lifecycle",
     "action": "interrupt",
     "subject": "attempt/1",
-    "state": "acknowledged"
+    "state": "acknowledged",
+    "interrupted_implies_rollback": false,
+    "note": "interrupt acknowledges loss of wait/observation; Capsule not rolled back"
   }
 }
