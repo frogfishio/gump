@@ -1,11 +1,16 @@
-//! Local CLI↔daemon Unix-domain API (C08 / DECISIONS D007).
+//! Local CLI↔daemon Unix-domain API and product role composition (C08 / GUMP-N004).
 //!
 //! Peer credentials authenticate the connecting process. Valid peer identity is
 //! necessary but never sufficient authorization for cluster mutations later.
+//!
+//! The `gump` binary in this crate is the process entry point (docs/v1/README.md §5).
 
+pub mod accept;
+pub mod compose;
 pub mod framing;
 pub mod machine;
 pub mod peer;
+pub mod roles;
 pub mod serve;
 
 use gump_types::{HardenError, ProcessHardenReport, prepare_service_for_custody};
@@ -16,12 +21,15 @@ pub fn harden_daemon_startup() -> Result<ProcessHardenReport, HardenError> {
     prepare_service_for_custody()
 }
 
+pub use accept::{AcceptStats, CancelFlag, new_cancel_flag, run_accept_loop};
+pub use compose::{InitOptions, ProductRuntime};
 pub use framing::{FrameError, MAX_FRAME_BYTES, read_frame, write_frame};
 pub use machine::{
     ErrorBody, LocalRequest, LocalResponse, MachineOutputV1, PROTOCOL_MAJOR, PROTOCOL_MINOR,
     StatusBody, sample_explain, sample_hello_response, sample_status, unauthorized_error,
 };
 pub use peer::{PeerAllowlist, PeerAuthError, PeerCred};
+pub use roles::RoleSet;
 pub use serve::{LocalDaemon, ServeError, handle_request, serve_connection};
 
 #[cfg(test)]

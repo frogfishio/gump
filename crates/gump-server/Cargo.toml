@@ -5,20 +5,27 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
-description = "Local Unix-domain CLI↔daemon API with peer-credential auth (C08)."
+description = "gump process entry: role composition and local Unix API (C08 / GUMP-N004)."
 
 [lib]
 path = "src/lib.rs"
 
 [[bin]]
-name = "server"
+name = "gump"
 path = "src/main.rs"
 
 [dependencies]
 gump-memory = { workspace = true }
 gump-types = { workspace = true }
+gump-cli = { workspace = true }
+gump-agent = { workspace = true }
+gump-scheduler = { workspace = true }
+gump-transport = { workspace = true }
+gump-connectors = { workspace = true }
+gump-telemetry = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 libc = "0.2"
 
 [dev-dependencies]
+tempfile = { workspace = true }

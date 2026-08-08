@@ -1010,11 +1010,18 @@ version = "0.1.0"
 name = "gump-server"
 version = "0.1.0"
 dependencies = [
+ "gump-agent",
+ "gump-cli",
+ "gump-connectors",
  "gump-memory",
+ "gump-scheduler",
+ "gump-telemetry",
+ "gump-transport",
  "gump-types",
  "libc",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

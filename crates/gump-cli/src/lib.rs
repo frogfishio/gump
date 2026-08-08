@@ -2,10 +2,12 @@
 
 #![forbid(unsafe_code)]
 
+mod cmd;
 mod error;
 mod local;
 mod sealed;
 
+pub use cmd::{dispatch_cli, print_help, try_dispatch_cli};
 pub use error::{CliError, CliErrorKind};
 pub use local::{LocalParityPlan, LocalRunOptions, LocalRunReport, local_parity_plan, run_local};
 pub use sealed::{

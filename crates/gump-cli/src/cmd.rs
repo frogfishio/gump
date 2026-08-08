@@ -1,20 +1,10 @@
-//! `gump` binary entry (F07).
+//! Local CLI verbs (`run` / `test`) shared with the composed `gump` binary (GUMP-N004).
 
 use std::env;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use gump_cli::{LocalRunOptions, LocalRunReport, SealedTestOptions, run_local, run_sealed_test};
-
-fn main() -> ExitCode {
-    match dispatch(env::args().skip(1).collect()) {
-        Ok(code) => code,
-        Err(err) => {
-            eprintln!("gump: {err}");
-            ExitCode::from(2)
-        }
-    }
-}
+use crate::{LocalRunOptions, LocalRunReport, SealedTestOptions, run_local, run_sealed_test};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Command {
@@ -30,13 +20,27 @@ enum Command {
     Help,
 }
 
-fn dispatch(args: Vec<String>) -> Result<ExitCode, String> {
-    let cmd = parse_args(&args)?;
+/// Dispatch `gump run|test` arguments. Returns `None` when the verb is not a CLI command
+/// (so the process entry can route `server` / roles elsewhere).
+pub fn try_dispatch_cli(args: &[String]) -> Option<Result<ExitCode, String>> {
+    if args.is_empty() {
+        return Some(Ok(print_help_ok()));
+    }
+    if args.iter().any(|a| a == "-h" || a == "--help") {
+        return Some(Ok(print_help_ok()));
+    }
+    let verb = args[0].as_str();
+    if !matches!(verb, "run" | "test") {
+        return None;
+    }
+    Some(dispatch_cli(args))
+}
+
+/// Run a CLI verb; errors if the verb is not `run` / `test`.
+pub fn dispatch_cli(args: &[String]) -> Result<ExitCode, String> {
+    let cmd = parse_args(args)?;
     match cmd {
-        Command::Help => {
-            print_help();
-            Ok(ExitCode::SUCCESS)
-        }
+        Command::Help => Ok(print_help_ok()),
         Command::Run {
             manifest,
             workspace,
@@ -108,21 +112,32 @@ fn parse_args(args: &[String]) -> Result<Command, String> {
             workspace,
             sealed,
         }),
-        other => Err(format!("unknown command {other:?}; try gump run|test")),
+        other => Err(format!(
+            "unknown command {other:?}; try gump run|test|server"
+        )),
     }
 }
 
-fn print_help() {
+fn print_help_ok() -> ExitCode {
+    print_help();
+    ExitCode::SUCCESS
+}
+
+pub fn print_help() {
     eprintln!(
         "\
-gump — local Capsule/runtime CLI (F07)
+gump — Capsule placer/supervisor (CLI + server roles)
 
 Usage:
   gump run [--manifest PATH] [--workspace DIR]
   gump test --sealed [--manifest PATH] [--workspace DIR]
+  gump server --init [--socket PATH] [--role ROLE[,ROLE...]]
+
+Roles (server): memory, agent, controller, ingress (default: memory,agent,controller).
 
 `run` materializes an unsealed release and executes the driver contract.
 `test --sealed` builds/verifies a local Capsule, then runs the same path.
+`server --init` starts the local Unix API with composed product facets (GUMP-N004).
 "
     );
 }
