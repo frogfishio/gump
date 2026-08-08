@@ -5,8 +5,7 @@
 //! `CopyObject` via `x-amz-copy-source` with `If-None-Match: *`.
 
 use std::collections::BTreeMap;
-use std::fs::File;
-use std::fs::OpenOptions;
+use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -17,7 +16,7 @@ use rusty_s3::actions::{
 use rusty_s3::{Bucket, Credentials, UrlStyle};
 use ureq::Agent;
 
-use gump_types::{CapsuleId, ClusterId};
+use gump_types::{CapsuleId, ClusterId, Secret};
 
 use crate::object::keys::quarantine_key;
 use crate::object::types::{
@@ -34,7 +33,8 @@ const MULTIPART_THRESHOLD: u64 = 8 * 1024 * 1024;
 const MULTIPART_PART_SIZE: u64 = 8 * 1024 * 1024;
 const MAX_RETRIES: u32 = 5;
 
-#[derive(Clone, Debug)]
+/// S3 connector config. Not `Clone`: secrets must not widen via accidental copies (STL-13).
+#[derive(Debug)]
 pub struct S3Config {
     /// Full endpoint URL, e.g. `https://s3.amazonaws.com` or `http://127.0.0.1:9000`.
     pub endpoint: String,
@@ -42,7 +42,7 @@ pub struct S3Config {
     pub bucket: String,
     /// When set with [`Self::secret_access_key`], used instead of the env chain.
     pub access_key_id: Option<String>,
-    pub secret_access_key: Option<String>,
+    pub secret_access_key: Option<Secret<String>>,
     /// Path-style addressing (required for most MinIO / local endpoints).
     pub force_path_style: bool,
 }
@@ -73,7 +73,7 @@ impl S3Config {
             region: region.into(),
             bucket: bucket.into(),
             access_key_id: Some(access_key_id.into()),
-            secret_access_key: Some(secret_access_key.into()),
+            secret_access_key: Some(Secret::new(secret_access_key.into())),
             force_path_style: true,
         }
     }
@@ -88,6 +88,12 @@ struct OpenUpload {
     quarantine: ObjectKey,
 }
 
+impl Drop for OpenUpload {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
 /// S3-compatible connector via `rusty-s3` + `ureq` (STL-07 / D008).
 #[derive(Debug)]
 pub struct S3ObjectStore {
@@ -97,10 +103,13 @@ pub struct S3ObjectStore {
     credentials: Credentials,
     uploads: BTreeMap<UploadId, OpenUpload>,
     next_upload: u64,
+    /// Private directory for quarantine spill files (mode 0700 on Unix).
+    spill_root: PathBuf,
 }
 
 impl S3ObjectStore {
     pub fn new(config: S3Config) -> Result<Self, ObjectStoreError> {
+        cleanup_orphan_spills();
         let credentials = resolve_credentials(&config)?;
         let endpoint: url::Url = config.endpoint.parse().map_err(|e| {
             ObjectStoreError::new(
@@ -127,6 +136,7 @@ impl S3ObjectStore {
             )
         })?;
         let agent = Agent::new();
+        let spill_root = create_spill_root()?;
         Ok(Self {
             agent,
             bucket,
@@ -134,6 +144,7 @@ impl S3ObjectStore {
             credentials,
             uploads: BTreeMap::new(),
             next_upload: 0,
+            spill_root,
         })
     }
 
@@ -339,25 +350,12 @@ impl ObjectStore for S3ObjectStore {
         self.next_upload = self.next_upload.saturating_add(1);
         let id = UploadId::from_raw(self.next_upload);
         let quarantine = quarantine_key(cluster, capsule, id.as_raw())?;
-        let path = std::env::temp_dir().join(format!(
-            "gump-s3-q-{}-{}-{:x}.capsule",
-            id.as_raw(),
-            std::process::id(),
-            {
-                use std::sync::atomic::{AtomicU64, Ordering};
-                static SEQ: AtomicU64 = AtomicU64::new(1);
-                SEQ.fetch_add(1, Ordering::Relaxed)
-            }
-        ));
-        let file = OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .read(true)
-            .write(true)
-            .open(&path)
-            .map_err(|e| {
-                ObjectStoreError::new(ObjectStoreErrorKind::FaultInjected, e.to_string())
-            })?;
+        let name = format!("q-{}-{:x}.capsule", id.as_raw(), {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static SEQ: AtomicU64 = AtomicU64::new(1);
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        });
+        let (path, file) = open_exclusive_spill(&self.spill_root, &name)?;
         self.uploads.insert(
             id,
             OpenUpload {
@@ -450,7 +448,7 @@ impl ObjectStore for S3ObjectStore {
         let _ = std::fs::remove_file(&entry.path);
         put?;
         Ok(ObjectEvidence {
-            key: entry.quarantine,
+            key: entry.quarantine.clone(),
             length: entry.expected_len,
             digest,
         })
@@ -515,26 +513,8 @@ impl ObjectStore for S3ObjectStore {
             }
             map_ureq(req.call().map_err(UreqErr))
         })?;
-        // Spill to a temp file so Capsule gets stay streaming / bounded in process RAM.
-        let tmp = tempfile_path("gump-s3-get");
-        {
-            let mut file = OpenOptions::new()
-                .create(true)
-                .truncate(true)
-                .write(true)
-                .open(&tmp)
-                .map_err(|e| {
-                    ObjectStoreError::new(ObjectStoreErrorKind::FaultInjected, e.to_string())
-                })?;
-            let mut reader = resp.into_reader();
-            std::io::copy(&mut reader, &mut file).map_err(|e| {
-                ObjectStoreError::new(ObjectStoreErrorKind::FaultInjected, e.to_string())
-            })?;
-        }
-        let file = File::open(&tmp).map_err(|e| {
-            ObjectStoreError::new(ObjectStoreErrorKind::FaultInjected, e.to_string())
-        })?;
-        Ok(Box::new(TempFileReader { file, path: tmp }))
+        // Prefer the HTTP body reader directly (no shared-/tmp spill; STL-13).
+        Ok(Box::new(resp.into_reader()))
     }
 
     fn copy_if_absent(
@@ -645,38 +625,125 @@ impl ObjectStore for S3ObjectStore {
     }
 }
 
-struct TempFileReader {
-    file: File,
-    path: PathBuf,
-}
-
-impl Read for TempFileReader {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        self.file.read(buf)
-    }
-}
-
-impl Drop for TempFileReader {
+impl Drop for S3ObjectStore {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
+        self.uploads.clear();
+        let _ = fs::remove_dir_all(&self.spill_root);
     }
 }
 
-fn tempfile_path(prefix: &str) -> PathBuf {
-    std::env::temp_dir().join(format!(
-        "{}-{}-{}.bin",
-        prefix,
+fn create_spill_root() -> Result<PathBuf, ObjectStoreError> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(1);
+    let root = std::env::temp_dir().join(format!(
+        "gump-s3-spill-{}-{:x}",
         std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    ))
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .recursive(true)
+            .create(&root)
+            .map_err(|e| {
+                ObjectStoreError::new(ObjectStoreErrorKind::FaultInjected, e.to_string())
+            })?;
+    }
+    #[cfg(not(unix))]
+    {
+        fs::create_dir_all(&root).map_err(|e| {
+            ObjectStoreError::new(ObjectStoreErrorKind::FaultInjected, e.to_string())
+        })?;
+    }
+    Ok(root)
+}
+
+/// Create a new spill file with `O_EXCL` semantics (mode 0600 on Unix).
+///
+/// Fails closed if the path already exists — including when a symlink was planted
+/// ahead of time — so create+truncate cannot clobber a host file (STL-13).
+fn open_exclusive_spill(root: &Path, name: &str) -> Result<(PathBuf, File), ObjectStoreError> {
+    let path = root.join(name);
+    let mut opts = OpenOptions::new();
+    opts.write(true).read(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let file = opts
+        .open(&path)
+        .map_err(|e| ObjectStoreError::new(ObjectStoreErrorKind::FaultInjected, e.to_string()))?;
+    Ok((path, file))
+}
+
+/// Best-effort removal of leftover spill dirs/files from crashed processes (bounded).
+fn cleanup_orphan_spills() {
+    const BOUND: usize = 64;
+    let tmp = std::env::temp_dir();
+    let Ok(entries) = fs::read_dir(&tmp) else {
+        return;
+    };
+    let mut cleaned = 0usize;
+    for entry in entries.flatten() {
+        if cleaned >= BOUND {
+            break;
+        }
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        // Legacy shared-/tmp names from pre-STL-13 clients.
+        if name.starts_with("gump-s3-q-") || name.starts_with("gump-s3-get-") {
+            let _ = fs::remove_file(entry.path());
+            cleaned = cleaned.saturating_add(1);
+            continue;
+        }
+        let Some(rest) = name.strip_prefix("gump-s3-spill-") else {
+            continue;
+        };
+        let Some((pid_s, _)) = rest.split_once('-') else {
+            continue;
+        };
+        let Ok(pid) = pid_s.parse::<u32>() else {
+            continue;
+        };
+        if pid == std::process::id() {
+            continue;
+        }
+        if process_seems_alive(pid) {
+            continue;
+        }
+        let _ = fs::remove_dir_all(entry.path());
+        cleaned = cleaned.saturating_add(1);
+    }
+}
+
+fn process_seems_alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        // Signal 0: existence check without delivering a signal.
+        std::process::Command::new("/bin/kill")
+            .arg("-0")
+            .arg(pid.to_string())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(true)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        true
+    }
 }
 
 fn resolve_credentials(config: &S3Config) -> Result<Credentials, ObjectStoreError> {
     match (&config.access_key_id, &config.secret_access_key) {
-        (Some(ak), Some(sk)) => Ok(Credentials::new(ak.clone(), sk.clone())),
+        (Some(ak), Some(sk)) => Ok(Credentials::new(ak.clone(), sk.expose().clone())),
         (None, None) => {
             let ak = std::env::var("AWS_ACCESS_KEY_ID").map_err(|_| {
                 ObjectStoreError::new(
@@ -783,4 +850,79 @@ fn bytes_to_hex(bytes: &[u8; 32]) -> String {
         s.push(HEX[(b & 0xf) as usize] as char);
     }
     s
+}
+
+#[cfg(test)]
+mod stl13_tests {
+    use super::*;
+
+    fn sample_config(secret: &str) -> S3Config {
+        S3Config::with_static_credentials(
+            "http://127.0.0.1:9000",
+            "us-east-1",
+            "gump",
+            "AKIA_TEST",
+            secret,
+        )
+    }
+
+    #[test]
+    fn debug_redacts_secret_access_key() {
+        let cfg = sample_config("super-secret-key-value");
+        let rendered = format!("{cfg:?}");
+        assert!(
+            !rendered.contains("super-secret-key-value"),
+            "Debug leaked secret: {rendered}"
+        );
+        assert!(
+            rendered.contains("Secret(***)") || rendered.contains("***"),
+            "expected redacted secret marker, got {rendered}"
+        );
+    }
+
+    #[test]
+    fn store_debug_does_not_leak_resolved_secret() {
+        let store = S3ObjectStore::new(sample_config("super-secret-key-value")).unwrap();
+        let rendered = format!("{store:?}");
+        assert!(
+            !rendered.contains("super-secret-key-value"),
+            "S3ObjectStore Debug leaked secret: {rendered}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exclusive_spill_rejects_preexisting_symlink() {
+        let root = create_spill_root().unwrap();
+        let victim = root.join("victim-host-file");
+        fs::write(&victim, b"do-not-clobber").unwrap();
+        let planted = root.join("planted.capsule");
+        std::os::unix::fs::symlink(&victim, &planted).unwrap();
+
+        let err = open_exclusive_spill(&root, "planted.capsule").unwrap_err();
+        assert_eq!(err.kind(), ObjectStoreErrorKind::FaultInjected);
+        assert_eq!(fs::read(&victim).unwrap(), b"do-not-clobber");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn startup_cleans_orphan_spill_from_dead_pid() {
+        let dead_pid = 4_294_967_294u32; // u32::MAX - 1; not a real process
+        let orphan = std::env::temp_dir().join(format!(
+            "gump-s3-spill-{dead_pid}-dead{:x}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        fs::create_dir_all(&orphan).unwrap();
+        fs::write(orphan.join("leftover.capsule"), b"orphan-capsule-bytes").unwrap();
+
+        let _store = S3ObjectStore::new(sample_config("k")).unwrap();
+        assert!(
+            !orphan.exists(),
+            "orphan spill dir should be removed on store startup"
+        );
+    }
 }

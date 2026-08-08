@@ -66,7 +66,8 @@ fn ensure_bucket(cfg: &S3Config) -> bool {
     let creds = Credentials::new(
         cfg.access_key_id.clone().unwrap_or_else(|| "gump".into()),
         cfg.secret_access_key
-            .clone()
+            .as_ref()
+            .map(|s| s.expose().clone())
             .unwrap_or_else(|| "gumpsecret".into()),
     );
     let action = CreateBucket::new(&bucket, &creds);
