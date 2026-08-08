@@ -1012,6 +1012,9 @@ dependencies = [
 [[package]]
 name = "gump-scheduler"
 version = "0.1.0"
+dependencies = [
+ "gump-types",
+]
 
 [[package]]
 name = "gump-server"
