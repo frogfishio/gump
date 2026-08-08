@@ -206,6 +206,19 @@ impl ClusterState {
             .map(|e| e.generation)
     }
 
+    /// True when any accepted desired declaration binds `digest` (GUMP-N016).
+    pub fn desired_references_digest(&self, digest: &[u8; 32]) -> bool {
+        self.desired.values().any(|e| e.content_digest == *digest)
+    }
+
+    /// Distinct content digests currently bound in desired state (GUMP-N016).
+    pub fn desired_content_digests(&self) -> Vec<[u8; 32]> {
+        let mut out: Vec<[u8; 32]> = self.desired.values().map(|e| e.content_digest).collect();
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
     /// Number of retained idempotency receipts (test/ops introspection).
     pub fn idempotency_len(&self) -> usize {
         self.idempotency.len()

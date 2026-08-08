@@ -156,6 +156,32 @@ impl MemoryCluster {
         })
     }
 
+    /// Linearizable read of applied desired-state length (GUMP-N016).
+    pub fn desired_len(&self) -> Result<usize, String> {
+        self.runtime.block_on(async {
+            self.raft
+                .ensure_linearizable()
+                .await
+                .map_err(|e| format!("ensure_linearizable: {e}"))?;
+            Ok(self.sm.cluster_state().await.desired_len())
+        })
+    }
+
+    /// Whether live desired state references `digest` (GUMP-N016 inventory).
+    pub fn desired_references_digest(&self, digest: &[u8; 32]) -> Result<bool, String> {
+        self.runtime.block_on(async {
+            self.raft
+                .ensure_linearizable()
+                .await
+                .map_err(|e| format!("ensure_linearizable: {e}"))?;
+            Ok(self
+                .sm
+                .cluster_state()
+                .await
+                .desired_references_digest(digest))
+        })
+    }
+
     pub fn shutdown(&self) -> Result<(), String> {
         self.runtime.block_on(async {
             self.raft

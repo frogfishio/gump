@@ -3,8 +3,8 @@
 use serde::{Deserialize, Serialize};
 
 pub const PROTOCOL_MAJOR: u32 = 1;
-/// Minor 3: deploy receipt stages + explain compaction disclosure (GUMP-N015).
-pub const PROTOCOL_MINOR: u32 = 3;
+/// Minor 4: inventory / inspect / reintroduce full-loss recovery (GUMP-N016).
+pub const PROTOCOL_MINOR: u32 = 4;
 
 /// Client→daemon call with protocol negotiation, deadline, and cancel bit.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -111,6 +111,31 @@ pub enum LocalRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         max_events: Option<u32>,
     },
+    /// List verified inert Capsules in the object store (GUMP-N016). Never activates.
+    Inventory,
+    /// Public Capsule metadata only — never protected values (GUMP-N016).
+    Inspect {
+        capsule_id: String,
+    },
+    /// Explicit full-loss recovery: fresh intent for a selected Capsule (GUMP-N016).
+    Reintroduce {
+        capsule_id: String,
+        /// When true, verify + propose only; no K/V mutation (`reintroduce --plan`).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        plan: bool,
+        /// Required for non-plan: `new_execution` or `resume`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        finite_mode: Option<String>,
+        /// External checkpoint reference when `finite_mode` is `resume`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resume_from: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        operation_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        namespace: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        app: Option<String>,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -181,7 +206,48 @@ pub enum LocalResponse {
         identity_note: String,
         events: Vec<TelemetryEventBody>,
     },
+    Inventory {
+        desired_count: u64,
+        note: String,
+        capsules: Vec<InventoryEntryBody>,
+    },
+    Inspect {
+        capsule_id: String,
+        content_digest_hex: String,
+        size_bytes: u64,
+        object_key: String,
+        live_referenced: bool,
+        /// Public-only note; never includes protected config values.
+        public_note: String,
+    },
+    Reintroduce {
+        capsule_id: String,
+        plan: bool,
+        phase: String,
+        reason_code: String,
+        safe_message: String,
+        content_digest_hex: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        finite_mode: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        desired_generation: Option<u64>,
+        durability_note: String,
+        /// Always false — reintroduce creates fresh intent; it does not restore history.
+        restores_prior_desired: bool,
+    },
     Error(ErrorBody),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct InventoryEntryBody {
+    pub capsule_id: String,
+    pub content_digest_hex: String,
+    pub size_bytes: u64,
+    pub object_key: String,
+    /// Whether this new/live cluster currently references the Capsule.
+    pub live_referenced: bool,
+    /// Always true for inventory listings — Capsules remain inert until reintroduce.
+    pub inert: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -342,6 +408,50 @@ pub fn sample_recovery() -> LocalResponse {
         sealed: true,
         requires_authority: true,
         detail: "cluster sealed; unseal authority required for new work".into(),
+    }
+}
+
+pub fn sample_inventory() -> LocalResponse {
+    LocalResponse::Inventory {
+        desired_count: 0,
+        note: "inert Capsules from object store; unreferenced ≠ obsolete or safe to delete".into(),
+        capsules: vec![InventoryEntryBody {
+            capsule_id: "00000000-0000-4000-8000-0000000000cc".into(),
+            content_digest_hex:
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            size_bytes: 12,
+            object_key: "clusters/00000000-0000-4000-8000-000000000001/capsules/00000000-0000-4000-8000-0000000000cc.capsule".into(),
+            live_referenced: false,
+            inert: true,
+        }],
+    }
+}
+
+pub fn sample_inspect() -> LocalResponse {
+    LocalResponse::Inspect {
+        capsule_id: "00000000-0000-4000-8000-0000000000cc".into(),
+        content_digest_hex: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            .into(),
+        size_bytes: 12,
+        object_key: "clusters/00000000-0000-4000-8000-000000000001/capsules/00000000-0000-4000-8000-0000000000cc.capsule".into(),
+        live_referenced: false,
+        public_note: "public metadata only; protected values never printed".into(),
+    }
+}
+
+pub fn sample_reintroduce() -> LocalResponse {
+    LocalResponse::Reintroduce {
+        capsule_id: "00000000-0000-4000-8000-0000000000cc".into(),
+        plan: true,
+        phase: "plan_ready".into(),
+        reason_code: "reintroduce.plan".into(),
+        safe_message: "verified inert Capsule; proposed fresh intent without mutating K/V".into(),
+        content_digest_hex: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            .into(),
+        finite_mode: Some("new_execution".into()),
+        desired_generation: None,
+        durability_note: "1 memory member; live intent has zero failure tolerance".into(),
+        restores_prior_desired: false,
     }
 }
 

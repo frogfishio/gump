@@ -58,6 +58,9 @@ pub fn try_dispatch_cli(args: &[String]) -> Option<Result<ExitCode, String>> {
             | "cluster"
             | "telemetry"
             | "explain"
+            | "inventory"
+            | "inspect"
+            | "reintroduce"
     ) {
         return None;
     }
@@ -163,8 +166,11 @@ fn parse_args(args: &[String]) -> Result<Command, String> {
             parse_api_simple(iter, LocalRequest::ClusterAdmin { action })
         }
         "telemetry" => parse_telemetry(iter),
+        "inventory" => parse_api_simple(iter, LocalRequest::Inventory),
+        "inspect" => parse_inspect(iter),
+        "reintroduce" => parse_reintroduce(iter),
         other => Err(format!(
-            "unknown command {other:?}; try gump run|test|status|explain|observe|deploy|telemetry|server"
+            "unknown command {other:?}; try gump run|test|status|explain|observe|deploy|inventory|inspect|reintroduce|telemetry|server"
         )),
     }
 }
@@ -371,6 +377,105 @@ fn parse_deploy<'a>(mut iter: impl Iterator<Item = &'a String>) -> Result<Comman
     })
 }
 
+fn parse_inspect<'a>(mut iter: impl Iterator<Item = &'a String>) -> Result<Command, String> {
+    let mut socket = PathBuf::from("/tmp/gump.sock");
+    let mut capsule_id = None;
+    let mut deadline_ms = None;
+    let mut format = OutputFormat::Machine;
+    while let Some(a) = iter.next() {
+        match a.as_str() {
+            "--socket" => {
+                socket = PathBuf::from(iter.next().ok_or("--socket needs a path")?);
+            }
+            "--capsule" | "--id" => {
+                capsule_id = Some(iter.next().ok_or("--capsule needs a uuid")?.clone());
+            }
+            "--deadline-ms" => {
+                deadline_ms = Some(parse_u64(iter.next().ok_or("--deadline-ms needs ms")?)?);
+            }
+            "--format" => {
+                format = parse_format(iter.next().ok_or("--format needs machine|human")?)?;
+            }
+            "--human" => format = OutputFormat::Human,
+            other if other.starts_with('-') => return Err(format!("unknown flag {other}")),
+            other => capsule_id = Some(other.to_string()),
+        }
+    }
+    let capsule_id = capsule_id.ok_or("inspect requires a capsule uuid")?;
+    Ok(Command::Api {
+        socket,
+        request: LocalRequest::Inspect { capsule_id },
+        deadline_ms,
+        format,
+    })
+}
+
+fn parse_reintroduce<'a>(mut iter: impl Iterator<Item = &'a String>) -> Result<Command, String> {
+    let mut socket = PathBuf::from("/tmp/gump.sock");
+    let mut capsule_id = None;
+    let mut plan = false;
+    let mut finite_mode = None;
+    let mut resume_from = None;
+    let mut operation_id = None;
+    let mut namespace = None;
+    let mut app = None;
+    let mut deadline_ms = None;
+    let mut format = OutputFormat::Machine;
+    while let Some(a) = iter.next() {
+        match a.as_str() {
+            "--socket" => {
+                socket = PathBuf::from(iter.next().ok_or("--socket needs a path")?);
+            }
+            "--capsule" | "--id" => {
+                capsule_id = Some(iter.next().ok_or("--capsule needs a uuid")?.clone());
+            }
+            "--plan" => plan = true,
+            "--new-execution" => finite_mode = Some("new_execution".into()),
+            "--resume-from" => {
+                resume_from = Some(
+                    iter.next()
+                        .ok_or("--resume-from needs a reference")?
+                        .clone(),
+                );
+                finite_mode = Some("resume".into());
+            }
+            "--operation-id" => {
+                operation_id = Some(iter.next().ok_or("--operation-id needs a value")?.clone());
+            }
+            "--namespace" => {
+                namespace = Some(iter.next().ok_or("--namespace needs a value")?.clone());
+            }
+            "--app" => {
+                app = Some(iter.next().ok_or("--app needs a value")?.clone());
+            }
+            "--deadline-ms" => {
+                deadline_ms = Some(parse_u64(iter.next().ok_or("--deadline-ms needs ms")?)?);
+            }
+            "--format" => {
+                format = parse_format(iter.next().ok_or("--format needs machine|human")?)?;
+            }
+            "--human" => format = OutputFormat::Human,
+            other if other.starts_with('-') => return Err(format!("unknown flag {other}")),
+            other => capsule_id = Some(other.to_string()),
+        }
+    }
+    let capsule_id = capsule_id.ok_or("reintroduce requires a capsule uuid")?;
+    Ok(Command::Api {
+        socket,
+        request: LocalRequest::Reintroduce {
+            capsule_id,
+            plan,
+            finite_mode,
+            resume_from,
+            operation_id,
+            namespace,
+            app,
+        },
+        deadline_ms,
+        format,
+    })
+}
+
 fn parse_format(s: &str) -> Result<OutputFormat, String> {
     match s {
         "machine" | "json" => Ok(OutputFormat::Machine),
@@ -482,6 +587,61 @@ fn print_human(body: &LocalResponse) {
                 }
             }
         }
+        LocalResponse::Inventory {
+            desired_count,
+            note,
+            capsules,
+        } => {
+            println!("inventory desired_count={desired_count}");
+            println!("{note}");
+            for c in capsules {
+                println!(
+                    "capsule {} digest={} size={} live_referenced={} inert={}",
+                    c.capsule_id, c.content_digest_hex, c.size_bytes, c.live_referenced, c.inert
+                );
+            }
+        }
+        LocalResponse::Inspect {
+            capsule_id,
+            content_digest_hex,
+            size_bytes,
+            object_key,
+            live_referenced,
+            public_note,
+        } => {
+            println!("inspect {capsule_id}");
+            println!("digest {content_digest_hex}");
+            println!("size_bytes {size_bytes}");
+            println!("object_key {object_key}");
+            println!("live_referenced {live_referenced}");
+            println!("{public_note}");
+        }
+        LocalResponse::Reintroduce {
+            capsule_id,
+            plan,
+            phase,
+            reason_code,
+            safe_message,
+            content_digest_hex,
+            finite_mode,
+            desired_generation,
+            durability_note,
+            restores_prior_desired,
+        } => {
+            println!("reintroduce {capsule_id} plan={plan}");
+            println!("phase {phase}");
+            println!("reason {reason_code}");
+            println!("digest {content_digest_hex}");
+            if let Some(m) = finite_mode {
+                println!("finite_mode {m}");
+            }
+            if let Some(g) = desired_generation {
+                println!("desired_generation {g}");
+            }
+            println!("durability {durability_note}");
+            println!("restores_prior_desired {restores_prior_desired}");
+            println!("{safe_message}");
+        }
         LocalResponse::Error(e) => {
             println!("error {} ({})", e.code, e.reason);
             println!("{}", e.safe_message);
@@ -521,6 +681,10 @@ Usage:
   gump deploy --operation-id ID --digest HEX [--capsule-hex HEX] [--wait CONDITION]
               [--namespace NS] [--app APP] [--socket PATH] [--format machine|human]
   gump lifecycle cancel|interrupt|wait --subject NAME [--socket PATH] [--format machine|human]
+  gump inventory [--socket PATH] [--format machine|human]
+  gump inspect <capsule-uuid> [--socket PATH] [--format machine|human]
+  gump reintroduce <capsule-uuid> (--new-execution | --resume-from REF) [--plan]
+              [--operation-id ID] [--namespace NS] [--app APP] [--socket PATH] [--format machine|human]
   gump recovery [status|reseal] [--socket PATH]
   gump cluster [members|status] [--socket PATH]
   gump telemetry [--filter TOPIC|prefix*] [--max-events N] [--socket PATH] [--format machine|human]
@@ -531,6 +695,8 @@ Deploy receipts distinguish persistence vs intent vs later observed stages (GUMP
 Default --wait is intent_accepted. Interrupt/cancel never imply Capsule rollback.
 Telemetry is memory-only recent-window state; it is not a durable log.
 Human format never prints recovery secrets or Capsule ciphertext.
+Inventory/inspect never activate Capsules. Reintroduce creates fresh intent only
+(GUMP-N016); finite work requires --new-execution or --resume-from.
 "
     );
 }
@@ -575,6 +741,9 @@ fn _response_kind(r: &LocalResponse) -> &'static str {
         LocalResponse::Recovery { .. } => "recovery",
         LocalResponse::ClusterAdmin { .. } => "cluster_admin",
         LocalResponse::Telemetry { .. } => "telemetry",
+        LocalResponse::Inventory { .. } => "inventory",
+        LocalResponse::Inspect { .. } => "inspect",
+        LocalResponse::Reintroduce { .. } => "reintroduce",
         LocalResponse::Error(_) => "error",
     }
 }

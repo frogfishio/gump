@@ -14,12 +14,13 @@ pub use cmd::{dispatch_cli, print_help, try_dispatch_cli};
 pub use error::{CliError, CliErrorKind};
 pub use local::{LocalParityPlan, LocalRunOptions, LocalRunReport, local_parity_plan, run_local};
 pub use local_api::{
-    DEFAULT_DEPLOY_WAIT, DeployStageBody, DeployWaitBody, ErrorBody, FrameError, LocalCall,
-    LocalClient, LocalClientError, LocalRequest, LocalResponse, MAX_FRAME_BYTES, MachineOutputV1,
-    PROTOCOL_MAJOR, PROTOCOL_MINOR, StatusBody, TelemetryEventBody, cancelled_error,
-    deadline_exceeded_error, intent_accepted_stages, normalize_wait_condition,
-    protocol_mismatch_error, read_frame, sample_cluster_admin, sample_deploy, sample_explain,
-    sample_hello_response, sample_lifecycle, sample_observe, sample_recovery, sample_status,
+    DEFAULT_DEPLOY_WAIT, DeployStageBody, DeployWaitBody, ErrorBody, FrameError,
+    InventoryEntryBody, LocalCall, LocalClient, LocalClientError, LocalRequest, LocalResponse,
+    MAX_FRAME_BYTES, MachineOutputV1, PROTOCOL_MAJOR, PROTOCOL_MINOR, StatusBody,
+    TelemetryEventBody, cancelled_error, deadline_exceeded_error, intent_accepted_stages,
+    normalize_wait_condition, protocol_mismatch_error, read_frame, sample_cluster_admin,
+    sample_deploy, sample_explain, sample_hello_response, sample_inspect, sample_inventory,
+    sample_lifecycle, sample_observe, sample_recovery, sample_reintroduce, sample_status,
     sample_telemetry, unauthorized_error, wait_body, write_frame,
 };
 pub use sealed::{

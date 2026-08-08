@@ -1,0 +1,17 @@
+{
+  "schema": "gump.local.machine.v1",
+  "protocol_major": 1,
+  "protocol_minor": 4,
+  "body": {
+    "kind": "reintroduce",
+    "capsule_id": "00000000-0000-4000-8000-0000000000cc",
+    "plan": true,
+    "phase": "plan_ready",
+    "reason_code": "reintroduce.plan",
+    "safe_message": "verified inert Capsule; proposed fresh intent without mutating K/V",
+    "content_digest_hex": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "finite_mode": "new_execution",
+    "durability_note": "1 memory member; live intent has zero failure tolerance",
+    "restores_prior_desired": false
+  }
+}

@@ -5,11 +5,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use gump_cli::{
-    LocalCall, LocalRequest, LocalResponse, MachineOutputV1, PROTOCOL_MAJOR, PROTOCOL_MINOR,
-    TelemetryEventBody, cancelled_error, deadline_exceeded_error, intent_accepted_stages,
-    protocol_mismatch_error, read_frame, unauthorized_error, wait_body, write_frame,
+    InventoryEntryBody, LocalCall, LocalRequest, LocalResponse, MachineOutputV1, PROTOCOL_MAJOR,
+    PROTOCOL_MINOR, TelemetryEventBody, cancelled_error, deadline_exceeded_error,
+    intent_accepted_stages, protocol_mismatch_error, read_frame, unauthorized_error, wait_body,
+    write_frame,
 };
-use gump_connectors::{FakeObjectStore, OrphanCapsule};
+use gump_connectors::{FakeObjectStore, OrphanCapsule, parse_final_capsule_key};
 use gump_memory::{ControllerAuthority, LeaseTable};
 use gump_telemetry::{RingConfig, TelemetryEventView, TelemetryPlane};
 
@@ -21,6 +22,9 @@ use crate::deploy_txn::{
 use crate::framing::FrameError;
 use crate::machine::{ErrorBody, StatusBody};
 use crate::peer::{PeerAllowlist, PeerAuthError, PeerCred};
+use crate::recovery_txn::{
+    ReintroduceOutcome, ReintroduceRequest, digest_hex, run_reintroduce, verify_stored_capsule,
+};
 
 #[derive(Clone, Debug)]
 pub struct LocalDaemon {
@@ -290,6 +294,28 @@ pub fn handle_request(daemon: &LocalDaemon, req: LocalRequest) -> LocalResponse 
         LocalRequest::Telemetry { filter, max_events } => {
             handle_telemetry(daemon, filter, max_events)
         }
+        LocalRequest::Inventory => handle_inventory(daemon),
+        LocalRequest::Inspect { capsule_id } => handle_inspect(daemon, capsule_id),
+        LocalRequest::Reintroduce {
+            capsule_id,
+            plan,
+            finite_mode,
+            resume_from,
+            operation_id,
+            namespace,
+            app,
+        } => handle_reintroduce(
+            daemon,
+            ReintroduceArgs {
+                capsule_id,
+                plan,
+                finite_mode,
+                resume_from,
+                operation_id,
+                namespace,
+                app,
+            },
+        ),
     }
 }
 
@@ -671,6 +697,212 @@ fn handle_deploy(
                 },
             })
         }
+    }
+}
+
+fn handle_inventory(daemon: &LocalDaemon) -> LocalResponse {
+    let Some(store) = &daemon.object_store else {
+        return LocalResponse::Error(ErrorBody {
+            code: "UNAVAILABLE".into(),
+            reason: "inventory.no_object_store".into(),
+            safe_message: "inventory requires an object-store connector".into(),
+        });
+    };
+    let store_guard = match store.lock() {
+        Ok(g) => g,
+        Err(_) => {
+            return LocalResponse::Error(ErrorBody {
+                code: "INTERNAL".into(),
+                reason: "inventory.store_lock".into(),
+                safe_message: "object store lock poisoned".into(),
+            });
+        }
+    };
+    let desired_count = daemon
+        .memory_cluster
+        .as_ref()
+        .and_then(|c| c.desired_len().ok())
+        .unwrap_or(0) as u64;
+    let mut capsules = Vec::new();
+    for ev in store_guard.list_final_capsules() {
+        let Some((_, capsule)) = parse_final_capsule_key(&ev.key) else {
+            continue;
+        };
+        let live_referenced = daemon
+            .memory_cluster
+            .as_ref()
+            .and_then(|c| c.desired_references_digest(&ev.digest).ok())
+            .unwrap_or(false);
+        capsules.push(InventoryEntryBody {
+            capsule_id: capsule.to_hyphenated(),
+            content_digest_hex: digest_hex(&ev.digest),
+            size_bytes: ev.length,
+            object_key: ev.key.as_str().to_string(),
+            live_referenced,
+            inert: true,
+        });
+    }
+    capsules.sort_by(|a, b| a.capsule_id.cmp(&b.capsule_id));
+    LocalResponse::Inventory {
+        desired_count,
+        note: "inert Capsules from object store; unreferenced after full loss ≠ obsolete or safe to delete".into(),
+        capsules,
+    }
+}
+
+fn handle_inspect(daemon: &LocalDaemon, capsule_id: String) -> LocalResponse {
+    let Some(store) = &daemon.object_store else {
+        return LocalResponse::Error(ErrorBody {
+            code: "UNAVAILABLE".into(),
+            reason: "inspect.no_object_store".into(),
+            safe_message: "inspect requires an object-store connector".into(),
+        });
+    };
+    let store_guard = match store.lock() {
+        Ok(g) => g,
+        Err(_) => {
+            return LocalResponse::Error(ErrorBody {
+                code: "INTERNAL".into(),
+                reason: "inspect.store_lock".into(),
+                safe_message: "object store lock poisoned".into(),
+            });
+        }
+    };
+    match verify_stored_capsule(&store_guard, &daemon.cluster_id, &capsule_id) {
+        Ok(c) => {
+            let live_referenced = daemon
+                .memory_cluster
+                .as_ref()
+                .and_then(|m| m.desired_references_digest(&c.content_digest).ok())
+                .unwrap_or(false);
+            LocalResponse::Inspect {
+                capsule_id: c.capsule_id.to_hyphenated(),
+                content_digest_hex: digest_hex(&c.content_digest),
+                size_bytes: c.size_bytes,
+                object_key: c.object_key,
+                live_referenced,
+                public_note: "public metadata only; protected values never printed".into(),
+            }
+        }
+        Err(msg) => LocalResponse::Error(ErrorBody {
+            code: "NOT_FOUND".into(),
+            reason: "inspect.not_found".into(),
+            safe_message: msg,
+        }),
+    }
+}
+
+struct ReintroduceArgs {
+    capsule_id: String,
+    plan: bool,
+    finite_mode: Option<String>,
+    resume_from: Option<String>,
+    operation_id: Option<String>,
+    namespace: Option<String>,
+    app: Option<String>,
+}
+
+fn handle_reintroduce(daemon: &LocalDaemon, args: ReintroduceArgs) -> LocalResponse {
+    if let Some(custody) = &daemon.custody {
+        let sealed = custody.lock().map(|g| g.is_sealed()).unwrap_or(true);
+        if sealed && !args.plan {
+            return LocalResponse::Error(ErrorBody {
+                code: "FAILED_PRECONDITION".into(),
+                reason: "reintroduce.custody_sealed".into(),
+                safe_message: "cluster sealed; unseal authority required for new work".into(),
+            });
+        }
+    }
+    let Some(cluster) = &daemon.memory_cluster else {
+        return LocalResponse::Error(ErrorBody {
+            code: "UNAVAILABLE".into(),
+            reason: "reintroduce.no_memory_cluster".into(),
+            safe_message: "reintroduce requires a live memory cluster".into(),
+        });
+    };
+    let Some(store) = &daemon.object_store else {
+        return LocalResponse::Error(ErrorBody {
+            code: "UNAVAILABLE".into(),
+            reason: "reintroduce.no_object_store".into(),
+            safe_message: "reintroduce requires an object-store connector".into(),
+        });
+    };
+    let store_guard = match store.lock() {
+        Ok(g) => g,
+        Err(_) => {
+            return LocalResponse::Error(ErrorBody {
+                code: "INTERNAL".into(),
+                reason: "reintroduce.store_lock".into(),
+                safe_message: "object store lock poisoned".into(),
+            });
+        }
+    };
+    let ns = args.namespace.unwrap_or_else(|| "default".into());
+    let app_name = args.app.unwrap_or_else(|| "app".into());
+    let (_, _, memory_voters, _) = daemon.live_status_fields();
+    let durability_note = if memory_voters <= 1 {
+        "1 memory member; live intent has zero failure tolerance".into()
+    } else {
+        format!("{memory_voters} memory voters; majority required for new commits")
+    };
+
+    match run_reintroduce(
+        &store_guard,
+        cluster,
+        &ReintroduceRequest {
+            cluster_id: &daemon.cluster_id,
+            capsule_id: &args.capsule_id,
+            plan: args.plan,
+            finite_mode: args.finite_mode.as_deref(),
+            resume_from: args.resume_from.as_deref(),
+            operation_id: args.operation_id.as_deref(),
+            namespace: &ns,
+            app: &app_name,
+        },
+    ) {
+        ReintroduceOutcome::Plan { capsule, finite_mode } => LocalResponse::Reintroduce {
+            capsule_id: capsule.capsule_id.to_hyphenated(),
+            plan: true,
+            phase: "plan_ready".into(),
+            reason_code: "reintroduce.plan".into(),
+            safe_message: "verified inert Capsule; proposed fresh intent without mutating K/V"
+                .into(),
+            content_digest_hex: digest_hex(&capsule.content_digest),
+            finite_mode: Some(finite_mode).filter(|s| s != "unspecified_plan"),
+            desired_generation: None,
+            durability_note,
+            restores_prior_desired: false,
+        },
+        ReintroduceOutcome::Applied {
+            capsule,
+            finite_mode,
+            desired_generation,
+            replayed,
+        } => LocalResponse::Reintroduce {
+            capsule_id: capsule.capsule_id.to_hyphenated(),
+            plan: false,
+            phase: if replayed {
+                "intent_accepted_replay".into()
+            } else {
+                "intent_accepted".into()
+            },
+            reason_code: if replayed {
+                "reintroduce.intent_accepted_replay".into()
+            } else {
+                "reintroduce.intent_accepted".into()
+            },
+            safe_message: "fresh intent accepted for selected Capsule; prior desired/completion not restored from S3".into(),
+            content_digest_hex: digest_hex(&capsule.content_digest),
+            finite_mode: Some(finite_mode),
+            desired_generation: Some(desired_generation),
+            durability_note,
+            restores_prior_desired: false,
+        },
+        ReintroduceOutcome::Failed { reason, code } => LocalResponse::Error(ErrorBody {
+            code: code.into(),
+            reason: "reintroduce.failed".into(),
+            safe_message: reason,
+        }),
     }
 }
 

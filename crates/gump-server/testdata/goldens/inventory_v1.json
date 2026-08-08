@@ -1,0 +1,20 @@
+{
+  "schema": "gump.local.machine.v1",
+  "protocol_major": 1,
+  "protocol_minor": 4,
+  "body": {
+    "kind": "inventory",
+    "desired_count": 0,
+    "note": "inert Capsules from object store; unreferenced ≠ obsolete or safe to delete",
+    "capsules": [
+      {
+        "capsule_id": "00000000-0000-4000-8000-0000000000cc",
+        "content_digest_hex": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "size_bytes": 12,
+        "object_key": "clusters/00000000-0000-4000-8000-000000000001/capsules/00000000-0000-4000-8000-0000000000cc.capsule",
+        "live_referenced": false,
+        "inert": true
+      }
+    ]
+  }
+}

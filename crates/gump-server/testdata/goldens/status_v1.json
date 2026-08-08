@@ -1,7 +1,7 @@
 {
   "schema": "gump.local.machine.v1",
   "protocol_major": 1,
-  "protocol_minor": 3,
+  "protocol_minor": 4,
   "body": {
     "kind": "status",
     "cluster_id": "00000000-0000-4000-8000-000000000001",

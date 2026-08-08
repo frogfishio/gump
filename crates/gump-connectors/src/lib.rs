@@ -30,5 +30,5 @@ pub use ingress::{
 pub use object::{
     ByteRange, FakeObjectStore, META_BLAKE3, ObjectEvidence, ObjectKey, ObjectStore,
     ObjectStoreError, ObjectStoreErrorKind, S3Config, S3ObjectStore, UploadId, UploadProgress,
-    final_capsule_key, quarantine_key,
+    final_capsule_key, is_final_capsule_key, parse_final_capsule_key, quarantine_key,
 };

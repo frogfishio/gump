@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use gump_types::{CapsuleId, ClusterId};
 
-use super::keys::quarantine_key;
+use super::keys::{is_final_capsule_key, quarantine_key};
 use super::types::{
     ByteRange, ObjectEvidence, ObjectKey, ObjectStore, ObjectStoreError, ObjectStoreErrorKind,
     UploadId, UploadProgress,
@@ -83,6 +83,19 @@ impl FakeObjectStore {
     /// Test helper: assert the store has no workload/desired-state keys.
     pub fn keys(&self) -> Vec<ObjectKey> {
         self.objects.keys().cloned().collect()
+    }
+
+    /// Inventory helper: final Capsule objects only (GUMP-N016). No activation.
+    pub fn list_final_capsules(&self) -> Vec<ObjectEvidence> {
+        self.objects
+            .iter()
+            .filter(|(k, _)| is_final_capsule_key(k))
+            .map(|(k, o)| ObjectEvidence {
+                key: k.clone(),
+                length: o.length,
+                digest: o.digest,
+            })
+            .collect()
     }
 
     fn spill_path(&self, tag: &str) -> PathBuf {

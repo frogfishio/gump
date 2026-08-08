@@ -1,7 +1,7 @@
 {
   "schema": "gump.local.machine.v1",
   "protocol_major": 1,
-  "protocol_minor": 3,
+  "protocol_minor": 4,
   "body": {
     "kind": "cluster_admin",
     "action": "members",
