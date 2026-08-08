@@ -19,7 +19,8 @@ pub use authority::{
     EffectReject, FenceToken,
 };
 pub use cluster_state::{
-    ApplyOutcome, ClusterState, IDEMPOTENCY_MAX_ENTRIES, IDEMPOTENCY_TTL_MS, RaftCommand,
+    ApplyOutcome, ClusterState, DESIRED_MAX_ENTRIES, DESIRED_MAX_PAYLOAD_BYTES,
+    DESIRED_MAX_TOTAL_BYTES, IDEMPOTENCY_MAX_ENTRIES, IDEMPOTENCY_TTL_MS, RaftCommand,
     RaftResponse,
 };
 pub use membership::{

@@ -49,7 +49,7 @@ fn idempotency_map_capped_under_load() {
         state.idempotency_len()
     );
     let now = state.records().now_ms();
-    // Lexicographically oldest op_id (0) is evicted first under the ceiling.
+    // Oldest-by-time (op 0 at t=1) is evicted first under the ceiling (STL-23).
     let replay_oldest = state.apply(idem_advance(0, now));
     assert!(
         matches!(replay_oldest, RaftResponse::Applied(_)),
