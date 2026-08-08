@@ -3,8 +3,8 @@
 use serde::{Deserialize, Serialize};
 
 pub const PROTOCOL_MAJOR: u32 = 1;
-/// Minor 1: request envelope + deploy/observe/lifecycle/recovery/cluster_admin ops.
-pub const PROTOCOL_MINOR: u32 = 1;
+/// Minor 2: telemetry recent-window poll (GUMP-N014) on top of minor-1 ops.
+pub const PROTOCOL_MINOR: u32 = 2;
 
 /// Client→daemon call with protocol negotiation, deadline, and cancel bit.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -100,6 +100,14 @@ pub enum LocalRequest {
     ClusterAdmin {
         action: String,
     },
+    /// Recent-window replay / live catch-up poll (memory-only; GUMP-N014).
+    Telemetry {
+        /// Exact topic, `prefix*`, or omit for all topics.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        filter: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_events: Option<u32>,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -144,7 +152,37 @@ pub enum LocalResponse {
         leader: Option<u64>,
         detail: String,
     },
+    Telemetry {
+        profile: String,
+        memory_only: bool,
+        pushed: u64,
+        dropped_oldest: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        filter: Option<String>,
+        caught_up: bool,
+        identity_note: String,
+        events: Vec<TelemetryEventBody>,
+    },
     Error(ErrorBody),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TelemetryEventBody {
+    Record {
+        topic: String,
+        stream_sequence: u64,
+        utf8_hint: bool,
+        bytes_hex: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+    },
+    Gap {
+        topic: String,
+        from_sequence: u64,
+        to_sequence: u64,
+        reason: String,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -265,5 +303,25 @@ pub fn sample_cluster_admin() -> LocalResponse {
         memory_voters: 1,
         leader: Some(1),
         detail: "one-voter cluster".into(),
+    }
+}
+
+pub fn sample_telemetry() -> LocalResponse {
+    LocalResponse::Telemetry {
+        profile: "gump.ratatouille/1".into(),
+        memory_only: true,
+        pushed: 1,
+        dropped_oldest: 0,
+        filter: Some("app/stdout".into()),
+        caught_up: true,
+        identity_note:
+            "canonical identity is placement-derived; producer hints are non-authoritative".into(),
+        events: vec![TelemetryEventBody::Record {
+            topic: "app/stdout".into(),
+            stream_sequence: 0,
+            utf8_hint: true,
+            bytes_hex: "6869".into(),
+            text: Some("hi".into()),
+        }],
     }
 }

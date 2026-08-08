@@ -1,0 +1,25 @@
+{
+  "schema": "gump.local.machine.v1",
+  "protocol_major": 1,
+  "protocol_minor": 2,
+  "body": {
+    "kind": "telemetry",
+    "profile": "gump.ratatouille/1",
+    "memory_only": true,
+    "pushed": 1,
+    "dropped_oldest": 0,
+    "filter": "app/stdout",
+    "caught_up": true,
+    "identity_note": "canonical identity is placement-derived; producer hints are non-authoritative",
+    "events": [
+      {
+        "kind": "record",
+        "topic": "app/stdout",
+        "stream_sequence": 0,
+        "utf8_hint": true,
+        "bytes_hex": "6869",
+        "text": "hi"
+      }
+    ]
+  }
+}

@@ -126,6 +126,9 @@ impl ProductRuntime {
                 *cluster_id.as_bytes(),
             ))));
         }
+        if telemetry_on {
+            local_api.enable_default_telemetry(DEFAULT_RING_MAX_BYTES);
+        }
 
         let mut memory_voters = if memory_on { 1 } else { 0 };
         if memory_on {

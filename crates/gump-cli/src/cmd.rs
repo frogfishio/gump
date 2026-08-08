@@ -40,7 +40,15 @@ pub fn try_dispatch_cli(args: &[String]) -> Option<Result<ExitCode, String>> {
     let verb = args[0].as_str();
     if !matches!(
         verb,
-        "run" | "test" | "status" | "observe" | "deploy" | "lifecycle" | "recovery" | "cluster"
+        "run"
+            | "test"
+            | "status"
+            | "observe"
+            | "deploy"
+            | "lifecycle"
+            | "recovery"
+            | "cluster"
+            | "telemetry"
     ) {
         return None;
     }
@@ -210,10 +218,41 @@ fn parse_args(args: &[String]) -> Result<Command, String> {
                 deadline_ms,
             })
         }
+        "telemetry" => parse_telemetry(iter),
         other => Err(format!(
-            "unknown command {other:?}; try gump run|test|status|observe|server"
+            "unknown command {other:?}; try gump run|test|status|observe|telemetry|server"
         )),
     }
+}
+
+fn parse_telemetry<'a>(mut iter: impl Iterator<Item = &'a String>) -> Result<Command, String> {
+    let mut socket = PathBuf::from("/tmp/gump.sock");
+    let mut filter = None;
+    let mut max_events = None;
+    let mut deadline_ms = None;
+    while let Some(a) = iter.next() {
+        match a.as_str() {
+            "--socket" => {
+                socket = PathBuf::from(iter.next().ok_or("--socket needs a path")?);
+            }
+            "--filter" => {
+                filter = Some(iter.next().ok_or("--filter needs a topic")?.clone());
+            }
+            "--max-events" => {
+                let n = parse_u64(iter.next().ok_or("--max-events needs a count")?)?;
+                max_events = Some(u32::try_from(n).map_err(|_| "max-events too large")?);
+            }
+            "--deadline-ms" => {
+                deadline_ms = Some(parse_u64(iter.next().ok_or("--deadline-ms needs ms")?)?);
+            }
+            other => return Err(format!("unknown flag {other}")),
+        }
+    }
+    Ok(Command::Api {
+        socket,
+        request: LocalRequest::Telemetry { filter, max_events },
+        deadline_ms,
+    })
 }
 
 fn parse_local_parity<'a>(
@@ -355,9 +394,11 @@ Usage:
   gump lifecycle cancel|interrupt|wait --subject NAME [--socket PATH]
   gump recovery [status|reseal] [--socket PATH]
   gump cluster [members|status] [--socket PATH]
+  gump telemetry [--filter TOPIC|prefix*] [--max-events N] [--socket PATH]
 
 API verbs are clients of the local Unix protocol (GUMP-N006); they do not duplicate
 server semantics. Incompatible protocol versions fail with PROTOCOL_MISMATCH.
+Telemetry is memory-only recent-window state (GUMP-N014); it is not a durable log.
 "
     );
 }
@@ -401,6 +442,7 @@ fn _response_kind(r: &LocalResponse) -> &'static str {
         LocalResponse::Lifecycle { .. } => "lifecycle",
         LocalResponse::Recovery { .. } => "recovery",
         LocalResponse::ClusterAdmin { .. } => "cluster_admin",
+        LocalResponse::Telemetry { .. } => "telemetry",
         LocalResponse::Error(_) => "error",
     }
 }

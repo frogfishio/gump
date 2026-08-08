@@ -9,6 +9,7 @@ mod adapter;
 mod identity;
 mod keeper;
 mod pipe_bridge;
+mod plane;
 mod relay;
 mod ring;
 mod stream;
@@ -22,6 +23,7 @@ pub use adapter::{
 pub use identity::{CanonicalIdentity, NormalizedRecord, ProducerHint, TELEMETRY_PROFILE};
 pub use keeper::{NodeId, RENDEZVOUS_MIN_NODES, TARGET_KEEPER_REPLICAS, select_keepers};
 pub use pipe_bridge::AttemptPipeBridge;
+pub use plane::{TOPIC_GUMP_LIFECYCLE, TelemetryEventView, TelemetryPlane, TelemetrySnapshot};
 pub use relay::{
     BatchAuth, DEFAULT_KEEPER_SHARD_BYTES, DedupId, KeeperStore, MAX_BATCH_RECORDS, RelayError,
     RelayMesh, RelayRecord, TelemetryBatch,

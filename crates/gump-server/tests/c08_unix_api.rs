@@ -5,10 +5,10 @@ use std::path::PathBuf;
 
 use gump_server::framing::{read_frame, write_frame};
 use gump_server::machine::{
-    LocalCall, LocalRequest, LocalResponse, MachineOutputV1, cancelled_error,
+    LocalCall, LocalRequest, LocalResponse, MachineOutputV1, PROTOCOL_MINOR, cancelled_error,
     deadline_exceeded_error, protocol_mismatch_error, sample_cluster_admin, sample_deploy,
     sample_explain, sample_hello_response, sample_lifecycle, sample_observe, sample_recovery,
-    sample_status,
+    sample_status, sample_telemetry,
 };
 use gump_server::peer::{PeerAllowlist, PeerCred};
 use gump_server::serve::{LocalDaemon, handle_request, serve_connection};
@@ -88,6 +88,7 @@ fn machine_output_new_ops_and_error_goldens() {
         ("lifecycle_v1.json", sample_lifecycle()),
         ("recovery_v1.json", sample_recovery()),
         ("cluster_admin_v1.json", sample_cluster_admin()),
+        ("telemetry_v1.json", sample_telemetry()),
         ("protocol_mismatch_v1.json", protocol_mismatch_error(2, 0)),
         ("deadline_exceeded_v1.json", deadline_exceeded_error()),
         ("cancelled_v1.json", cancelled_error()),
@@ -126,7 +127,7 @@ fn authorized_peer_status_round_trip() {
     let frame = read_frame(&mut resp_cursor).unwrap();
     let parsed: MachineOutputV1 = serde_json::from_slice(&frame).unwrap();
     assert_eq!(parsed.schema, "gump.local.machine.v1");
-    assert_eq!(parsed.protocol_minor, 1);
+    assert_eq!(parsed.protocol_minor, PROTOCOL_MINOR);
 }
 
 #[test]

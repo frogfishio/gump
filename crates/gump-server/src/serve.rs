@@ -6,11 +6,12 @@ use std::time::Instant;
 
 use gump_cli::{
     LocalCall, LocalRequest, LocalResponse, MachineOutputV1, PROTOCOL_MAJOR, PROTOCOL_MINOR,
-    cancelled_error, deadline_exceeded_error, protocol_mismatch_error, read_frame,
-    unauthorized_error, write_frame,
+    TelemetryEventBody, cancelled_error, deadline_exceeded_error, protocol_mismatch_error,
+    read_frame, unauthorized_error, write_frame,
 };
 use gump_connectors::{FakeObjectStore, OrphanCapsule};
 use gump_memory::{ControllerAuthority, LeaseTable};
+use gump_telemetry::{RingConfig, TelemetryEventView, TelemetryPlane};
 
 use crate::custody::ClusterCustody;
 use crate::deploy_txn::{
@@ -38,6 +39,8 @@ pub struct LocalDaemon {
     pub object_store: Option<Arc<Mutex<FakeObjectStore>>>,
     /// Inert Capsules left after publish-without-intent (PROTOCOL.md §13).
     pub deploy_orphans: Arc<Mutex<Vec<OrphanCapsule>>>,
+    /// Memory-only recent-window telemetry plane (GUMP-N014). Absent when facet off.
+    pub telemetry: Option<Arc<Mutex<TelemetryPlane>>>,
 }
 
 impl LocalDaemon {
@@ -53,7 +56,20 @@ impl LocalDaemon {
             custody: None,
             object_store: None,
             deploy_orphans: Arc::new(Mutex::new(Vec::new())),
+            telemetry: None,
         }
+    }
+
+    pub fn with_telemetry_plane(mut self, plane: TelemetryPlane) -> Self {
+        self.telemetry = Some(Arc::new(Mutex::new(plane)));
+        self
+    }
+
+    pub fn enable_default_telemetry(&mut self, ring_capacity_bytes: usize) {
+        self.telemetry = Some(Arc::new(Mutex::new(TelemetryPlane::new(RingConfig {
+            max_bytes: ring_capacity_bytes.max(1),
+            ..RingConfig::default()
+        }))));
     }
 
     pub fn sync_controller(&mut self, auth: &ControllerAuthority) {
@@ -258,6 +274,71 @@ pub fn handle_request(daemon: &LocalDaemon, req: LocalRequest) -> LocalResponse 
                 safe_message: format!("unknown cluster_admin action {action:?}"),
             }),
         },
+        LocalRequest::Telemetry { filter, max_events } => {
+            handle_telemetry(daemon, filter, max_events)
+        }
+    }
+}
+
+fn handle_telemetry(
+    daemon: &LocalDaemon,
+    filter: Option<String>,
+    max_events: Option<u32>,
+) -> LocalResponse {
+    let Some(plane) = &daemon.telemetry else {
+        return LocalResponse::Error(ErrorBody {
+            code: "FAILED_PRECONDITION".into(),
+            reason: "telemetry.disabled".into(),
+            safe_message: "telemetry facet is not enabled on this node".into(),
+        });
+    };
+    let Ok(guard) = plane.lock() else {
+        return LocalResponse::Error(ErrorBody {
+            code: "INTERNAL".into(),
+            reason: "telemetry.lock_poisoned".into(),
+            safe_message: "telemetry plane unavailable".into(),
+        });
+    };
+    let max = max_events.unwrap_or(256) as usize;
+    let snap = guard.query(filter.as_deref(), max);
+    LocalResponse::Telemetry {
+        profile: snap.profile.into(),
+        memory_only: snap.memory_only,
+        pushed: snap.pushed,
+        dropped_oldest: snap.dropped_oldest,
+        filter: snap.filter,
+        caught_up: snap.caught_up,
+        identity_note: snap.identity_note.into(),
+        events: snap
+            .events
+            .into_iter()
+            .map(|e| match e {
+                TelemetryEventView::Record {
+                    topic,
+                    stream_sequence,
+                    utf8_hint,
+                    bytes_hex,
+                    text,
+                } => TelemetryEventBody::Record {
+                    topic,
+                    stream_sequence,
+                    utf8_hint,
+                    bytes_hex,
+                    text,
+                },
+                TelemetryEventView::Gap {
+                    topic,
+                    from_sequence,
+                    to_sequence,
+                    reason,
+                } => TelemetryEventBody::Gap {
+                    topic,
+                    from_sequence,
+                    to_sequence,
+                    reason: reason.into(),
+                },
+            })
+            .collect(),
     }
 }
 

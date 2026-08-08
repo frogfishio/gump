@@ -30,7 +30,7 @@ pub use machine::{
     ErrorBody, LocalCall, LocalRequest, LocalResponse, MachineOutputV1, PROTOCOL_MAJOR,
     PROTOCOL_MINOR, StatusBody, cancelled_error, deadline_exceeded_error, protocol_mismatch_error,
     sample_cluster_admin, sample_deploy, sample_explain, sample_hello_response, sample_lifecycle,
-    sample_observe, sample_recovery, sample_status, unauthorized_error,
+    sample_observe, sample_recovery, sample_status, sample_telemetry, unauthorized_error,
 };
 pub use peer::{PeerAllowlist, PeerAuthError, PeerCred};
 pub use roles::RoleSet;
