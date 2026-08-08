@@ -8,6 +8,7 @@ mod abi;
 mod common;
 mod error;
 mod native;
+mod path_beneath;
 mod script;
 mod supervisor;
 

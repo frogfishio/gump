@@ -12,6 +12,7 @@ use crate::abi::{
     SecretPlan, Signal, StartFence,
 };
 use crate::error::{DriverError, DriverErrorKind};
+use crate::path_beneath::{self, PathKind};
 use crate::supervisor::{self, PipeDrains};
 
 pub(crate) struct CommonDriver {
@@ -108,29 +109,20 @@ impl Driver for CommonDriver {
                 "release root is not a directory",
             ));
         }
-        fs::create_dir_all(&ctx.attempt_root)?;
-        let mut entries = fs::read_dir(&ctx.attempt_root)?;
-        if entries.next().is_some() {
-            return Err(DriverError::new(
-                DriverErrorKind::Prepare,
-                "attempt root must be empty before prepare",
-            ));
-        }
+        ensure_empty_attempt_root(&ctx.attempt_root)?;
         let argv = self.resolve_argv(runtime)?;
         let workdir = match &runtime.workdir {
-            Some(rel) => {
-                let p = release.as_path().join(rel);
-                if !p.is_dir() {
-                    return Err(DriverError::new(
-                        DriverErrorKind::Prepare,
-                        format!("workdir missing: {rel}"),
-                    ));
-                }
-                p
-            }
+            Some(rel) => path_beneath::resolve_beneath(release.as_path(), rel, PathKind::Dir)?,
             None => release.as_path().to_path_buf(),
         };
-        validate_command_under_release(release.as_path(), &runtime.command, &argv, self.kind)?;
+        // Release root must be a real directory (not a symlink) before spawn (N001).
+        path_beneath::assert_owned_cleanup_target(release.as_path()).map_err(|e| {
+            DriverError::new(
+                DriverErrorKind::Policy,
+                format!("release root rejected: {}", e.message()),
+            )
+        })?;
+        let argv = pin_release_paths(release.as_path(), runtime, argv, self.kind)?;
         Ok(PreparedHandle {
             attempt_id: ctx.attempt_id,
             attempt_root: ctx.attempt_root.clone(),
@@ -177,6 +169,8 @@ impl Driver for CommonDriver {
             cmd.args(&admission.prepared.argv[1..]);
         }
         cmd.current_dir(&admission.prepared.workdir);
+        // Re-validate containment at start (narrow prepare→spawn TOCTOU; N001).
+        revalidate_prepared_paths(&admission.prepared)?;
         cmd.env_clear();
         cmd.env(
             "GUMP_ATTEMPT_ID",
@@ -288,53 +282,134 @@ impl Driver for CommonDriver {
 
     fn cleanup(&self, prepared: PreparedHandle) -> Result<(), DriverError> {
         if prepared.attempt_root.exists() {
+            path_beneath::assert_owned_cleanup_target(&prepared.attempt_root)?;
             fs::remove_dir_all(&prepared.attempt_root)?;
         }
         Ok(())
     }
 }
 
-fn validate_command_under_release(
-    release: &Path,
-    command: &[String],
-    argv: &[String],
-    kind: DriverKind,
-) -> Result<(), DriverError> {
-    match kind {
-        DriverKind::Native => {
-            let primary = &command[0];
-            if Path::new(primary).is_absolute() {
-                return Err(DriverError::new(
-                    DriverErrorKind::Policy,
-                    "native driver rejects absolute command paths in F06",
-                ));
-            }
-            let joined = release.join(primary);
-            if !joined.is_file() {
-                return Err(DriverError::new(
-                    DriverErrorKind::NotFound,
-                    format!("command not found under release root: {primary}"),
-                ));
-            }
-            let _ = argv;
-            Ok(())
-        }
-        DriverKind::Script => {
-            let script = &command[0];
-            if Path::new(script).is_absolute() {
-                return Err(DriverError::new(
-                    DriverErrorKind::Policy,
-                    "script path must be relative to the release root",
-                ));
-            }
-            let joined = release.join(script);
-            if !joined.is_file() {
-                return Err(DriverError::new(
-                    DriverErrorKind::NotFound,
-                    format!("script not found under release root: {script}"),
-                ));
-            }
-            Ok(())
+fn ensure_empty_attempt_root(attempt_root: &Path) -> Result<(), DriverError> {
+    // Refuse `..` and symlinks before create_dir_all (which would follow a link).
+    for c in attempt_root.components() {
+        if matches!(c, std::path::Component::ParentDir) {
+            return Err(DriverError::new(
+                DriverErrorKind::Policy,
+                format!(
+                    "attempt root parent traversal rejected: {}",
+                    attempt_root.display()
+                ),
+            ));
         }
     }
+    match fs::symlink_metadata(attempt_root) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            return Err(DriverError::new(
+                DriverErrorKind::Policy,
+                format!(
+                    "attempt root must not be a symlink: {}",
+                    attempt_root.display()
+                ),
+            ));
+        }
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir_all(attempt_root)?;
+        }
+        Err(e) => {
+            return Err(DriverError::new(
+                DriverErrorKind::Io,
+                format!("stat attempt root {}: {e}", attempt_root.display()),
+            ));
+        }
+    }
+    path_beneath::assert_owned_cleanup_target(attempt_root)?;
+    let mut entries = fs::read_dir(attempt_root)?;
+    if entries.next().is_some() {
+        return Err(DriverError::new(
+            DriverErrorKind::Prepare,
+            "attempt root must be empty before prepare",
+        ));
+    }
+    Ok(())
+}
+
+/// Resolve release-relative command/script to absolute nofollow paths (N001).
+fn pin_release_paths(
+    release: &Path,
+    runtime: &RuntimeSpec,
+    mut argv: Vec<String>,
+    kind: DriverKind,
+) -> Result<Vec<String>, DriverError> {
+    let map_not_found = |rel: &str, e: DriverError| -> DriverError {
+        if e.kind() == DriverErrorKind::NotFound {
+            DriverError::new(
+                DriverErrorKind::NotFound,
+                format!("path not found under release root: {rel}"),
+            )
+        } else {
+            e
+        }
+    };
+    match kind {
+        DriverKind::Native => {
+            let primary = &runtime.command[0];
+            let resolved = path_beneath::resolve_beneath(release, primary, PathKind::File)
+                .map_err(|e| map_not_found(primary, e))?;
+            argv[0] = resolved.display().to_string();
+        }
+        DriverKind::Script => {
+            let script = &runtime.command[0];
+            let resolved = path_beneath::resolve_beneath(release, script, PathKind::File)
+                .map_err(|e| map_not_found(script, e))?;
+            // argv = interpreter… + command; pin the first command element.
+            let interp_len = runtime.interpreter.as_ref().map(|i| i.len()).unwrap_or(0);
+            if argv.len() <= interp_len {
+                return Err(DriverError::new(
+                    DriverErrorKind::Prepare,
+                    "script argv missing release-relative command",
+                ));
+            }
+            argv[interp_len] = resolved.display().to_string();
+        }
+    }
+    Ok(argv)
+}
+
+fn revalidate_prepared_paths(prepared: &PreparedHandle) -> Result<(), DriverError> {
+    path_beneath::assert_owned_cleanup_target(&prepared.release_root).map_err(|e| {
+        DriverError::new(
+            DriverErrorKind::Policy,
+            format!("release root rejected at start: {}", e.message()),
+        )
+    })?;
+    path_beneath::assert_owned_cleanup_target(&prepared.workdir).map_err(|e| {
+        DriverError::new(
+            DriverErrorKind::Policy,
+            format!("workdir rejected at start: {}", e.message()),
+        )
+    })?;
+    // Pinned native binary / script path must still be a non-symlink file.
+    for (i, arg) in prepared.argv.iter().enumerate() {
+        let p = Path::new(arg);
+        if !p.is_absolute() {
+            continue;
+        }
+        if !arg.starts_with(prepared.release_root.to_str().unwrap_or("\0")) {
+            continue;
+        }
+        let meta = fs::symlink_metadata(p).map_err(|e| {
+            DriverError::new(
+                DriverErrorKind::Policy,
+                format!("release path vanished before start (argv[{i}]): {e}"),
+            )
+        })?;
+        if meta.file_type().is_symlink() {
+            return Err(DriverError::new(
+                DriverErrorKind::Policy,
+                format!("release path became a symlink before start (argv[{i}])"),
+            ));
+        }
+    }
+    Ok(())
 }
