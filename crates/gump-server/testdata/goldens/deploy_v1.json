@@ -5,9 +5,9 @@
   "body": {
     "kind": "deploy",
     "operation_id": "00000000-0000-4000-8000-0000000000aa",
-    "phase": "intent_recorded",
-    "reason_code": "deploy.intent_recorded",
-    "safe_message": "desired intent committed in cluster memory",
+    "phase": "intent_accepted",
+    "reason_code": "deploy.intent_accepted",
+    "safe_message": "upload→publish→intent committed; placement/execution is N011/N012",
     "desired_generation": 1
   }
 }

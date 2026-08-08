@@ -8,6 +8,7 @@
 pub mod accept;
 pub mod compose;
 pub mod custody;
+pub mod deploy_txn;
 pub mod framing;
 pub mod machine;
 pub mod peer;

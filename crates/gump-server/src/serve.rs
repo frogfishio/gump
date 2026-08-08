@@ -9,9 +9,14 @@ use gump_cli::{
     cancelled_error, deadline_exceeded_error, protocol_mismatch_error, read_frame,
     unauthorized_error, write_frame,
 };
-use gump_memory::{ControllerAuthority, LeaseTable, RaftCommand};
+use gump_connectors::{FakeObjectStore, OrphanCapsule};
+use gump_memory::{ControllerAuthority, LeaseTable};
 
 use crate::custody::ClusterCustody;
+use crate::deploy_txn::{
+    DeployTxnOutcome, DeployTxnRequest, capsule_id_for_digest, decode_capsule_hex,
+    parse_cluster_id, parse_operation_id, run_deploy_txn,
+};
 use crate::framing::FrameError;
 use crate::machine::{ErrorBody, StatusBody};
 use crate::peer::{PeerAllowlist, PeerAuthError, PeerCred};
@@ -29,6 +34,10 @@ pub struct LocalDaemon {
     pub memory_cluster: Option<Arc<gump_memory::MemoryCluster>>,
     /// In-memory unseal custody (GUMP-N008). Absent when custody role is off.
     pub custody: Option<Arc<Mutex<ClusterCustody>>>,
+    /// Capsule object store for deploy publish (GUMP-N010). Fake for one-server.
+    pub object_store: Option<Arc<Mutex<FakeObjectStore>>>,
+    /// Inert Capsules left after publish-without-intent (PROTOCOL.md §13).
+    pub deploy_orphans: Arc<Mutex<Vec<OrphanCapsule>>>,
 }
 
 impl LocalDaemon {
@@ -42,6 +51,8 @@ impl LocalDaemon {
             controller_holder: None,
             memory_cluster: None,
             custody: None,
+            object_store: None,
+            deploy_orphans: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -196,7 +207,15 @@ pub fn handle_request(daemon: &LocalDaemon, req: LocalRequest) -> LocalResponse 
             namespace,
             app,
             content_digest_hex,
-        } => handle_deploy(daemon, operation_id, namespace, app, content_digest_hex),
+            capsule_hex,
+        } => handle_deploy(
+            daemon,
+            operation_id,
+            namespace,
+            app,
+            content_digest_hex,
+            capsule_hex,
+        ),
         LocalRequest::Lifecycle { action, subject } => {
             let state = match action.as_str() {
                 "cancel" | "interrupt" | "wait" => "acknowledged",
@@ -365,6 +384,7 @@ fn handle_deploy(
     namespace: String,
     app: String,
     content_digest_hex: String,
+    capsule_hex: Option<String>,
 ) -> LocalResponse {
     if let Some(custody) = &daemon.custody {
         let sealed = custody.lock().map(|g| g.is_sealed()).unwrap_or(true);
@@ -383,6 +403,13 @@ fn handle_deploy(
             safe_message: "deploy requires a live memory cluster".into(),
         });
     };
+    let Some(store) = &daemon.object_store else {
+        return LocalResponse::Error(ErrorBody {
+            code: "UNAVAILABLE".into(),
+            reason: "deploy.no_object_store".into(),
+            safe_message: "deploy requires an object-store connector".into(),
+        });
+    };
     let digest = match parse_blake3_hex(&content_digest_hex) {
         Ok(d) => d,
         Err(msg) => {
@@ -393,38 +420,108 @@ fn handle_deploy(
             });
         }
     };
-    // Record desired intent through Raft (full upload→execution is GUMP-N010).
-    let payload = operation_id.as_bytes().to_vec();
-    match cluster.client_write(RaftCommand::PutDesired {
+    let op_bytes = match parse_operation_id(&operation_id) {
+        Ok(b) => b,
+        Err(msg) => {
+            return LocalResponse::Error(ErrorBody {
+                code: "INVALID_ARGUMENT".into(),
+                reason: "deploy.bad_operation_id".into(),
+                safe_message: msg,
+            });
+        }
+    };
+    let capsule_bytes = match decode_capsule_hex(capsule_hex.as_deref(), &digest) {
+        Ok(b) => b,
+        Err(msg) => {
+            return LocalResponse::Error(ErrorBody {
+                code: "INVALID_ARGUMENT".into(),
+                reason: "deploy.bad_capsule".into(),
+                safe_message: msg,
+            });
+        }
+    };
+
+    let req = DeployTxnRequest {
+        operation_id: op_bytes,
+        operation_id_display: operation_id.clone(),
         namespace,
         app,
-        expected_generation: 0,
-        payload,
         content_digest: digest,
-    }) {
-        Ok(gump_memory::RaftResponse::Applied(o)) => LocalResponse::Deploy {
+        capsule_bytes,
+        cluster_id: parse_cluster_id(&daemon.cluster_id),
+        capsule_id: capsule_id_for_digest(&digest),
+    };
+
+    let mut store_guard = match store.lock() {
+        Ok(g) => g,
+        Err(_) => {
+            return LocalResponse::Error(ErrorBody {
+                code: "INTERNAL".into(),
+                reason: "deploy.store_lock".into(),
+                safe_message: "object store lock poisoned".into(),
+            });
+        }
+    };
+    let mut orphans_guard = match daemon.deploy_orphans.lock() {
+        Ok(g) => g,
+        Err(_) => {
+            return LocalResponse::Error(ErrorBody {
+                code: "INTERNAL".into(),
+                reason: "deploy.orphan_lock".into(),
+                safe_message: "orphan list lock poisoned".into(),
+            });
+        }
+    };
+
+    match run_deploy_txn(&mut store_guard, cluster, &mut orphans_guard, req) {
+        DeployTxnOutcome::Success {
+            desired_generation,
+            replayed,
+            ..
+        } => LocalResponse::Deploy {
             operation_id,
-            phase: "intent_recorded".into(),
-            reason_code: "deploy.intent_recorded".into(),
-            safe_message: "desired intent committed in cluster memory; materialization is N010"
-                .into(),
-            desired_generation: o.desired_generation,
+            phase: if replayed {
+                "intent_accepted_replay".into()
+            } else {
+                "intent_accepted".into()
+            },
+            reason_code: if replayed {
+                "deploy.intent_accepted_replay".into()
+            } else {
+                "deploy.intent_accepted".into()
+            },
+            safe_message: if replayed {
+                "replayed committed deploy receipt from cluster memory (Raft Idempotent)".into()
+            } else {
+                "upload→publish→intent committed; placement/execution is N011/N012".into()
+            },
+            desired_generation: Some(desired_generation),
         },
-        Ok(gump_memory::RaftResponse::Rejected(msg)) => LocalResponse::Error(ErrorBody {
+        DeployTxnOutcome::Conflict { .. } => LocalResponse::Error(ErrorBody {
             code: "CONFLICT".into(),
-            reason: "deploy.rejected".into(),
-            safe_message: msg,
+            reason: "deploy.idempotency_conflict".into(),
+            safe_message: "same operation_id with a different request digest".into(),
         }),
-        Ok(other) => LocalResponse::Error(ErrorBody {
-            code: "INTERNAL".into(),
-            reason: "deploy.unexpected_response".into(),
-            safe_message: format!("unexpected raft response {other:?}"),
-        }),
-        Err(e) => LocalResponse::Error(ErrorBody {
-            code: "UNAVAILABLE".into(),
-            reason: "deploy.raft_error".into(),
-            safe_message: e,
-        }),
+        DeployTxnOutcome::Failed {
+            phase,
+            reason,
+            orphan,
+        } => {
+            let code = if orphan.is_some() {
+                "FAILED_PRECONDITION"
+            } else {
+                "INVALID_ARGUMENT"
+            };
+            LocalResponse::Error(ErrorBody {
+                code: code.into(),
+                reason: format!("deploy.{}", phase.as_str()),
+                safe_message: if orphan.is_some() {
+                    format!("{reason}; inert orphan Capsule reported")
+                } else {
+                    reason
+                },
+            })
+        }
     }
 }
 
@@ -469,13 +566,24 @@ mod n008_tests {
             MemoryCluster::bootstrap_one_voter(1, 1).expect("raft"),
         ));
         d.custody = Some(Arc::new(Mutex::new(ClusterCustody::new_sealed(cluster_id))));
+        d.object_store = Some(Arc::new(Mutex::new(FakeObjectStore::new())));
         d
+    }
+
+    fn to_hex(bytes: &[u8]) -> String {
+        let mut s = String::with_capacity(bytes.len() * 2);
+        for b in bytes {
+            s.push_str(&format!("{b:02x}"));
+        }
+        s
     }
 
     #[test]
     fn deploy_fails_while_sealed_then_succeeds_after_unseal() {
         let daemon = daemon_with_custody();
-        let digest = "ab".repeat(32);
+        let body = b"n008-capsule";
+        let digest = to_hex(blake3::hash(body).as_bytes());
+        let capsule_hex = to_hex(body);
         let sealed_err = handle_request(
             &daemon,
             LocalRequest::Deploy {
@@ -483,6 +591,7 @@ mod n008_tests {
                 namespace: "ns".into(),
                 app: "app".into(),
                 content_digest_hex: digest.clone(),
+                capsule_hex: Some(capsule_hex.clone()),
             },
         );
         match sealed_err {
@@ -521,6 +630,7 @@ mod n008_tests {
                 namespace: "ns".into(),
                 app: "app".into(),
                 content_digest_hex: digest,
+                capsule_hex: Some(capsule_hex),
             },
         );
         assert!(matches!(deployed, LocalResponse::Deploy { .. }));

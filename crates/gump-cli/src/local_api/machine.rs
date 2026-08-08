@@ -76,6 +76,10 @@ pub enum LocalRequest {
         app: String,
         /// Lowercase hex BLAKE3-256 of the Capsule / desired payload.
         content_digest_hex: String,
+        /// Optional lowercase hex of sealed Capsule bytes for upload→publish
+        /// (GUMP-N010). Omit only when the final object already exists.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        capsule_hex: Option<String>,
     },
     Lifecycle {
         action: String,
@@ -231,9 +235,9 @@ pub fn sample_observe() -> LocalResponse {
 pub fn sample_deploy() -> LocalResponse {
     LocalResponse::Deploy {
         operation_id: "00000000-0000-4000-8000-0000000000aa".into(),
-        phase: "intent_recorded".into(),
-        reason_code: "deploy.intent_recorded".into(),
-        safe_message: "desired intent committed in cluster memory".into(),
+        phase: "intent_accepted".into(),
+        reason_code: "deploy.intent_accepted".into(),
+        safe_message: "upload→publish→intent committed; placement/execution is N011/N012".into(),
         desired_generation: Some(1),
     }
 }

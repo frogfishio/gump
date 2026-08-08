@@ -2,7 +2,7 @@
 //!
 //! Memory/controller roles start a live one-voter [`gump_memory::MemoryCluster`].
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use gump_agent::harden_agent_startup;
 use gump_connectors::FakeObjectStore;
@@ -117,10 +117,14 @@ impl ProductRuntime {
         let mut local_api = LocalDaemon::new(PeerAllowlist::same_uid(opts.peer_uid));
         local_api.cluster_id = cluster_id.to_hyphenated();
         local_api.memory_voters = if memory_on { 1 } else { 0 };
+        if connectors_on {
+            // One-server FakeObjectStore until S3 config is operator-wired (D02 / N010).
+            local_api.object_store = Some(Arc::new(Mutex::new(FakeObjectStore::new())));
+        }
         if custody_on {
-            local_api.custody = Some(std::sync::Arc::new(std::sync::Mutex::new(
-                ClusterCustody::new_sealed(*cluster_id.as_bytes()),
-            )));
+            local_api.custody = Some(Arc::new(Mutex::new(ClusterCustody::new_sealed(
+                *cluster_id.as_bytes(),
+            ))));
         }
 
         let mut memory_voters = if memory_on { 1 } else { 0 };
@@ -217,6 +221,7 @@ mod tests {
         assert!(rt.local_api.memory_cluster.is_some());
         assert_eq!(rt.local_api.allowlist, PeerAllowlist::same_uid(501));
         assert!(rt.connectors.object_store.contains("FakeObjectStore"));
+        assert!(rt.local_api.object_store.is_some());
         assert_eq!(rt.scheduler.crate_name, "gump-scheduler");
         let snap = rt
             .local_api

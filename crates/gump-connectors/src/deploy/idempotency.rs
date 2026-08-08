@@ -29,9 +29,10 @@ impl std::error::Error for IdempotencyError {}
 
 /// Process-local idempotency cache (24h / 100_000 ops — D014).
 ///
-/// **STL-01:** durable receipts must be stored in replicated
-/// `gump_memory::ClusterState` via `RaftCommand::Idempotent` in the same apply
-/// as the mutation. This cache is for connector/unit tests until wired.
+/// **Not authoritative runtime storage (GUMP-N010 / STL-01).** Production
+/// deploy paths must use replicated `gump_memory::ClusterState` via
+/// `RaftCommand::Idempotent` in the same apply as the mutation. This cache
+/// remains for connector/unit tests (`DeployWorkflow` D05 suite) only.
 #[derive(Debug)]
 pub struct IdempotencyCache {
     by_op: BTreeMap<[u8; 16], IdempotencyRecord>,

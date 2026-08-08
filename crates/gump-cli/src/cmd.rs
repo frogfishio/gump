@@ -286,6 +286,7 @@ fn parse_deploy<'a>(mut iter: impl Iterator<Item = &'a String>) -> Result<Comman
     let mut namespace = "default".to_string();
     let mut app = "app".to_string();
     let mut content_digest_hex = String::new();
+    let mut capsule_hex = None;
     let mut deadline_ms = None;
     while let Some(a) = iter.next() {
         match a.as_str() {
@@ -304,6 +305,9 @@ fn parse_deploy<'a>(mut iter: impl Iterator<Item = &'a String>) -> Result<Comman
             "--digest" => {
                 content_digest_hex = iter.next().ok_or("--digest needs hex")?.clone();
             }
+            "--capsule-hex" => {
+                capsule_hex = Some(iter.next().ok_or("--capsule-hex needs hex")?.clone());
+            }
             "--deadline-ms" => {
                 deadline_ms = Some(parse_u64(iter.next().ok_or("--deadline-ms needs ms")?)?);
             }
@@ -320,6 +324,7 @@ fn parse_deploy<'a>(mut iter: impl Iterator<Item = &'a String>) -> Result<Comman
             namespace,
             app,
             content_digest_hex,
+            capsule_hex,
         },
         deadline_ms,
     })
@@ -346,7 +351,7 @@ Usage:
   gump server --init [--socket PATH] [--role ROLE[,ROLE...]]
   gump status [--socket PATH] [--deadline-ms N]
   gump observe [--socket PATH] [--subject NAME] [--deadline-ms N]
-  gump deploy --operation-id ID --digest HEX [--namespace NS] [--app APP] [--socket PATH]
+  gump deploy --operation-id ID --digest HEX [--capsule-hex HEX] [--namespace NS] [--app APP] [--socket PATH]
   gump lifecycle cancel|interrupt|wait --subject NAME [--socket PATH]
   gump recovery [status|reseal] [--socket PATH]
   gump cluster [members|status] [--socket PATH]
