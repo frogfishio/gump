@@ -876,6 +876,7 @@ version = "0.1.0"
 dependencies = [
  "gump-driver",
  "gump-types",
+ "tempfile",
 ]
 
 [[package]]

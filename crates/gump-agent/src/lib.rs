@@ -5,8 +5,11 @@
 //! holds plaintext secrets.
 //!
 //! Scoped secret delivery (GUMP-N009 / S07) lives in [`delivery`].
+//! Fenced reconcile / supervision (GUMP-N012 / R06) lives in [`reconcile`].
 
 mod delivery;
+mod fence;
+mod reconcile;
 
 use gump_types::{
     HardenError, HardenPolicy, ProcessHardenReport, prepare_for_custody_with_policy,
@@ -14,6 +17,14 @@ use gump_types::{
 };
 
 pub use delivery::{DeliveryError, authorize_delivery, bind_secret_plan};
+pub use fence::{
+    AuthorityState, DEFAULT_ISOLATION_GRACE_MS, EffectKind, FenceError, IsolationPolicy,
+    STOP_ON_ISOLATION_CONFIRM_MS, allow_effect, isolation_grace_expired, require_fence,
+};
+pub use reconcile::{
+    AcceptedPlacement, AgentError, AttemptPhase, AttemptReport, DEFAULT_MAX_LIVE_ATTEMPTS,
+    EffectExecutor,
+};
 
 /// Early agent process hardening. Uses [`prepare_service_for_custody`] (policy
 /// `required` by default; override with `GUMP_PROCESS_HARDEN`).

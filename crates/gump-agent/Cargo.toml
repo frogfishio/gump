@@ -12,3 +12,6 @@ path = "src/lib.rs"
 [dependencies]
 gump-types = { workspace = true }
 gump-driver = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

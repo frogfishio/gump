@@ -126,6 +126,33 @@ pub struct RunningHandle {
 }
 
 impl RunningHandle {
+    pub fn attempt_id(&self) -> AttemptId {
+        self.prepared.attempt_id
+    }
+
+    pub fn attempt_root(&self) -> &std::path::Path {
+        &self.prepared.attempt_root
+    }
+
+    pub fn fence_generation(&self) -> u64 {
+        self.fence.generation
+    }
+
+    /// Finalize the process tree and return a handle for [`Driver::cleanup`].
+    ///
+    /// Used by the agent supervision loop (GUMP-N012 / R06) after observe/kill.
+    pub fn into_prepared(mut self) -> PreparedHandle {
+        self.finalize_terminal(None);
+        PreparedHandle {
+            attempt_id: self.prepared.attempt_id,
+            attempt_root: std::mem::take(&mut self.prepared.attempt_root),
+            release_root: std::mem::take(&mut self.prepared.release_root),
+            argv: std::mem::take(&mut self.prepared.argv),
+            workdir: std::mem::take(&mut self.prepared.workdir),
+            admitted: self.prepared.admitted,
+        }
+    }
+
     /// Bytes retained from stdout (bounded ring; may have dropped oldest).
     pub fn captured_stdout(&self) -> Vec<u8> {
         self.drains
