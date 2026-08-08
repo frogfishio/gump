@@ -125,6 +125,8 @@ pub struct RunningHandle {
     pub(crate) drains: Option<crate::supervisor::PipeDrains>,
     #[allow(dead_code)] // retained for fence-aware supervision in R06
     pub(crate) fence: StartFence,
+    /// Primary exit status preserved across terminal finalization (STL-22).
+    pub(crate) last_exit_code: Option<i32>,
 }
 
 impl RunningHandle {
@@ -158,6 +160,47 @@ impl RunningHandle {
             .as_ref()
             .map(|d| d.stderr.received_bytes())
             .unwrap_or(0)
+    }
+
+    /// STL-22: kill/reap the process group (or cgroup fallback), finish bounded
+    /// pipe drains, and clear the running handle.
+    ///
+    /// Call after the primary has exited (or when forcing kill). When
+    /// `primary_exit` is `Some`, it is recorded as the authoritative exit code
+    /// before reaping; otherwise the code from `Child::wait` is kept if present.
+    pub(crate) fn finalize_terminal(&mut self, primary_exit: Option<Option<i32>>) {
+        if let Some(code) = primary_exit {
+            self.last_exit_code = code;
+        }
+        if self.child.is_none() {
+            // Child already cleared; still finish any outstanding drain joins.
+            if let Some(drains) = self.drains.as_mut() {
+                drains.join_bounded();
+            }
+            return;
+        }
+        if let Some(child) = self.child.as_mut() {
+            // Remaining descendants in the process group must not outlive observation.
+            let _ = crate::supervisor::signal_tree(child, Signal::Kill);
+        }
+        if let Some(mut child) = self.child.take() {
+            if let Ok(status) = child.wait() {
+                if primary_exit.is_none() && self.last_exit_code.is_none() {
+                    self.last_exit_code = status.code();
+                }
+            }
+        }
+        // Join drain threads but keep CaptureRings for post-mortem inspection.
+        if let Some(drains) = self.drains.as_mut() {
+            drains.join_bounded();
+        }
+    }
+}
+
+impl Drop for RunningHandle {
+    fn drop(&mut self) {
+        // STL-22: emergency containment if the caller dropped without observe/kill.
+        self.finalize_terminal(None);
     }
 }
 

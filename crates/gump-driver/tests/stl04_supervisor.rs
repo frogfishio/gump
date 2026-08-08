@@ -6,6 +6,7 @@
 
 use std::fs;
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -42,6 +43,16 @@ fn write_executable(path: &std::path::Path, body: &str) {
     fs::write(path, body).unwrap();
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// True if `pid` is still alive (best-effort via `/bin/kill -0`).
+fn pid_alive(pid: i32) -> bool {
+    Command::new("/bin/kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 fn start_native(
@@ -277,14 +288,77 @@ fn fork_and_exit_parent_then_kill_tree() {
     let driver = NativeDriver::new();
     let (mut running, _) = start_native(&release, "bin/forkexit", false);
     let start = Instant::now();
+    let mut exit_code = None;
     while start.elapsed() < Duration::from_secs(2) {
-        if !driver.observe(&mut running).unwrap().running {
+        let obs = driver.observe(&mut running).unwrap();
+        if !obs.running {
+            exit_code = obs.exit_code;
             break;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    driver.kill(&mut running).unwrap();
+    assert_eq!(exit_code, Some(0), "primary exit status must be preserved");
     assert!(!driver.observe(&mut running).unwrap().running);
+    let _ = fs::remove_dir_all(root);
+}
+
+/// STL-22: primary exit must finalize the process group — descendant dies without
+/// an explicit follow-up `driver.kill()`.
+#[test]
+fn observe_finalizes_descendant_without_explicit_kill() {
+    let _guard = test_lock();
+    let root = tmp("stl22-desc");
+    // Parent forks a long-lived child, records its pid, then exits with 42.
+    write_executable(
+        &root.join("bin/leave-desc"),
+        concat!(
+            "#!/bin/sh\n",
+            "sleep 60 &\n",
+            "echo $! >\"$GUMP_ATTEMPT_ROOT/desc.pid\"\n",
+            "exit 42\n",
+        ),
+    );
+    let release = ReleaseRoot::new(&root);
+    let driver = NativeDriver::new();
+    let (mut running, attempt_root) = start_native(&release, "bin/leave-desc", false);
+
+    let pid_path = attempt_root.join("desc.pid");
+    let start = Instant::now();
+    let mut exit_code = None;
+    while start.elapsed() < Duration::from_secs(2) {
+        let obs = driver.observe(&mut running).unwrap();
+        if !obs.running {
+            exit_code = obs.exit_code;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(
+        exit_code,
+        Some(42),
+        "observe must preserve the primary exit status"
+    );
+
+    // Descendant pid must have been recorded before primary exit.
+    let desc_pid: i32 = fs::read_to_string(&pid_path)
+        .expect("descendant pid file")
+        .trim()
+        .parse()
+        .expect("pid int");
+
+    // Give the kernel a moment to reap after process-group KILL.
+    let dead_deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < dead_deadline {
+        if !pid_alive(desc_pid) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        !pid_alive(desc_pid),
+        "descendant {desc_pid} must be dead after observe alone (no driver.kill)"
+    );
+    // Intentionally do not call driver.kill() — Drop / prior finalize must suffice.
     let _ = fs::remove_dir_all(root);
 }
 

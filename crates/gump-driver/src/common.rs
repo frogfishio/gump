@@ -223,6 +223,7 @@ impl Driver for CommonDriver {
             child: Some(child),
             drains: Some(drains),
             fence,
+            last_exit_code: None,
         })
     }
 
@@ -230,17 +231,18 @@ impl Driver for CommonDriver {
         let Some(child) = running.child.as_mut() else {
             return Ok(Observation {
                 running: false,
-                exit_code: None,
+                exit_code: running.last_exit_code,
             });
         };
         match child.try_wait()? {
             Some(status) => {
-                if let Some(drains) = running.drains.as_mut() {
-                    drains.join_bounded();
-                }
+                // STL-22: terminal observation finalizes the whole process tree.
+                // Order: preserve primary exit → kill/reap group → bounded drain → clear handle.
+                let code = status.code();
+                running.finalize_terminal(Some(code));
                 Ok(Observation {
                     running: false,
-                    exit_code: status.code(),
+                    exit_code: code,
                 })
             }
             None => Ok(Observation {
@@ -279,15 +281,8 @@ impl Driver for CommonDriver {
     }
 
     fn kill(&self, running: &mut RunningHandle) -> Result<(), DriverError> {
-        if running.child.is_some() {
-            self.signal(running, Signal::Kill)?;
-        }
-        if let Some(mut child) = running.child.take() {
-            let _ = child.wait();
-        }
-        if let Some(mut drains) = running.drains.take() {
-            drains.join_bounded();
-        }
+        // Same containment path as terminal observe (STL-22).
+        running.finalize_terminal(None);
         Ok(())
     }
 
