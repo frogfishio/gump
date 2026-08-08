@@ -7,6 +7,7 @@
 
 pub mod accept;
 pub mod compose;
+pub mod custody;
 pub mod framing;
 pub mod machine;
 pub mod peer;
@@ -22,6 +23,7 @@ pub fn harden_daemon_startup() -> Result<ProcessHardenReport, HardenError> {
 
 pub use accept::{AcceptStats, CancelFlag, new_cancel_flag, run_accept_loop};
 pub use compose::{InitOptions, ProductRuntime};
+pub use custody::{ClusterCustody, CustodyError, CustodyStatus};
 pub use framing::{FrameError, MAX_FRAME_BYTES, read_frame, write_frame};
 pub use machine::{
     ErrorBody, LocalCall, LocalRequest, LocalResponse, MachineOutputV1, PROTOCOL_MAJOR,

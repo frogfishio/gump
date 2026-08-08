@@ -11,6 +11,7 @@ use gump_telemetry::DEFAULT_RING_MAX_BYTES;
 use gump_transport::{NodeRole, TransportLimits};
 use gump_types::{ClusterId, ProcessHardenReport};
 
+use crate::custody::ClusterCustody;
 use crate::peer::PeerAllowlist;
 use crate::roles::RoleSet;
 use crate::serve::LocalDaemon;
@@ -116,6 +117,11 @@ impl ProductRuntime {
         let mut local_api = LocalDaemon::new(PeerAllowlist::same_uid(opts.peer_uid));
         local_api.cluster_id = cluster_id.to_hyphenated();
         local_api.memory_voters = if memory_on { 1 } else { 0 };
+        if custody_on {
+            local_api.custody = Some(std::sync::Arc::new(std::sync::Mutex::new(
+                ClusterCustody::new_sealed(*cluster_id.as_bytes()),
+            )));
+        }
 
         let mut memory_voters = if memory_on { 1 } else { 0 };
         if memory_on {
@@ -161,13 +167,23 @@ impl ProductRuntime {
             },
             custody: CustodyFacet {
                 enabled: custody_on,
-                sealed: true,
+                sealed: local_api
+                    .custody
+                    .as_ref()
+                    .and_then(|c| c.lock().ok().map(|g| g.is_sealed()))
+                    .unwrap_or(true),
             },
             local_api,
         })
     }
 
     pub fn status_line(&self) -> String {
+        let sealed = self
+            .local_api
+            .custody
+            .as_ref()
+            .and_then(|c| c.lock().ok().map(|g| g.is_sealed()))
+            .unwrap_or(self.custody.sealed);
         format!(
             "cluster={} roles={} memory_voters={} agent={} scheduler={} connectors={} telemetry={} custody_sealed={}",
             self.cluster_id.to_hyphenated(),
@@ -177,7 +193,7 @@ impl ProductRuntime {
             self.scheduler.enabled,
             self.connectors.enabled,
             self.telemetry.enabled,
-            self.custody.sealed
+            sealed
         )
     }
 }
@@ -211,6 +227,16 @@ mod tests {
             .unwrap();
         assert_eq!(snap.voter_count, 1);
         assert!(!snap.durable_cluster_state);
+        assert!(rt.local_api.custody.is_some());
+        assert!(
+            rt.local_api
+                .custody
+                .as_ref()
+                .unwrap()
+                .lock()
+                .unwrap()
+                .is_sealed()
+        );
     }
 
     #[test]

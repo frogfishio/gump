@@ -1,7 +1,7 @@
 //! Local daemon request handling over an authenticated Unix connection.
 
 use std::io::{Read, Write};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use gump_cli::{
@@ -11,6 +11,7 @@ use gump_cli::{
 };
 use gump_memory::{ControllerAuthority, LeaseTable, RaftCommand};
 
+use crate::custody::ClusterCustody;
 use crate::framing::FrameError;
 use crate::machine::{ErrorBody, StatusBody};
 use crate::peer::{PeerAllowlist, PeerAuthError, PeerCred};
@@ -26,6 +27,8 @@ pub struct LocalDaemon {
     pub controller_holder: Option<u64>,
     /// Live one-voter Raft node when memory/controller roles are enabled.
     pub memory_cluster: Option<Arc<gump_memory::MemoryCluster>>,
+    /// In-memory unseal custody (GUMP-N008). Absent when custody role is off.
+    pub custody: Option<Arc<Mutex<ClusterCustody>>>,
 }
 
 impl LocalDaemon {
@@ -38,6 +41,7 @@ impl LocalDaemon {
             controller_epoch: 0,
             controller_holder: None,
             memory_cluster: None,
+            custody: None,
         }
     }
 
@@ -212,19 +216,12 @@ pub fn handle_request(daemon: &LocalDaemon, req: LocalRequest) -> LocalResponse 
                 }
             }
         }
-        LocalRequest::Recovery { action } => match action.as_str() {
-            "status" | "reseal" => LocalResponse::Recovery {
-                action,
-                sealed: true,
-                requires_authority: true,
-                detail: "cluster sealed; unseal authority required for new work (N008)".into(),
-            },
-            _ => LocalResponse::Error(ErrorBody {
-                code: "INVALID_ARGUMENT".into(),
-                reason: "recovery.unknown_action".into(),
-                safe_message: format!("unknown recovery action {action:?}"),
-            }),
-        },
+        LocalRequest::Recovery {
+            action,
+            provider,
+            key_id,
+            recovery_secret_hex,
+        } => handle_recovery(daemon, action, provider, key_id, recovery_secret_hex),
         LocalRequest::ClusterAdmin { action } => match action.as_str() {
             "members" | "status" => LocalResponse::ClusterAdmin {
                 action,
@@ -245,6 +242,123 @@ pub fn handle_request(daemon: &LocalDaemon, req: LocalRequest) -> LocalResponse 
     }
 }
 
+fn handle_recovery(
+    daemon: &LocalDaemon,
+    action: String,
+    provider: Option<String>,
+    key_id: Option<String>,
+    recovery_secret_hex: Option<String>,
+) -> LocalResponse {
+    let Some(custody) = &daemon.custody else {
+        return LocalResponse::Error(ErrorBody {
+            code: "UNAVAILABLE".into(),
+            reason: "recovery.no_custody".into(),
+            safe_message: "custody facet not enabled on this node".into(),
+        });
+    };
+    let Ok(mut guard) = custody.lock() else {
+        return LocalResponse::Error(ErrorBody {
+            code: "INTERNAL".into(),
+            reason: "recovery.custody_poisoned".into(),
+            safe_message: "custody lock poisoned".into(),
+        });
+    };
+    match action.as_str() {
+        "status" => {
+            let st = guard.status();
+            LocalResponse::Recovery {
+                action,
+                sealed: st.sealed,
+                requires_authority: st.requires_authority,
+                detail: recovery_detail(&st),
+            }
+        }
+        "reseal" => {
+            let st = guard.reseal();
+            LocalResponse::Recovery {
+                action,
+                sealed: st.sealed,
+                requires_authority: st.requires_authority,
+                detail: recovery_detail(&st),
+            }
+        }
+        "unseal" => match activate_custody(
+            &mut guard,
+            provider.as_deref(),
+            key_id.as_deref(),
+            recovery_secret_hex.as_deref(),
+        ) {
+            Ok(st) => LocalResponse::Recovery {
+                action,
+                sealed: st.sealed,
+                requires_authority: st.requires_authority,
+                detail: recovery_detail(&st),
+            },
+            Err(e) => LocalResponse::Error(ErrorBody {
+                code: "FAILED_PRECONDITION".into(),
+                reason: "recovery.unseal_failed".into(),
+                safe_message: e,
+            }),
+        },
+        _ => LocalResponse::Error(ErrorBody {
+            code: "INVALID_ARGUMENT".into(),
+            reason: "recovery.unknown_action".into(),
+            safe_message: format!("unknown recovery action {action:?}"),
+        }),
+    }
+}
+
+fn recovery_detail(st: &crate::custody::CustodyStatus) -> String {
+    if st.sealed {
+        "cluster sealed; unseal authority required for new work".into()
+    } else {
+        format!(
+            "cluster active via {} key_id={}",
+            st.provider_type.as_deref().unwrap_or("unknown"),
+            st.key_id.as_deref().unwrap_or("unknown")
+        )
+    }
+}
+
+fn activate_custody(
+    custody: &mut ClusterCustody,
+    provider: Option<&str>,
+    key_id: Option<&str>,
+    recovery_secret_hex: Option<&str>,
+) -> Result<crate::custody::CustodyStatus, String> {
+    let provider = provider.unwrap_or("software");
+    let key_id = key_id.unwrap_or("default");
+    match provider {
+        "software" => {
+            let hex = recovery_secret_hex.ok_or_else(|| {
+                "software unseal requires recovery_secret_hex (32-byte hex)".to_string()
+            })?;
+            let secret = parse_recovery_secret_hex(hex)?;
+            custody
+                .activate_software_1of1(&secret, key_id)
+                .map_err(|e| e.to_string())
+        }
+        // Fake HSM is activated in-process via [`ClusterCustody::activate_fake_hsm`]
+        // (conformance / tests); the local API does not mint HSM keys over JSON.
+        "fake-hsm" => Err(
+            "fake-hsm unseal is not available via recovery API; use in-process activation".into(),
+        ),
+        other => Err(format!("unknown unseal provider {other:?}")),
+    }
+}
+
+fn parse_recovery_secret_hex(hex: &str) -> Result<gump_crypto::RecoverySecret, String> {
+    if hex.len() != 64 {
+        return Err("recovery secret must be 64 lowercase hex chars".into());
+    }
+    let mut out = [0u8; 32];
+    for (i, chunk) in hex.as_bytes().chunks(2).enumerate() {
+        let s = std::str::from_utf8(chunk).map_err(|_| "invalid secret utf8".to_string())?;
+        out[i] = u8::from_str_radix(s, 16).map_err(|_| "bad recovery secret hex".to_string())?;
+    }
+    Ok(gump_crypto::RecoverySecret::from_bytes(out))
+}
+
 fn handle_deploy(
     daemon: &LocalDaemon,
     operation_id: String,
@@ -252,6 +366,16 @@ fn handle_deploy(
     app: String,
     content_digest_hex: String,
 ) -> LocalResponse {
+    if let Some(custody) = &daemon.custody {
+        let sealed = custody.lock().map(|g| g.is_sealed()).unwrap_or(true);
+        if sealed {
+            return LocalResponse::Error(ErrorBody {
+                code: "FAILED_PRECONDITION".into(),
+                reason: "deploy.custody_sealed".into(),
+                safe_message: "cluster sealed; unseal authority required for new work".into(),
+            });
+        }
+    }
     let Some(cluster) = &daemon.memory_cluster else {
         return LocalResponse::Error(ErrorBody {
             code: "UNAVAILABLE".into(),
@@ -326,4 +450,93 @@ pub fn bootstrap_controller(daemon: &mut LocalDaemon, holder: u64, now_ms: u64) 
 
 pub fn peer_denied_response() -> LocalResponse {
     unauthorized_error()
+}
+
+#[cfg(test)]
+mod n008_tests {
+    use super::*;
+    use crate::custody::ClusterCustody;
+    use gump_memory::MemoryCluster;
+
+    fn daemon_with_custody() -> LocalDaemon {
+        let cluster_id = [
+            0x01, 0x8f, 0x4a, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x55,
+        ];
+        let mut d = LocalDaemon::new(PeerAllowlist::same_uid(1));
+        d.cluster_id = "n008".into();
+        d.memory_cluster = Some(Arc::new(
+            MemoryCluster::bootstrap_one_voter(1, 1).expect("raft"),
+        ));
+        d.custody = Some(Arc::new(Mutex::new(ClusterCustody::new_sealed(cluster_id))));
+        d
+    }
+
+    #[test]
+    fn deploy_fails_while_sealed_then_succeeds_after_unseal() {
+        let daemon = daemon_with_custody();
+        let digest = "ab".repeat(32);
+        let sealed_err = handle_request(
+            &daemon,
+            LocalRequest::Deploy {
+                operation_id: "op1".into(),
+                namespace: "ns".into(),
+                app: "app".into(),
+                content_digest_hex: digest.clone(),
+            },
+        );
+        match sealed_err {
+            LocalResponse::Error(e) => {
+                assert_eq!(e.reason, "deploy.custody_sealed");
+                assert!(!e.safe_message.contains("11".repeat(32).as_str()));
+            }
+            other => panic!("expected sealed deploy error, got {other:?}"),
+        }
+
+        let unsealed = handle_request(
+            &daemon,
+            LocalRequest::Recovery {
+                action: "unseal".into(),
+                provider: Some("software".into()),
+                key_id: Some("soft-1".into()),
+                recovery_secret_hex: Some("11".repeat(32)),
+            },
+        );
+        match unsealed {
+            LocalResponse::Recovery {
+                sealed,
+                requires_authority,
+                ..
+            } => {
+                assert!(!sealed);
+                assert!(!requires_authority);
+            }
+            other => panic!("expected recovery ok, got {other:?}"),
+        }
+
+        let deployed = handle_request(
+            &daemon,
+            LocalRequest::Deploy {
+                operation_id: "op2".into(),
+                namespace: "ns".into(),
+                app: "app".into(),
+                content_digest_hex: digest,
+            },
+        );
+        assert!(matches!(deployed, LocalResponse::Deploy { .. }));
+
+        let resealed = handle_request(
+            &daemon,
+            LocalRequest::Recovery {
+                action: "reseal".into(),
+                provider: None,
+                key_id: None,
+                recovery_secret_hex: None,
+            },
+        );
+        assert!(matches!(
+            resealed,
+            LocalResponse::Recovery { sealed: true, .. }
+        ));
+    }
 }

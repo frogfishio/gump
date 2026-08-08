@@ -83,6 +83,15 @@ pub enum LocalRequest {
     },
     Recovery {
         action: String,
+        /// `software` (default) or `fake-hsm` when `action` is `unseal`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key_id: Option<String>,
+        /// Hex-encoded 32-byte recovery secret for software 1-of-1 unseal.
+        /// Never echoed in responses/errors.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        recovery_secret_hex: Option<String>,
     },
     ClusterAdmin {
         action: String,

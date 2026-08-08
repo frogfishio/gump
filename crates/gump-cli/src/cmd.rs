@@ -179,7 +179,12 @@ fn parse_args(args: &[String]) -> Result<Command, String> {
             }
             Ok(Command::Api {
                 socket,
-                request: LocalRequest::Recovery { action },
+                request: LocalRequest::Recovery {
+                    action,
+                    provider: None,
+                    key_id: None,
+                    recovery_secret_hex: None,
+                },
                 deadline_ms,
             })
         }
