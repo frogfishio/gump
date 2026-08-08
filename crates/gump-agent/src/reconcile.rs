@@ -1,7 +1,7 @@
-//! Fenced effect executor / supervision loop (GUMP-N012 / R06 / R09 / R10).
+//! Fenced effect executor / supervision loop (GUMP-N012–N013 / R06 / R09 / R10).
 //!
 //! Reconcile accepted placements → materialize verified Capsules only →
-//! prepare/admit/start via driver ABI → observe → cleanup attempt roots.
+//! prepare/admit/start via driver ABI → checks/retry → observe → cleanup.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -14,13 +14,17 @@ use gump_driver::{
 };
 use gump_types::{AttemptId, UnitId};
 
+use crate::checks::{CheckBudget, run_check};
 use crate::fence::{
     AuthorityState, EffectKind, FenceError, IsolationPolicy, allow_effect, isolation_grace_expired,
     require_fence,
 };
+use crate::lifecycle::{CheckRuntime, LifecycleContract, TerminalReason, reasons};
 
 /// Ceiling on concurrent live attempts tracked by one agent (bounded).
 pub const DEFAULT_MAX_LIVE_ATTEMPTS: usize = 4_096;
+/// Per-reconcile wall-clock budget for health checks (must not block indefinitely).
+pub const DEFAULT_CHECK_BUDGET_MS: u64 = 50;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AgentError {
@@ -72,6 +76,8 @@ pub struct AcceptedPlacement {
     pub lifecycle_finite: bool,
     /// Capsule bytes must be fully verified before materialize/start (fail closed).
     pub capsule_verified: bool,
+    /// Optional checks / retry (GUMP-N013). Default = no health, no retry.
+    pub lifecycle: LifecycleContract,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -79,6 +85,8 @@ pub enum AttemptPhase {
     Starting,
     Running,
     Terminal { exit_code: Option<i32> },
+    AwaitingRestart { after_ms: u64 },
+    PermanentFailure,
     Stopped,
 }
 
@@ -91,16 +99,34 @@ pub struct AttemptReport {
     pub observation: Option<Observation>,
     pub stdout_bytes: usize,
     pub stderr_bytes: usize,
+    /// `None` when readiness is undeclared (never inferred).
+    pub ready: Option<bool>,
+    /// `None` when publication is undeclared (never inferred).
+    pub publication_eligible: Option<bool>,
+    pub attempt_index: u32,
+    pub terminal_reason: Option<TerminalReason>,
 }
 
 struct LiveAttempt {
     unit_id: UnitId,
     placement_fence: u64,
     lifecycle_finite: bool,
+    lifecycle: LifecycleContract,
+    release_root: PathBuf,
+    runtime: RuntimeSpec,
+    capsule_verified: bool,
     attempt_root: PathBuf,
     running: Option<RunningHandle>,
     phase: AttemptPhase,
     last_obs: Option<Observation>,
+    started_ms: u64,
+    /// 1-based execution index (increments on each restart).
+    attempt_index: u32,
+    readiness: CheckRuntime,
+    liveness: CheckRuntime,
+    ready: Option<bool>,
+    publication_eligible: Option<bool>,
+    terminal_reason: Option<TerminalReason>,
 }
 
 /// Agent-local reconciler: owns attempt roots and driver effects under a fence.
@@ -111,6 +137,7 @@ pub struct EffectExecutor<D: Driver> {
     isolation: IsolationPolicy,
     live: BTreeMap<AttemptId, LiveAttempt>,
     max_live: usize,
+    check_budget_ms: u64,
 }
 
 impl<D: Driver> EffectExecutor<D> {
@@ -122,11 +149,17 @@ impl<D: Driver> EffectExecutor<D> {
             isolation: IsolationPolicy::default(),
             live: BTreeMap::new(),
             max_live: DEFAULT_MAX_LIVE_ATTEMPTS,
+            check_budget_ms: DEFAULT_CHECK_BUDGET_MS,
         }
     }
 
     pub fn with_isolation(mut self, policy: IsolationPolicy) -> Self {
         self.isolation = policy;
+        self
+    }
+
+    pub fn with_check_budget_ms(mut self, ms: u64) -> Self {
+        self.check_budget_ms = ms.max(1);
         self
     }
 
@@ -161,7 +194,6 @@ impl<D: Driver> EffectExecutor<D> {
             EffectKind::Report,
         )?;
         let a = self.live.get(&id).ok_or(AgentError::NotFound)?;
-        // Per-attempt fence must still match live authority for report.
         require_fence(&self.authority, a.placement_fence)?;
         Ok(self.make_report(id, a))
     }
@@ -179,6 +211,10 @@ impl<D: Driver> EffectExecutor<D> {
             observation: a.last_obs.clone(),
             stdout_bytes,
             stderr_bytes,
+            ready: a.ready,
+            publication_eligible: a.publication_eligible,
+            attempt_index: a.attempt_index,
+            terminal_reason: a.terminal_reason.clone(),
         }
     }
 
@@ -188,7 +224,6 @@ impl<D: Driver> EffectExecutor<D> {
         desired: &[AcceptedPlacement],
         now_ms: u64,
     ) -> Result<Vec<AttemptReport>, AgentError> {
-        // Grace expiry forces stop+cleanup of everything still running.
         if isolation_grace_expired(&self.authority, &self.isolation, now_ms) {
             let ids: Vec<AttemptId> = self.live.keys().copied().collect();
             for id in ids {
@@ -197,12 +232,10 @@ impl<D: Driver> EffectExecutor<D> {
             return Err(AgentError::Fence(FenceError::GraceExpired));
         }
 
-        // While isolated: continue polling OS state only — no start/stop/report
-        // effects (RUNTIME.md §10 / INV-014).
         if self.authority.is_isolated() {
             let ids: Vec<AttemptId> = self.live.keys().copied().collect();
             for id in ids {
-                self.observe_one(id)?;
+                self.observe_one(id, now_ms)?;
             }
             return Ok(Vec::new());
         }
@@ -210,7 +243,6 @@ impl<D: Driver> EffectExecutor<D> {
         let desired_ids: BTreeMap<AttemptId, &AcceptedPlacement> =
             desired.iter().map(|p| (p.attempt_id, p)).collect();
 
-        // Remove units no longer desired (intent change).
         let obsolete: Vec<AttemptId> = self
             .live
             .keys()
@@ -221,18 +253,19 @@ impl<D: Driver> EffectExecutor<D> {
             self.stop_and_cleanup(id)?;
         }
 
-        // Start missing desired units (finite or continuous).
         for p in desired {
             if self.live.contains_key(&p.attempt_id) {
                 continue;
             }
-            self.start_placement(p)?;
+            self.start_placement(p, now_ms, 1)?;
         }
 
-        // Observe running attempts; finite terminals clean up.
+        let mut budget = CheckBudget::new(self.check_budget_ms);
         let ids: Vec<AttemptId> = self.live.keys().copied().collect();
         for id in ids {
-            self.observe_one(id)?;
+            self.maybe_restart(id, now_ms)?;
+            self.observe_one(id, now_ms)?;
+            self.tick_checks(id, now_ms, &mut budget)?;
         }
 
         Ok(self
@@ -242,12 +275,22 @@ impl<D: Driver> EffectExecutor<D> {
             .collect())
     }
 
-    fn start_placement(&mut self, p: &AcceptedPlacement) -> Result<(), AgentError> {
-        allow_effect(&self.authority, p.placement_fence, EffectKind::Start)?;
+    fn start_placement(
+        &mut self,
+        p: &AcceptedPlacement,
+        now_ms: u64,
+        attempt_index: u32,
+    ) -> Result<(), AgentError> {
+        let effect = if attempt_index > 1 {
+            EffectKind::Restart
+        } else {
+            EffectKind::Start
+        };
+        allow_effect(&self.authority, p.placement_fence, effect)?;
         if !p.capsule_verified {
             return Err(AgentError::UnverifiedCapsule);
         }
-        if self.live.len() >= self.max_live {
+        if attempt_index == 1 && self.live.len() >= self.max_live {
             return Err(AgentError::Capacity);
         }
         if !p.release_root.is_dir() {
@@ -292,32 +335,54 @@ impl<D: Driver> EffectExecutor<D> {
             },
         )?;
 
+        let ready = p.lifecycle.readiness.as_ref().map(|_| false);
+        let publication_eligible = if p.lifecycle.declares_publication {
+            Some(false)
+        } else {
+            None
+        };
+
         self.live.insert(
             p.attempt_id,
             LiveAttempt {
                 unit_id: p.unit_id,
                 placement_fence: p.placement_fence,
                 lifecycle_finite: p.lifecycle_finite,
+                lifecycle: p.lifecycle.clone(),
+                release_root: p.release_root.clone(),
+                runtime: p.runtime.clone(),
+                capsule_verified: p.capsule_verified,
                 attempt_root,
                 running: Some(running),
                 phase: AttemptPhase::Running,
                 last_obs: None,
+                started_ms: now_ms,
+                attempt_index,
+                readiness: CheckRuntime::default(),
+                liveness: CheckRuntime::default(),
+                ready,
+                publication_eligible,
+                terminal_reason: None,
             },
         );
         Ok(())
     }
 
-    fn observe_one(&mut self, id: AttemptId) -> Result<(), AgentError> {
+    fn observe_one(&mut self, id: AttemptId, now_ms: u64) -> Result<(), AgentError> {
         let fence = self
             .live
             .get(&id)
             .map(|a| a.placement_fence)
             .ok_or(AgentError::NotFound)?;
-        // Local OS poll is always allowed for already-running attempts; emitting
-        // a report to the controller is gated separately via [`Self::report`].
         require_fence(&self.authority, fence)?;
 
-        let finite = self.live.get(&id).map(|a| a.lifecycle_finite).unwrap();
+        if matches!(
+            self.live.get(&id).map(|a| &a.phase),
+            Some(AttemptPhase::AwaitingRestart { .. } | AttemptPhase::PermanentFailure)
+        ) {
+            return Ok(());
+        }
+
         let obs = {
             let a = self.live.get_mut(&id).ok_or(AgentError::NotFound)?;
             match a.running.as_mut() {
@@ -340,17 +405,193 @@ impl<D: Driver> EffectExecutor<D> {
             return Ok(());
         }
 
-        // Terminal.
-        if let Some(a) = self.live.get_mut(&id) {
-            a.phase = AttemptPhase::Terminal {
-                exit_code: obs.exit_code,
-            };
+        self.apply_exit_policy(id, obs, now_ms)
+    }
+
+    fn apply_exit_policy(
+        &mut self,
+        id: AttemptId,
+        obs: Observation,
+        now_ms: u64,
+    ) -> Result<(), AgentError> {
+        let isolated = self.authority.is_isolated();
+        let exit = obs.exit_code;
+        let (finite, attempt_index, retry, declares_pub, has_readiness) = {
+            let a = self.live.get_mut(&id).ok_or(AgentError::NotFound)?;
             a.last_obs = Some(obs);
+            (
+                a.lifecycle_finite,
+                a.attempt_index,
+                a.lifecycle.retry.clone(),
+                a.lifecycle.declares_publication,
+                a.lifecycle.readiness.is_some(),
+            )
+        };
+
+        let running = self.live.get_mut(&id).and_then(|a| a.running.take());
+        if let Some(r) = running {
+            let prepared = r.into_prepared();
+            let _ = self.driver.cleanup(prepared);
         }
-        // Finite completions clean up immediately; continuous waits for intent change.
-        // Do not cleanup while isolated — that is a stop effect (INV-014).
-        if finite && !self.authority.is_isolated() {
-            self.cleanup_live(id)?;
+
+        // Finite success → complete and clean (unless isolated).
+        if finite && exit == Some(0) {
+            if let Some(a) = self.live.get_mut(&id) {
+                a.phase = AttemptPhase::Terminal { exit_code: exit };
+                a.terminal_reason = Some(TerminalReason::completed(exit));
+            }
+            if !isolated {
+                return self.cleanup_live(id);
+            }
+            return Ok(());
+        }
+
+        // Failure or continuous exit: optional retry (no default retry).
+        if retry.enabled() && attempt_index < retry.max_attempts && !isolated {
+            let seed = u64::from(id.as_bytes()[15]).saturating_add(now_ms);
+            let backoff = retry.backoff_ms(attempt_index, seed);
+            if let Some(a) = self.live.get_mut(&id) {
+                a.phase = AttemptPhase::AwaitingRestart {
+                    after_ms: now_ms.saturating_add(backoff),
+                };
+                a.terminal_reason = Some(TerminalReason {
+                    code: reasons::RETRY_SCHEDULED,
+                    detail: format!("retry after {backoff}ms (attempt {attempt_index})"),
+                    exit_code: exit,
+                    attempt_index,
+                });
+                a.attempt_index = attempt_index.saturating_add(1);
+                a.ready = if has_readiness { Some(false) } else { None };
+                if declares_pub {
+                    a.publication_eligible = Some(false);
+                }
+            }
+            return Ok(());
+        }
+
+        if let Some(a) = self.live.get_mut(&id) {
+            a.phase = AttemptPhase::PermanentFailure;
+            a.terminal_reason = Some(TerminalReason::permanent(
+                if finite {
+                    "finite workload failed without remaining retries"
+                } else {
+                    "continuous workload exited; no remaining retries"
+                },
+                exit,
+                attempt_index,
+            ));
+        }
+        Ok(())
+    }
+
+    fn maybe_restart(&mut self, id: AttemptId, now_ms: u64) -> Result<(), AgentError> {
+        let after = match self.live.get(&id).map(|a| &a.phase) {
+            Some(AttemptPhase::AwaitingRestart { after_ms }) => *after_ms,
+            _ => return Ok(()),
+        };
+        if now_ms < after {
+            return Ok(());
+        }
+        let p = {
+            let a = self.live.get(&id).ok_or(AgentError::NotFound)?;
+            AcceptedPlacement {
+                attempt_id: id,
+                unit_id: a.unit_id,
+                placement_fence: a.placement_fence,
+                release_root: a.release_root.clone(),
+                runtime: a.runtime.clone(),
+                lifecycle_finite: a.lifecycle_finite,
+                capsule_verified: a.capsule_verified,
+                lifecycle: a.lifecycle.clone(),
+            }
+        };
+        let next_index = self.live.get(&id).map(|a| a.attempt_index).unwrap_or(1);
+        // Remove stale live shell before start_placement re-inserts.
+        self.live.remove(&id);
+        self.start_placement(&p, now_ms, next_index)
+    }
+
+    fn tick_checks(
+        &mut self,
+        id: AttemptId,
+        now_ms: u64,
+        budget: &mut CheckBudget,
+    ) -> Result<(), AgentError> {
+        let Some(a) = self.live.get(&id) else {
+            return Ok(());
+        };
+        if !matches!(a.phase, AttemptPhase::Running) {
+            return Ok(());
+        }
+        let process_running = a.last_obs.as_ref().map(|o| o.running).unwrap_or(true);
+        let started_ms = a.started_ms;
+        let readiness_spec = a.lifecycle.readiness.clone();
+        let liveness_spec = a.lifecycle.liveness.clone();
+        let declares_pub = a.lifecycle.declares_publication;
+
+        if let Some(spec) = readiness_spec {
+            let due = self
+                .live
+                .get(&id)
+                .map(|a| a.readiness.due(now_ms, started_ms, &spec))
+                .unwrap_or(false);
+            if due {
+                let out = run_check(&spec, process_running, budget);
+                if let Some(a) = self.live.get_mut(&id) {
+                    a.readiness.last_run_ms = now_ms;
+                    a.readiness.record(out.ok, &spec);
+                    a.ready = Some(a.readiness.passed);
+                    if declares_pub {
+                        a.publication_eligible = Some(a.readiness.passed);
+                    }
+                }
+            }
+        }
+
+        if let Some(spec) = liveness_spec {
+            let due = self
+                .live
+                .get(&id)
+                .map(|a| a.liveness.due(now_ms, started_ms, &spec))
+                .unwrap_or(false);
+            if due {
+                let out = run_check(&spec, process_running, budget);
+                if let Some(a) = self.live.get_mut(&id) {
+                    a.liveness.last_run_ms = now_ms;
+                    a.liveness.record(out.ok, &spec);
+                    if a.liveness.consecutive_failure >= spec.failure_threshold.max(1) {
+                        // Liveness failure → treat as policy failure (stop child).
+                        a.terminal_reason = Some(TerminalReason {
+                            code: reasons::LIVENESS_FAILED,
+                            detail: out.detail,
+                            exit_code: None,
+                            attempt_index: a.attempt_index,
+                        });
+                    }
+                }
+                let failed = self
+                    .live
+                    .get(&id)
+                    .map(|a| {
+                        a.terminal_reason
+                            .as_ref()
+                            .map(|t| t.code == reasons::LIVENESS_FAILED)
+                            .unwrap_or(false)
+                    })
+                    .unwrap_or(false);
+                if failed {
+                    if let Some(a) = self.live.get_mut(&id) {
+                        if let Some(r) = a.running.as_mut() {
+                            let _ = self.driver.kill(r);
+                        }
+                    }
+                    let obs = Observation {
+                        running: false,
+                        exit_code: None,
+                    };
+                    self.apply_exit_policy(id, obs, now_ms)?;
+                }
+            }
         }
         Ok(())
     }
@@ -381,26 +622,33 @@ impl<D: Driver> EffectExecutor<D> {
     }
 
     fn stop_and_cleanup(&mut self, id: AttemptId) -> Result<(), AgentError> {
-        let fence = self
+        let (fence, grace_ms) = self
             .live
             .get(&id)
-            .map(|a| a.placement_fence)
+            .map(|a| (a.placement_fence, a.lifecycle.stop_grace_ms.max(1)))
             .ok_or(AgentError::NotFound)?;
         allow_effect(&self.authority, fence, EffectKind::Stop)?;
         if let Some(a) = self.live.get_mut(&id) {
             if let Some(r) = a.running.as_mut() {
-                let _ = self.driver.terminate(r, Duration::from_millis(200));
+                let _ = self
+                    .driver
+                    .terminate(r, Duration::from_millis(grace_ms.min(5_000)));
                 let obs = self.driver.observe(r)?;
                 if obs.running {
                     self.driver.kill(r)?;
                 }
             }
             a.phase = AttemptPhase::Stopped;
+            a.terminal_reason = Some(TerminalReason {
+                code: reasons::STOP_SIGNAL,
+                detail: "stopped by intent change or cancel".into(),
+                exit_code: None,
+                attempt_index: a.attempt_index,
+            });
         }
         self.cleanup_live(id)
     }
 
-    /// Isolation grace path: stop without allow_effect (authority already expired).
     fn force_stop_cleanup(&mut self, id: AttemptId) -> Result<(), AgentError> {
         if let Some(a) = self.live.get_mut(&id) {
             if let Some(r) = a.running.as_mut() {
@@ -418,13 +666,11 @@ impl<D: Driver> EffectExecutor<D> {
             let prepared = running.into_prepared();
             self.driver.cleanup(prepared)?;
         } else if a.attempt_root.exists() {
-            // No running handle — still remove the owned root.
             remove_attempt_root(&a.attempt_root)?;
         }
         Ok(())
     }
 
-    /// Test/ops: whether the attempt root still exists on disk.
     pub fn attempt_root_exists(&self, id: AttemptId) -> bool {
         self.live
             .get(&id)

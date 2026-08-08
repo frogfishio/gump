@@ -7,8 +7,10 @@
 //! Scoped secret delivery (GUMP-N009 / S07) lives in [`delivery`].
 //! Fenced reconcile / supervision (GUMP-N012 / R06) lives in [`reconcile`].
 
+mod checks;
 mod delivery;
 mod fence;
+mod lifecycle;
 mod reconcile;
 
 use gump_types::{
@@ -21,9 +23,13 @@ pub use fence::{
     AuthorityState, DEFAULT_ISOLATION_GRACE_MS, EffectKind, FenceError, IsolationPolicy,
     STOP_ON_ISOLATION_CONFIRM_MS, allow_effect, isolation_grace_expired, require_fence,
 };
+pub use lifecycle::{
+    CheckKind, CheckRuntime, CheckSpec, DEFAULT_INITIAL_BACKOFF_MS, DEFAULT_JITTER_PCT,
+    DEFAULT_MAX_BACKOFF_MS, LifecycleContract, RetryPolicy, TerminalReason, reasons,
+};
 pub use reconcile::{
-    AcceptedPlacement, AgentError, AttemptPhase, AttemptReport, DEFAULT_MAX_LIVE_ATTEMPTS,
-    EffectExecutor,
+    AcceptedPlacement, AgentError, AttemptPhase, AttemptReport, DEFAULT_CHECK_BUDGET_MS,
+    DEFAULT_MAX_LIVE_ATTEMPTS, EffectExecutor,
 };
 
 /// Early agent process hardening. Uses [`prepare_service_for_custody`] (policy

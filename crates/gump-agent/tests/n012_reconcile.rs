@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use gump_agent::{
     AcceptedPlacement, AgentError, AttemptPhase, AuthorityState, EffectExecutor, EffectKind,
-    FenceError, IsolationPolicy, allow_effect,
+    FenceError, IsolationPolicy, LifecycleContract, allow_effect,
 };
 use gump_driver::{DriverKind, NativeDriver, RuntimeSpec};
 use gump_types::{AttemptId, UnitId};
@@ -52,6 +52,7 @@ fn placement(
         runtime,
         lifecycle_finite: finite,
         capsule_verified: verified,
+        lifecycle: LifecycleContract::default(),
     }
 }
 
