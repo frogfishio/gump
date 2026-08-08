@@ -912,6 +912,7 @@ dependencies = [
  "gump-crypto",
  "gump-types",
  "rand_core 0.10.1",
+ "rustix",
  "rusty-s3",
  "ureq",
  "url",

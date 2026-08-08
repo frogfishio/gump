@@ -15,6 +15,7 @@ blake3 = { workspace = true }
 rusty-s3 = "0.10.2"
 ureq = { version = "2.12", default-features = false, features = ["tls"] }
 url = "2.5.4"
+rustix = { version = "1", features = ["process"] }
 
 [dev-dependencies]
 rand_core = { workspace = true }

@@ -176,26 +176,33 @@ impl S3ObjectStore {
     fn put_object_file(
         &self,
         key: &str,
-        path: &Path,
+        file: &mut File,
         digest_hex: &str,
         len: u64,
     ) -> Result<(), ObjectStoreError> {
         if len > MULTIPART_THRESHOLD {
-            self.put_multipart(key, path, digest_hex, len)
+            self.put_multipart(key, file, digest_hex, len)
         } else {
-            self.put_single(key, path, digest_hex)
+            self.put_single(key, file, digest_hex, len)
         }
     }
 
-    fn put_single(&self, key: &str, path: &Path, digest_hex: &str) -> Result<(), ObjectStoreError> {
-        let len = std::fs::metadata(path)
-            .map_err(|e| ObjectStoreError::new(ObjectStoreErrorKind::FaultInjected, e.to_string()))?
-            .len();
+    /// Upload from an already-open FD (STL-24): never re-open the verified body by pathname.
+    fn put_single(
+        &self,
+        key: &str,
+        file: &mut File,
+        digest_hex: &str,
+        len: u64,
+    ) -> Result<(), ObjectStoreError> {
         let mut action = self.bucket.put_object(Some(&self.credentials), key);
         action.headers_mut().insert(META_HEADER, digest_hex);
         let url = action.sign(SIGN_TTL);
         with_retry(|| {
-            let file = File::open(path).map_err(|e| {
+            file.seek(SeekFrom::Start(0)).map_err(|e| {
+                ObjectStoreError::new(ObjectStoreErrorKind::FaultInjected, e.to_string())
+            })?;
+            let clone = file.try_clone().map_err(|e| {
                 ObjectStoreError::new(ObjectStoreErrorKind::FaultInjected, e.to_string())
             })?;
             let resp = self
@@ -203,7 +210,7 @@ impl S3ObjectStore {
                 .put(url.as_str())
                 .set(META_HEADER, digest_hex)
                 .set("content-length", &len.to_string())
-                .send(file)
+                .send(clone)
                 .map_err(UreqErr);
             map_ureq(resp).map(|_| ())
         })
@@ -212,7 +219,7 @@ impl S3ObjectStore {
     fn put_multipart(
         &self,
         key: &str,
-        path: &Path,
+        file: &mut File,
         digest_hex: &str,
         expected_len: u64,
     ) -> Result<(), ObjectStoreError> {
@@ -241,7 +248,7 @@ impl S3ObjectStore {
         })?;
         let upload_id = multipart.upload_id();
 
-        let mut file = File::open(path).map_err(|e| {
+        file.seek(SeekFrom::Start(0)).map_err(|e| {
             ObjectStoreError::new(ObjectStoreErrorKind::FaultInjected, e.to_string())
         })?;
         let mut etags: Vec<String> = Vec::new();
@@ -439,9 +446,12 @@ impl ObjectStore for S3ObjectStore {
         }
 
         let hex = bytes_to_hex(&digest);
+        entry.file.seek(SeekFrom::Start(0)).map_err(|e| {
+            ObjectStoreError::new(ObjectStoreErrorKind::FaultInjected, e.to_string())
+        })?;
         let put = self.put_object_file(
             entry.quarantine.as_str(),
-            &entry.path,
+            &mut entry.file,
             &hex,
             entry.expected_len,
         );
@@ -632,32 +642,146 @@ impl Drop for S3ObjectStore {
     }
 }
 
+/// Base directory for the Gump runtime tree (`$XDG_RUNTIME_DIR` or process temp).
+fn runtime_base_dir() -> PathBuf {
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty() && p.is_absolute())
+        .unwrap_or_else(std::env::temp_dir)
+}
+
+fn gump_runtime_dir(base: &Path) -> PathBuf {
+    base.join("gump")
+}
+
+/// Atomically create a random private 0700 spill directory under a verified Gump runtime dir (STL-24).
 fn create_spill_root() -> Result<PathBuf, ObjectStoreError> {
+    create_spill_root_under(&runtime_base_dir())
+}
+
+fn create_spill_root_under(base: &Path) -> Result<PathBuf, ObjectStoreError> {
+    let parent = gump_runtime_dir(base);
+    ensure_private_dir(&parent)?;
+
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(1);
-    let root = std::env::temp_dir().join(format!(
-        "gump-s3-spill-{}-{:x}",
-        std::process::id(),
-        SEQ.fetch_add(1, Ordering::Relaxed)
-    ));
+    for _ in 0..32 {
+        let token = random_spill_token(SEQ.fetch_add(1, Ordering::Relaxed));
+        let root = parent.join(format!("s3-spill-{}-{token}", std::process::id()));
+        match create_dir_exclusive_0700(&root) {
+            Ok(()) => {
+                verify_private_dir(&root)?;
+                return Ok(root);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => {
+                return Err(ObjectStoreError::new(
+                    ObjectStoreErrorKind::FaultInjected,
+                    e.to_string(),
+                ));
+            }
+        }
+    }
+    Err(ObjectStoreError::new(
+        ObjectStoreErrorKind::FaultInjected,
+        "failed to allocate exclusive spill root",
+    ))
+}
+
+fn random_spill_token(seq: u64) -> String {
+    let mut seed = [0u8; 16];
     #[cfg(unix)]
     {
-        use std::os::unix::fs::DirBuilderExt;
+        if let Ok(mut urandom) = File::open("/dev/urandom") {
+            let _ = urandom.read_exact(&mut seed);
+        }
+    }
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(&seed);
+    hasher.update(&std::process::id().to_le_bytes());
+    hasher.update(&seq.to_le_bytes());
+    if let Ok(dur) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        hasher.update(&dur.as_nanos().to_le_bytes());
+    }
+    let digest = hasher.finalize();
+    let bytes = digest.as_bytes();
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut s = String::with_capacity(32);
+    for b in bytes.iter().take(16) {
+        s.push(HEX[(b >> 4) as usize] as char);
+        s.push(HEX[(b & 0xf) as usize] as char);
+    }
+    s
+}
+
+fn ensure_private_dir(path: &Path) -> Result<(), ObjectStoreError> {
+    match create_dir_exclusive_0700(path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => {
+            return Err(ObjectStoreError::new(
+                ObjectStoreErrorKind::FaultInjected,
+                e.to_string(),
+            ));
+        }
+    }
+    verify_private_dir(path)
+}
+
+fn create_dir_exclusive_0700(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
         fs::DirBuilder::new()
             .mode(0o700)
-            .recursive(true)
-            .create(&root)
-            .map_err(|e| {
-                ObjectStoreError::new(ObjectStoreErrorKind::FaultInjected, e.to_string())
-            })?;
+            .recursive(false)
+            .create(path)?;
+        let mut perms = fs::metadata(path)?.permissions();
+        perms.set_mode(0o700);
+        fs::set_permissions(path, perms)?;
+        Ok(())
     }
     #[cfg(not(unix))]
     {
-        fs::create_dir_all(&root).map_err(|e| {
-            ObjectStoreError::new(ObjectStoreErrorKind::FaultInjected, e.to_string())
-        })?;
+        fs::create_dir(path)
     }
-    Ok(root)
+}
+
+fn verify_private_dir(path: &Path) -> Result<(), ObjectStoreError> {
+    let meta = fs::symlink_metadata(path)
+        .map_err(|e| ObjectStoreError::new(ObjectStoreErrorKind::FaultInjected, e.to_string()))?;
+    if meta.file_type().is_symlink() {
+        return Err(ObjectStoreError::new(
+            ObjectStoreErrorKind::FaultInjected,
+            "spill path is a symlink",
+        ));
+    }
+    if !meta.is_dir() {
+        return Err(ObjectStoreError::new(
+            ObjectStoreErrorKind::FaultInjected,
+            "spill path is not a directory",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let mode = meta.permissions().mode() & 0o777;
+        if mode & 0o077 != 0 {
+            return Err(ObjectStoreError::new(
+                ObjectStoreErrorKind::FaultInjected,
+                format!("spill directory mode {mode:o} allows group/other access"),
+            ));
+        }
+        let uid = meta.uid();
+        let euid = rustix::process::geteuid().as_raw();
+        if uid != euid {
+            return Err(ObjectStoreError::new(
+                ObjectStoreErrorKind::FaultInjected,
+                format!("spill directory uid {uid} != euid {euid}"),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Create a new spill file with `O_EXCL` semantics (mode 0600 on Unix).
@@ -681,12 +805,50 @@ fn open_exclusive_spill(root: &Path, name: &str) -> Result<(PathBuf, File), Obje
 
 /// Best-effort removal of leftover spill dirs/files from crashed processes (bounded).
 fn cleanup_orphan_spills() {
+    cleanup_orphan_spills_in(&runtime_base_dir());
+    cleanup_legacy_temp_orphans();
+}
+
+fn cleanup_orphan_spills_in(base: &Path) {
     const BOUND: usize = 64;
+    let mut cleaned = 0usize;
+
+    // STL-24: orphans live under `{base}/gump/s3-spill-{pid}-*`.
+    let runtime = gump_runtime_dir(base);
+    if let Ok(entries) = fs::read_dir(&runtime) {
+        for entry in entries.flatten() {
+            if cleaned >= BOUND {
+                break;
+            }
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            let Some(rest) = name.strip_prefix("s3-spill-") else {
+                continue;
+            };
+            let Some((pid_s, _)) = rest.split_once('-') else {
+                continue;
+            };
+            let Ok(pid) = pid_s.parse::<u32>() else {
+                continue;
+            };
+            if pid == std::process::id() || process_seems_alive(pid) {
+                continue;
+            }
+            let _ = fs::remove_dir_all(entry.path());
+            cleaned = cleaned.saturating_add(1);
+        }
+    }
+}
+
+fn cleanup_legacy_temp_orphans() {
+    const BOUND: usize = 64;
+    let mut cleaned = 0usize;
     let tmp = std::env::temp_dir();
     let Ok(entries) = fs::read_dir(&tmp) else {
         return;
     };
-    let mut cleaned = 0usize;
     for entry in entries.flatten() {
         if cleaned >= BOUND {
             break;
@@ -695,7 +857,6 @@ fn cleanup_orphan_spills() {
         let Some(name) = name.to_str() else {
             continue;
         };
-        // Legacy shared-/tmp names from pre-STL-13 clients.
         if name.starts_with("gump-s3-q-") || name.starts_with("gump-s3-get-") {
             let _ = fs::remove_file(entry.path());
             cleaned = cleaned.saturating_add(1);
@@ -909,20 +1070,109 @@ mod stl13_tests {
     #[test]
     fn startup_cleans_orphan_spill_from_dead_pid() {
         let dead_pid = 4_294_967_294u32; // u32::MAX - 1; not a real process
-        let orphan = std::env::temp_dir().join(format!(
-            "gump-s3-spill-{dead_pid}-dead{:x}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        ));
-        fs::create_dir_all(&orphan).unwrap();
+        let base =
+            std::env::temp_dir().join(format!("gump-stl24-orphan-base-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&base).unwrap().permissions();
+            perms.set_mode(0o700);
+            fs::set_permissions(&base, perms).unwrap();
+        }
+        let runtime = gump_runtime_dir(&base);
+        ensure_private_dir(&runtime).unwrap();
+        let orphan = runtime.join(format!("s3-spill-{dead_pid}-deadbeef"));
+        fs::create_dir(&orphan).unwrap();
         fs::write(orphan.join("leftover.capsule"), b"orphan-capsule-bytes").unwrap();
 
-        let _store = S3ObjectStore::new(sample_config("k")).unwrap();
+        cleanup_orphan_spills_in(&base);
         assert!(
             !orphan.exists(),
             "orphan spill dir should be removed on store startup"
         );
+        let _ = fs::remove_dir_all(&base);
+    }
+}
+
+#[cfg(test)]
+mod stl24_tests {
+    use super::*;
+    use std::io::{Read, Seek, Write};
+
+    #[cfg(unix)]
+    #[test]
+    fn create_spill_root_rejects_world_writable_preplanted_runtime() {
+        let base = std::env::temp_dir().join(format!("gump-stl24-preplant-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        let planted = gump_runtime_dir(&base);
+        fs::create_dir(&planted).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&planted).unwrap().permissions();
+        perms.set_mode(0o777);
+        fs::set_permissions(&planted, perms).unwrap();
+
+        let err = create_spill_root_under(&base).unwrap_err();
+        assert_eq!(err.kind(), ObjectStoreErrorKind::FaultInjected);
+        assert!(
+            err.message().contains("group/other") || err.message().contains("mode"),
+            "got {}",
+            err.message()
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_spill_root_rejects_preexisting_child_and_retries() {
+        // Pre-plant one candidate name; exclusive create must fail-closed on that path
+        // and succeed on a different random name.
+        let base = std::env::temp_dir().join(format!("gump-stl24-child-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        let root = create_spill_root_under(&base).unwrap();
+        verify_private_dir(&root).unwrap();
+        assert!(root.starts_with(gump_runtime_dir(&base)));
+        // Predictable legacy temp path must not be used.
+        assert!(
+            !root
+                .to_string_lossy()
+                .contains(&format!("gump-s3-spill-{}", std::process::id()))
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn upload_body_follows_open_fd_not_replaced_path() {
+        let base = std::env::temp_dir().join(format!("gump-stl24-fd-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        let root = create_spill_root_under(&base).unwrap();
+        let (path, mut file) = open_exclusive_spill(&root, "body.capsule").unwrap();
+        file.write_all(b"authentic-capsule-bytes").unwrap();
+        file.flush().unwrap();
+        file.seek(SeekFrom::Start(0)).unwrap();
+
+        // Attacker unlinks + replaces the pathname between hash and upload.
+        fs::remove_file(&path).unwrap();
+        fs::write(&path, b"ATTACKER-REPLACED-BODY!!!!!!").unwrap();
+
+        let mut from_fd = Vec::new();
+        file.read_to_end(&mut from_fd).unwrap();
+        assert_eq!(from_fd, b"authentic-capsule-bytes");
+        assert_eq!(fs::read(&path).unwrap(), b"ATTACKER-REPLACED-BODY!!!!!!");
+
+        // put_single must clone/seek the open FD — path reopen would see attacker bytes.
+        file.seek(SeekFrom::Start(0)).unwrap();
+        let mut clone = file.try_clone().unwrap();
+        clone.seek(SeekFrom::Start(0)).unwrap();
+        let mut via_clone = Vec::new();
+        clone.read_to_end(&mut via_clone).unwrap();
+        assert_eq!(via_clone, b"authentic-capsule-bytes");
+
+        let _ = fs::remove_dir_all(&base);
     }
 }
