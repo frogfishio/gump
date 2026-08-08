@@ -5,7 +5,7 @@ use std::io::{Read, Write};
 use super::error::{ArchiveError, ArchiveErrorKind};
 use super::extract::ExtractLimits;
 use super::path::validate_archive_path;
-use super::ustar::{parse_ustar, write_ustar};
+use super::ustar::{parse_ustar, ustar_encoded_len, write_ustar_to};
 
 /// Archive format identifier carried by `ArchiveMetadataV1`.
 pub const ARCHIVE_FORMAT: &str = "ustar+zstd/1";
@@ -56,8 +56,32 @@ impl ArchiveEntry {
 
 /// Write deterministic ustar bytes then compress as one Zstandard frame.
 pub fn pack_archive(entries: &[ArchiveEntry]) -> Result<Vec<u8>, ArchiveError> {
-    let ustar = write_ustar(entries)?;
-    compress_ustar(&ustar)
+    let mut out = Vec::new();
+    pack_archive_to(entries, &mut out)?;
+    Ok(out)
+}
+
+/// Stream ustar+zstd into `out` without buffering the full ustar or compressed body (STL-14).
+pub fn pack_archive_to<W: Write>(entries: &[ArchiveEntry], out: W) -> Result<W, ArchiveError> {
+    let pledged = ustar_encoded_len(entries)?;
+    let mut encoder = zstd::stream::Encoder::new(out, ZSTD_LEVEL)
+        .map_err(|e| ArchiveError::new(ArchiveErrorKind::Compress, e.to_string()))?;
+    encoder
+        .include_checksum(true)
+        .map_err(|e| ArchiveError::new(ArchiveErrorKind::Compress, e.to_string()))?;
+    encoder
+        .include_contentsize(true)
+        .map_err(|e| ArchiveError::new(ArchiveErrorKind::Compress, e.to_string()))?;
+    encoder
+        .include_dictid(false)
+        .map_err(|e| ArchiveError::new(ArchiveErrorKind::Compress, e.to_string()))?;
+    encoder
+        .set_pledged_src_size(Some(pledged))
+        .map_err(|e| ArchiveError::new(ArchiveErrorKind::Compress, e.to_string()))?;
+    write_ustar_to(entries, &mut encoder)?;
+    encoder
+        .finish()
+        .map_err(|e| ArchiveError::new(ArchiveErrorKind::Compress, e.to_string()))
 }
 
 /// Decompress then parse ustar under extract ceilings.

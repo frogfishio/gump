@@ -5,13 +5,13 @@
 
 use std::fs;
 use std::io::ErrorKind;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use gump_types::CapsuleId;
 
 use super::error::{ArchiveError, ArchiveErrorKind};
-use super::extract::{ExtractLimits, extract_entries};
-use super::pack::unpack_archive;
+use super::extract::{ExtractLimits, extract_ustar_zstd_from_reader};
 
 /// Result of materializing an application archive into the local apps cache.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -26,10 +26,13 @@ pub struct MaterializedRelease {
 /// Extraction happens in an exclusive random staging directory beside the
 /// target, then an atomic rename publishes the tree. On failure only this
 /// operation's staging dir is removed — never the published target (STL-06).
-pub fn materialize_application_archive(
+///
+/// `archive_zst` is a streaming reader — the API does not require a complete
+/// in-memory archive slice (STL-14 / CONFORMANCE).
+pub fn materialize_application_archive<R: Read>(
     state_root: &Path,
     capsule_id: CapsuleId,
-    archive_zst: &[u8],
+    archive_zst: R,
     limits: &ExtractLimits,
 ) -> Result<MaterializedRelease, ArchiveError> {
     let apps = state_root.join("apps");
@@ -44,14 +47,13 @@ pub fn materialize_application_archive(
 
     let staging = create_exclusive_staging(&apps)?;
     let result = (|| {
-        let entries = unpack_archive(archive_zst, limits)?;
-        extract_entries(&staging, &entries, limits)?;
+        let file_count = extract_ustar_zstd_from_reader(archive_zst, &staging, limits)?;
         // No-replace publish: rename fails if another winner already occupies target.
         publish_no_replace(&staging, &target)?;
         Ok(MaterializedRelease {
             root: target.clone(),
             capsule_id,
-            file_count: entries.len(),
+            file_count,
         })
     })();
 

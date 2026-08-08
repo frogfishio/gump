@@ -1,5 +1,7 @@
 //! POSIX ustar writer/parser with Gump normalization rules.
 
+use std::io::Write;
+
 use super::error::{ArchiveError, ArchiveErrorKind};
 use super::pack::{ArchiveEntry, EntryKind};
 use super::path::validate_archive_path;
@@ -10,25 +12,54 @@ const USTAR_VERSION: &[u8; 2] = b"00";
 
 /// Serialize entries to a deterministic ustar byte stream (sorted by path).
 pub fn write_ustar(entries: &[ArchiveEntry]) -> Result<Vec<u8>, ArchiveError> {
-    let mut sorted = entries.to_vec();
-    sorted.sort_by(|a, b| a.path.as_bytes().cmp(b.path.as_bytes()));
-    // Reject duplicates after sort.
-    for w in sorted.windows(2) {
-        if w[0].path == w[1].path {
+    let mut out = Vec::new();
+    write_ustar_to(entries, &mut out)?;
+    Ok(out)
+}
+
+/// Stream a deterministic ustar archive into `out` (sorted by path).
+///
+/// Does not buffer the full archive: headers and file payloads are written
+/// entry-by-entry (STL-14 / CONFORMANCE streaming extract contract).
+pub fn write_ustar_to<W: Write>(entries: &[ArchiveEntry], out: &mut W) -> Result<(), ArchiveError> {
+    let order = sorted_entry_order(entries)?;
+    for &i in &order {
+        write_entry(out, &entries[i])?;
+    }
+    out.write_all(&[0u8; BLOCK])
+        .map_err(|e| ArchiveError::new(ArchiveErrorKind::Io, e.to_string()))?;
+    out.write_all(&[0u8; BLOCK])
+        .map_err(|e| ArchiveError::new(ArchiveErrorKind::Io, e.to_string()))?;
+    Ok(())
+}
+
+/// Encoded ustar byte length for `entries` in lexical path order (incl. end blocks).
+pub fn ustar_encoded_len(entries: &[ArchiveEntry]) -> Result<u64, ArchiveError> {
+    let order = sorted_entry_order(entries)?;
+    let mut n = 0u64;
+    for &i in &order {
+        n = n.saturating_add(BLOCK as u64);
+        if entries[i].kind == EntryKind::File {
+            let len = entries[i].data.len() as u64;
+            n = n.saturating_add(len);
+            n = n.saturating_add((BLOCK as u64 - (len % BLOCK as u64)) % BLOCK as u64);
+        }
+    }
+    Ok(n.saturating_add(2 * BLOCK as u64))
+}
+
+fn sorted_entry_order(entries: &[ArchiveEntry]) -> Result<Vec<usize>, ArchiveError> {
+    let mut order: Vec<usize> = (0..entries.len()).collect();
+    order.sort_by(|&a, &b| entries[a].path.as_bytes().cmp(entries[b].path.as_bytes()));
+    for w in order.windows(2) {
+        if entries[w[0]].path == entries[w[1]].path {
             return Err(ArchiveError::new(
                 ArchiveErrorKind::Path,
-                format!("duplicate archive path {}", w[0].path),
+                format!("duplicate archive path {}", entries[w[0]].path),
             ));
         }
     }
-
-    let mut out = Vec::new();
-    for entry in &sorted {
-        write_entry(&mut out, entry)?;
-    }
-    out.extend_from_slice(&[0u8; BLOCK]);
-    out.extend_from_slice(&[0u8; BLOCK]);
-    Ok(out)
+    Ok(order)
 }
 
 /// Parse a Gump-normalized ustar stream into entries (order preserved = lexical).
@@ -107,7 +138,7 @@ pub fn parse_ustar(
     Ok(entries)
 }
 
-fn write_entry(out: &mut Vec<u8>, entry: &ArchiveEntry) -> Result<(), ArchiveError> {
+fn write_entry<W: Write>(out: &mut W, entry: &ArchiveEntry) -> Result<(), ArchiveError> {
     let path = validate_archive_path(
         entry.path.trim_end_matches('/'),
         entry.kind == EntryKind::Directory,
@@ -152,16 +183,21 @@ fn write_entry(out: &mut Vec<u8>, entry: &ArchiveEntry) -> Result<(), ArchiveErr
     header[154] = 0;
     header[155] = b' ';
 
-    out.extend_from_slice(&header);
+    out.write_all(&header)
+        .map_err(|e| ArchiveError::new(ArchiveErrorKind::Io, e.to_string()))?;
     if entry.kind == EntryKind::File {
-        out.extend_from_slice(&entry.data);
+        out.write_all(&entry.data)
+            .map_err(|e| ArchiveError::new(ArchiveErrorKind::Io, e.to_string()))?;
         let pad = (BLOCK - (entry.data.len() % BLOCK)) % BLOCK;
-        out.extend(std::iter::repeat(0u8).take(pad));
+        if pad > 0 {
+            out.write_all(&[0u8; BLOCK][..pad])
+                .map_err(|e| ArchiveError::new(ArchiveErrorKind::Io, e.to_string()))?;
+        }
     }
     Ok(())
 }
 
-fn parse_header(header: &[u8]) -> Result<(String, EntryKind, bool, u64), ArchiveError> {
+pub(crate) fn parse_header(header: &[u8]) -> Result<(String, EntryKind, bool, u64), ArchiveError> {
     if &header[257..263] != USTAR_MAGIC {
         return Err(ArchiveError::new(
             ArchiveErrorKind::Format,

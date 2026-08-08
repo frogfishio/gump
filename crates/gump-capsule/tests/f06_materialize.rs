@@ -36,8 +36,13 @@ fn materializes_archive_under_apps_capsule_id() {
     let state = tmp("state");
     let archive = sample_archive();
     let capsule = CapsuleId::new();
-    let mat = materialize_application_archive(&state, capsule, &archive, &ExtractLimits::default())
-        .unwrap();
+    let mat = materialize_application_archive(
+        &state,
+        capsule,
+        archive.as_slice(),
+        &ExtractLimits::default(),
+    )
+    .unwrap();
     assert_eq!(mat.capsule_id, capsule);
     assert_eq!(mat.root, state.join("apps").join(capsule.to_hyphenated()));
     assert_eq!(
@@ -45,8 +50,13 @@ fn materializes_archive_under_apps_capsule_id() {
         b"#!/bin/sh\nexit 0\n"
     );
     // Second materialize of same id fails (cache exists).
-    let err = materialize_application_archive(&state, capsule, &archive, &ExtractLimits::default())
-        .unwrap_err();
+    let err = materialize_application_archive(
+        &state,
+        capsule,
+        archive.as_slice(),
+        &ExtractLimits::default(),
+    )
+    .unwrap_err();
     assert_eq!(err.kind(), ArchiveErrorKind::Io);
     // STL-06: failed second attempt must not wipe the winner.
     assert_eq!(
@@ -73,7 +83,7 @@ fn concurrent_same_capsule_one_winner_preserves_publish() {
             materialize_application_archive(
                 &state,
                 capsule,
-                archive.as_ref(),
+                archive.as_slice(),
                 &ExtractLimits::default(),
             )
         }));
@@ -126,7 +136,7 @@ fn failed_extract_does_not_create_target_or_leave_staging() {
     let err = materialize_application_archive(
         &state,
         capsule,
-        b"not-a-valid-archive",
+        &b"not-a-valid-archive"[..],
         &ExtractLimits::default(),
     )
     .unwrap_err();
