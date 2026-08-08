@@ -18,7 +18,10 @@ pub use authority::{
     AgentFenceError, AgentFenceMemory, ControllerAuthority, ControllerError, EffectCommand,
     EffectReject, FenceToken,
 };
-pub use cluster_state::{ApplyOutcome, ClusterState, RaftCommand, RaftResponse};
+pub use cluster_state::{
+    ApplyOutcome, ClusterState, IDEMPOTENCY_MAX_ENTRIES, IDEMPOTENCY_TTL_MS, RaftCommand,
+    RaftResponse,
+};
 pub use membership::{
     ClusterIncarnation, JointConfig, JointError, MemberId, MemberPhase, MemberRecord,
     MembershipCluster, MembershipError, MembershipEvent, SnapshotOffer, SnapshotTransferError,

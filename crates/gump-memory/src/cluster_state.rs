@@ -3,6 +3,10 @@
 //! Authoritative mutations enter only as [`RaftCommand`] entries. OpenRaft's
 //! `StoredMembership` is the sole voter/learner authority; application member
 //! phase tracking must not decide commit quorums.
+//!
+//! Idempotency receipts are bounded (D014 / STL-15): 24h TTL + 100_000 ceiling,
+//! keyed to the committed record-machine clock. External crates mutate state
+//! only through [`ClusterState::apply`] — there is no public `records_mut`.
 
 use std::collections::BTreeMap;
 
@@ -10,6 +14,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::authority::{ControllerAuthority, FenceToken};
 use crate::records::{ApplyError, ApplyResult, Command, TypedRecordMachine};
+
+/// D014 / PROTOCOL §15: max retained operation receipts in authoritative memory.
+pub const IDEMPOTENCY_MAX_ENTRIES: usize = 100_000;
+/// D014: receipt TTL measured against committed cluster time (`TypedRecordMachine::now_ms`).
+pub const IDEMPOTENCY_TTL_MS: u64 = 24 * 60 * 60 * 1_000;
 
 /// Serializable OpenRaft application request (replaces placeholder ClientRequest).
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -78,10 +87,13 @@ struct DesiredEntry {
 struct IdempotencyEntry {
     request_digest: [u8; 32],
     response: RaftResponse,
+    /// Committed clock when the Applied response was recorded (STL-02 time).
+    #[serde(default)]
+    recorded_at_ms: u64,
 }
 
 /// One cluster's replicated application state (RAM-only; snapshotted in-memory).
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ClusterState {
     records: TypedRecordMachine,
     controller: ControllerAuthority,
@@ -89,6 +101,37 @@ pub struct ClusterState {
     desired: BTreeMap<(String, String), DesiredEntry>,
     /// Operation receipts retained with the mutation that produced them.
     idempotency: BTreeMap<[u8; 16], IdempotencyEntry>,
+    /// Receipt ceiling (D014). Skipped in snapshots — always restored to defaults.
+    #[serde(skip, default = "default_idempotency_max")]
+    idempotency_max_entries: usize,
+    /// Receipt TTL in committed-time ms (D014).
+    #[serde(skip, default = "default_idempotency_ttl")]
+    idempotency_ttl_ms: u64,
+    /// Min `recorded_at_ms` among receipts — skips full TTL scans when nothing can expire.
+    #[serde(skip, default)]
+    idempotency_oldest_ms: Option<u64>,
+}
+
+fn default_idempotency_max() -> usize {
+    IDEMPOTENCY_MAX_ENTRIES
+}
+
+fn default_idempotency_ttl() -> u64 {
+    IDEMPOTENCY_TTL_MS
+}
+
+impl Default for ClusterState {
+    fn default() -> Self {
+        Self {
+            records: TypedRecordMachine::default(),
+            controller: ControllerAuthority::default(),
+            desired: BTreeMap::new(),
+            idempotency: BTreeMap::new(),
+            idempotency_max_entries: IDEMPOTENCY_MAX_ENTRIES,
+            idempotency_ttl_ms: IDEMPOTENCY_TTL_MS,
+            idempotency_oldest_ms: None,
+        }
+    }
 }
 
 impl ClusterState {
@@ -96,12 +139,17 @@ impl ClusterState {
         Self::default()
     }
 
-    pub fn records(&self) -> &TypedRecordMachine {
-        &self.records
+    /// Test/harness constructor with custom receipt bounds (production uses D014 defaults).
+    pub fn with_idempotency_limits(max_entries: usize, ttl_ms: u64) -> Self {
+        Self {
+            idempotency_max_entries: max_entries.max(1),
+            idempotency_ttl_ms: ttl_ms,
+            ..Self::default()
+        }
     }
 
-    pub fn records_mut(&mut self) -> &mut TypedRecordMachine {
-        &mut self.records
+    pub fn records(&self) -> &TypedRecordMachine {
+        &self.records
     }
 
     pub fn controller(&self) -> &ControllerAuthority {
@@ -114,15 +162,24 @@ impl ClusterState {
             .map(|e| e.generation)
     }
 
+    /// Number of retained idempotency receipts (test/ops introspection).
+    pub fn idempotency_len(&self) -> usize {
+        self.idempotency.len()
+    }
+
     pub fn apply(&mut self, cmd: RaftCommand) -> RaftResponse {
-        match cmd {
+        self.expire_idempotency_ttl();
+        let response = match cmd {
             RaftCommand::Idempotent {
                 operation_id,
                 request_digest,
                 inner,
             } => self.apply_idempotent(operation_id, request_digest, *inner),
             other => self.apply_inner(other),
-        }
+        };
+        // Time-advancing commands expire receipts against the *new* committed clock.
+        self.expire_idempotency_ttl();
+        response
     }
 
     fn apply_idempotent(
@@ -146,15 +203,57 @@ impl ClusterState {
         }
         let response = self.apply_inner(inner);
         if matches!(response, RaftResponse::Applied(_)) {
+            while self.idempotency.len() >= self.idempotency_max_entries {
+                self.evict_one_idempotency_by_key();
+            }
+            let recorded_at_ms = self.records.now_ms();
             self.idempotency.insert(
                 operation_id,
                 IdempotencyEntry {
                     request_digest,
                     response: response.clone(),
+                    recorded_at_ms,
                 },
             );
+            self.note_idempotency_time(recorded_at_ms);
         }
         response
+    }
+
+    /// Drop expired receipts using committed time (fast-path when nothing can expire).
+    fn expire_idempotency_ttl(&mut self) {
+        let now = self.records.now_ms();
+        let ttl = self.idempotency_ttl_ms;
+        let Some(oldest) = self.idempotency_oldest_ms else {
+            return;
+        };
+        if now.saturating_sub(oldest) <= ttl {
+            return;
+        }
+        self.idempotency
+            .retain(|_, e| now.saturating_sub(e.recorded_at_ms) <= ttl);
+        self.idempotency_oldest_ms = self.idempotency.values().map(|e| e.recorded_at_ms).min();
+    }
+
+    /// Deterministic ceiling eviction: remove the lexicographically smallest operation id.
+    fn evict_one_idempotency_by_key(&mut self) {
+        let Some(oldest_key) = self.idempotency.keys().next().copied() else {
+            return;
+        };
+        if let Some(removed) = self.idempotency.remove(&oldest_key) {
+            if self.idempotency_oldest_ms == Some(removed.recorded_at_ms) {
+                self.idempotency_oldest_ms =
+                    self.idempotency.values().map(|e| e.recorded_at_ms).min();
+            }
+        }
+    }
+
+    fn note_idempotency_time(&mut self, recorded_at_ms: u64) {
+        self.idempotency_oldest_ms = Some(
+            self.idempotency_oldest_ms
+                .map(|o| o.min(recorded_at_ms))
+                .unwrap_or(recorded_at_ms),
+        );
     }
 
     fn apply_inner(&mut self, cmd: RaftCommand) -> RaftResponse {
