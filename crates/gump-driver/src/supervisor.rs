@@ -9,6 +9,7 @@
 use std::collections::VecDeque;
 use std::io::Read;
 use std::process::{Child, Command};
+use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -91,9 +92,16 @@ pub trait PipeChunkSink: Send + Sync {
 
 #[derive(Debug)]
 pub struct PipeDrains {
-    joins: Vec<JoinHandle<()>>,
+    joins: Vec<DrainJoin>,
     pub stdout: CaptureRing,
     pub stderr: CaptureRing,
+}
+
+#[derive(Debug)]
+struct DrainJoin {
+    handle: JoinHandle<()>,
+    /// Signaled when the drain thread finishes (EOF / read error).
+    done: Receiver<()>,
 }
 
 impl PipeDrains {
@@ -136,15 +144,17 @@ impl PipeDrains {
         let joins = std::mem::take(&mut self.joins);
         for j in joins {
             let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                // Detach: thread exits when pipe EOF arrives after child death.
-                drop(j);
-                continue;
+            match j.done.recv_timeout(remaining) {
+                Ok(()) => {
+                    // Drain finished; reap the thread.
+                    let _ = j.handle.join();
+                }
+                Err(_) => {
+                    // Deadline hit (or disconnect): detach so observe/kill can proceed.
+                    // Thread exits when pipe EOF arrives after process-group cleanup.
+                    drop(j.handle);
+                }
             }
-            // JoinHandle has no timed join in std; poll with try pattern via thread park is
-            // unavailable — join immediately (drains exit promptly on EOF after kill).
-            let _ = j.join();
-            let _ = remaining;
         }
     }
 }
@@ -154,7 +164,8 @@ fn spawn_drain<R: Read + Send + 'static>(
     mut reader: R,
     ring: CaptureRing,
     telemetry: Option<Arc<dyn PipeChunkSink>>,
-) -> JoinHandle<()> {
+) -> DrainJoin {
+    let (done_tx, done_rx) = mpsc::channel();
     thread::Builder::new()
         .name("gump-pipe-drain".into())
         .spawn(move || {
@@ -173,6 +184,11 @@ fn spawn_drain<R: Read + Send + 'static>(
                     Err(_) => break,
                 }
             }
+            let _ = done_tx.send(());
+        })
+        .map(|handle| DrainJoin {
+            handle,
+            done: done_rx,
         })
         .expect("spawn pipe drain")
 }

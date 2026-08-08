@@ -10,8 +10,8 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use gump_driver::{
-    AttemptContext, CAPTURE_RING_BYTES, Driver, DriverKind, IoEndpoints, NativeDriver, ReleaseRoot,
-    ResourceGrant, RuntimeSpec, SecretPlan, Signal, StartFence,
+    AttemptContext, CAPTURE_RING_BYTES, DRAIN_JOIN_TIMEOUT, Driver, DriverKind, IoEndpoints,
+    NativeDriver, ReleaseRoot, ResourceGrant, RuntimeSpec, SecretPlan, Signal, StartFence,
 };
 use gump_types::AttemptId;
 
@@ -284,6 +284,56 @@ fn fork_and_exit_parent_then_kill_tree() {
         std::thread::sleep(Duration::from_millis(20));
     }
     driver.kill(&mut running).unwrap();
+    assert!(!driver.observe(&mut running).unwrap().running);
+    let _ = fs::remove_dir_all(root);
+}
+
+/// STL-12: descendant holding both pipes must not hang `observe` past the drain deadline.
+#[test]
+fn observe_returns_when_descendant_holds_both_pipes() {
+    let _guard = test_lock();
+    let root = tmp("hold-pipes");
+    // Parent exits; child keeps stdout+stderr open (inherited from the shell).
+    // Prior bug: join_bounded ignored its deadline and blocked on JoinHandle::join.
+    write_executable(
+        &root.join("bin/holdpipes"),
+        concat!("#!/bin/sh\n", "sleep 30 &\n", "printf ready\n", "exit 0\n",),
+    );
+    let release = ReleaseRoot::new(&root);
+    let driver = NativeDriver::new();
+    let (mut running, _) = start_native(&release, "bin/holdpipes", true);
+
+    let start = Instant::now();
+    let mut saw_exit = false;
+    while start.elapsed() < Duration::from_secs(2) {
+        let obs = driver.observe(&mut running).unwrap();
+        if !obs.running {
+            saw_exit = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        saw_exit,
+        "observe must return after parent exit even when a descendant holds both pipes \
+         (drain join deadline {:?}, elapsed {:?})",
+        DRAIN_JOIN_TIMEOUT,
+        start.elapsed()
+    );
+    // Drain join is bounded at 250ms; allow a little scheduling slack over that.
+    assert!(
+        start.elapsed() < DRAIN_JOIN_TIMEOUT + Duration::from_secs(1),
+        "observe hung past drain deadline: {:?}",
+        start.elapsed()
+    );
+
+    let kill_start = Instant::now();
+    driver.kill(&mut running).unwrap();
+    assert!(
+        kill_start.elapsed() < Duration::from_secs(2),
+        "kill/join must stay bounded with detached drains: {:?}",
+        kill_start.elapsed()
+    );
     assert!(!driver.observe(&mut running).unwrap().running);
     let _ = fs::remove_dir_all(root);
 }
