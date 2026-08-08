@@ -88,6 +88,12 @@ fn open_store() -> Option<S3ObjectStore> {
     }
     match S3ObjectStore::new(cfg) {
         Ok(s) => Some(s),
+        Err(e)
+            if e.kind() == ObjectStoreErrorKind::InvalidArgument
+                && e.message().contains("If-None-Match") =>
+        {
+            panic!("S3 capability probe failed (STL-19): {e}");
+        }
         Err(e) => {
             eprintln!("skip: S3ObjectStore::new failed: {e}");
             None
@@ -108,6 +114,7 @@ fn s3_config_rejects_partial_static_creds() {
         access_key_id: Some("only-ak".into()),
         secret_access_key: None,
         force_path_style: true,
+        require_conditional_copy: false,
     };
     let err = S3ObjectStore::new(cfg).unwrap_err();
     assert_eq!(err.kind(), ObjectStoreErrorKind::InvalidArgument);

@@ -3,6 +3,8 @@
 //! Authority: DECISIONS D008 / RUNTIME §13 / STL-07. Quarantine streams to a
 //! spill file then PUT (multipart above 8 MiB); promote uses server-side
 //! `CopyObject` via `x-amz-copy-source` with `If-None-Match: *`.
+//! Construction probes that the endpoint honors conditional copy (STL-19) and
+//! rejects providers that ignore the precondition.
 
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
@@ -45,6 +47,9 @@ pub struct S3Config {
     pub secret_access_key: Option<Secret<String>>,
     /// Path-style addressing (required for most MinIO / local endpoints).
     pub force_path_style: bool,
+    /// When true (default), reject endpoints that ignore `If-None-Match` on
+    /// `CopyObject` (D008 / STL-19). Disable only for offline unit tests.
+    pub require_conditional_copy: bool,
 }
 
 impl S3Config {
@@ -57,6 +62,7 @@ impl S3Config {
             access_key_id: None,
             secret_access_key: None,
             force_path_style: true,
+            require_conditional_copy: true,
         }
     }
 
@@ -75,6 +81,7 @@ impl S3Config {
             access_key_id: Some(access_key_id.into()),
             secret_access_key: Some(Secret::new(secret_access_key.into())),
             force_path_style: true,
+            require_conditional_copy: true,
         }
     }
 }
@@ -136,6 +143,9 @@ impl S3ObjectStore {
             )
         })?;
         let agent = Agent::new();
+        if config.require_conditional_copy {
+            probe_conditional_copy(&agent, &bucket, &bucket_name, &credentials)?;
+        }
         let spill_root = create_spill_root()?;
         Ok(Self {
             agent,
@@ -542,8 +552,9 @@ impl ObjectStore for S3ObjectStore {
             ));
         }
 
-        // Prefer an authoritative HEAD before COPY: some S3-compatible servers
-        // (notably older/local MinIO builds) do not honor If-None-Match on CopyObject.
+        // Fast path when destination already exists. This is not a substitute for
+        // conditional copy — absent destinations always go through If-None-Match
+        // CopyObject (capability validated at construction; STL-19 / D008).
         match self.head_meta(dest.as_str()) {
             Ok((existing_len, existing_digest)) => {
                 if existing_digest == digest && existing_len == len {
@@ -562,44 +573,14 @@ impl ObjectStore for S3ObjectStore {
             Err(e) => return Err(e),
         }
 
-        let copy_source = format!("/{}/{}", self.bucket_name, source.as_str());
-        let mut action = self
-            .bucket
-            .put_object(Some(&self.credentials), dest.as_str());
-        action
-            .headers_mut()
-            .insert("x-amz-copy-source", copy_source.as_str());
-        action
-            .headers_mut()
-            .insert("x-amz-metadata-directive", "COPY");
-        action.headers_mut().insert("if-none-match", "*");
-        let url = action.sign(SIGN_TTL);
-
-        let result = with_retry(|| {
-            let resp = self
-                .agent
-                .put(url.as_str())
-                .set("x-amz-copy-source", &copy_source)
-                .set("x-amz-metadata-directive", "COPY")
-                .set("if-none-match", "*")
-                .set("content-length", "0")
-                .send(&[] as &[u8])
-                .map_err(UreqErr);
-            match resp {
-                Ok(r) if (200..300).contains(&r.status()) => Ok(()),
-                Ok(r) if r.status() == 412 => Err(ObjectStoreError::new(
-                    ObjectStoreErrorKind::Conflict,
-                    "precondition failed",
-                )),
-                Ok(r) => Err(http_status_err(r)),
-                Err(UreqErr(ureq::Error::Status(412, _))) => Err(ObjectStoreError::new(
-                    ObjectStoreErrorKind::Conflict,
-                    "precondition failed",
-                )),
-                Err(e) => map_ureq(Err(e)),
-            }
-        });
-
+        let result = copy_object_if_none_match(
+            &self.agent,
+            &self.bucket,
+            &self.bucket_name,
+            &self.credentials,
+            source.as_str(),
+            dest.as_str(),
+        );
         match result {
             Ok(()) => Ok(ObjectEvidence {
                 key: dest.clone(),
@@ -607,7 +588,7 @@ impl ObjectStore for S3ObjectStore {
                 digest,
             }),
             Err(e) if e.kind() == ObjectStoreErrorKind::Conflict => {
-                // Lost a race: another writer landed first.
+                // Lost a race: another writer landed first under If-None-Match.
                 let (existing_len, existing_digest) = self.head_meta(dest.as_str())?;
                 if existing_digest == digest && existing_len == len {
                     Ok(ObjectEvidence {
@@ -640,6 +621,125 @@ impl Drop for S3ObjectStore {
         self.uploads.clear();
         let _ = fs::remove_dir_all(&self.spill_root);
     }
+}
+
+/// Put a small object with `x-amz-meta-gump-blake3` (capability probe / helpers).
+fn put_object_bytes(
+    agent: &Agent,
+    bucket: &Bucket,
+    credentials: &Credentials,
+    key: &str,
+    body: &[u8],
+    digest_hex: &str,
+) -> Result<(), ObjectStoreError> {
+    let mut action = bucket.put_object(Some(credentials), key);
+    action.headers_mut().insert(META_HEADER, digest_hex);
+    let url = action.sign(SIGN_TTL);
+    with_retry(|| {
+        map_ureq(
+            agent
+                .put(url.as_str())
+                .set(META_HEADER, digest_hex)
+                .set("content-length", &body.len().to_string())
+                .send(body)
+                .map_err(UreqErr),
+        )
+        .map(|_| ())
+    })
+}
+
+fn delete_object_key(
+    agent: &Agent,
+    bucket: &Bucket,
+    credentials: &Credentials,
+    key: &str,
+) -> Result<(), ObjectStoreError> {
+    let action = bucket.delete_object(Some(credentials), key);
+    let url = action.sign(SIGN_TTL);
+    with_retry(|| map_ureq(agent.delete(url.as_str()).call().map_err(UreqErr)).map(|_| ()))
+}
+
+/// Server-side CopyObject with `If-None-Match: *` (D008 / STL-19 authority).
+fn copy_object_if_none_match(
+    agent: &Agent,
+    bucket: &Bucket,
+    bucket_name: &str,
+    credentials: &Credentials,
+    source: &str,
+    dest: &str,
+) -> Result<(), ObjectStoreError> {
+    let copy_source = format!("/{bucket_name}/{source}");
+    let mut action = bucket.put_object(Some(credentials), dest);
+    action
+        .headers_mut()
+        .insert("x-amz-copy-source", copy_source.as_str());
+    action
+        .headers_mut()
+        .insert("x-amz-metadata-directive", "COPY");
+    action.headers_mut().insert("if-none-match", "*");
+    let url = action.sign(SIGN_TTL);
+    with_retry(|| {
+        let resp = agent
+            .put(url.as_str())
+            .set("x-amz-copy-source", &copy_source)
+            .set("x-amz-metadata-directive", "COPY")
+            .set("if-none-match", "*")
+            .set("content-length", "0")
+            .send(&[] as &[u8])
+            .map_err(UreqErr);
+        match resp {
+            Ok(r) if (200..300).contains(&r.status()) => Ok(()),
+            Ok(r) if r.status() == 412 || r.status() == 409 => Err(ObjectStoreError::new(
+                ObjectStoreErrorKind::Conflict,
+                "precondition failed",
+            )),
+            Ok(r) => Err(http_status_err(r)),
+            Err(UreqErr(ureq::Error::Status(code, _))) if code == 412 || code == 409 => {
+                Err(ObjectStoreError::new(
+                    ObjectStoreErrorKind::Conflict,
+                    "precondition failed",
+                ))
+            }
+            Err(e) => map_ureq(Err(e)),
+        }
+    })
+}
+
+/// Reject endpoints that ignore `If-None-Match` on CopyObject (STL-19).
+///
+/// Probe: PUT src + dest, then CopyObject src→dest with `If-None-Match: *`.
+/// A conforming server must return 412/409 because dest already exists.
+fn probe_conditional_copy(
+    agent: &Agent,
+    bucket: &Bucket,
+    bucket_name: &str,
+    credentials: &Credentials,
+) -> Result<(), ObjectStoreError> {
+    let token = random_spill_token(0);
+    let src = format!(".gump-cap-probe/{token}/src");
+    let dst = format!(".gump-cap-probe/{token}/dst");
+    let body = b"gump-conditional-copy-probe-v1";
+    let digest_hex = bytes_to_hex(blake3::hash(body).as_bytes());
+
+    let outcome = (|| {
+        put_object_bytes(agent, bucket, credentials, &src, body, &digest_hex)?;
+        put_object_bytes(agent, bucket, credentials, &dst, body, &digest_hex)?;
+        match copy_object_if_none_match(agent, bucket, bucket_name, credentials, &src, &dst) {
+            Err(e) if e.kind() == ObjectStoreErrorKind::Conflict => Ok(()),
+            Ok(()) => Err(ObjectStoreError::new(
+                ObjectStoreErrorKind::InvalidArgument,
+                "S3 endpoint ignores If-None-Match on CopyObject; conditional promote is unsafe (D008/STL-19)",
+            )),
+            Err(e) => Err(ObjectStoreError::new(
+                ObjectStoreErrorKind::InvalidArgument,
+                format!("S3 conditional-copy capability probe failed: {e}"),
+            )),
+        }
+    })();
+
+    let _ = delete_object_key(agent, bucket, credentials, &src);
+    let _ = delete_object_key(agent, bucket, credentials, &dst);
+    outcome
 }
 
 /// Base directory for the Gump runtime tree (`$XDG_RUNTIME_DIR` or process temp).
@@ -1018,13 +1118,16 @@ mod stl13_tests {
     use super::*;
 
     fn sample_config(secret: &str) -> S3Config {
-        S3Config::with_static_credentials(
+        let mut cfg = S3Config::with_static_credentials(
             "http://127.0.0.1:9000",
             "us-east-1",
             "gump",
             "AKIA_TEST",
             secret,
-        )
+        );
+        // Offline Debug/spill tests must not contact an endpoint (STL-19 probe).
+        cfg.require_conditional_copy = false;
+        cfg
     }
 
     #[test]
@@ -1174,5 +1277,142 @@ mod stl24_tests {
         assert_eq!(via_clone, b"authentic-capsule-bytes");
 
         let _ = fs::remove_dir_all(&base);
+    }
+}
+
+#[cfg(test)]
+mod stl19_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::thread;
+    use std::time::Duration;
+
+    fn header_end(buf: &[u8]) -> Option<usize> {
+        buf.windows(4).position(|w| w == b"\r\n\r\n").map(|p| p + 4)
+    }
+
+    fn content_length(headers: &str) -> usize {
+        for line in headers.lines() {
+            let lower = line.to_ascii_lowercase();
+            if let Some(rest) = lower.strip_prefix("content-length:") {
+                return rest.trim().parse().unwrap_or(0);
+            }
+        }
+        0
+    }
+
+    fn read_request(stream: &mut impl Read) -> Option<String> {
+        let mut data = Vec::new();
+        let mut chunk = [0u8; 2048];
+        loop {
+            let n = stream.read(&mut chunk).ok()?;
+            if n == 0 {
+                break;
+            }
+            data.extend_from_slice(&chunk[..n]);
+            if let Some(end) = header_end(&data) {
+                let headers = String::from_utf8_lossy(&data[..end]).into_owned();
+                let need = content_length(&headers);
+                let have = data.len().saturating_sub(end);
+                let mut remaining = need.saturating_sub(have);
+                while remaining > 0 {
+                    let n = stream.read(&mut chunk).ok()?;
+                    if n == 0 {
+                        break;
+                    }
+                    data.extend_from_slice(&chunk[..n]);
+                    remaining = remaining.saturating_sub(n);
+                }
+                return Some(headers);
+            }
+            if data.len() > 64 * 1024 {
+                return None;
+            }
+        }
+        None
+    }
+
+    fn respond(stream: &mut impl Write, status_line: &str) {
+        let body = format!("{status_line}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        let _ = stream.write_all(body.as_bytes());
+        let _ = stream.flush();
+    }
+
+    /// Minimal path-style S3 stub: PUTs succeed; CopyObject honors or ignores If-None-Match.
+    fn spawn_mock(honor_if_none_match: bool) -> (String, Arc<AtomicBool>, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let done = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&done);
+        let handle = thread::spawn(move || {
+            listener.set_nonblocking(true).ok();
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while !flag.load(Ordering::Relaxed) && std::time::Instant::now() < deadline {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        stream.set_read_timeout(Some(Duration::from_secs(2))).ok();
+                        stream.set_write_timeout(Some(Duration::from_secs(2))).ok();
+                        let Some(req) = read_request(&mut stream) else {
+                            continue;
+                        };
+                        let lower = req.to_ascii_lowercase();
+                        let is_copy = lower.contains("x-amz-copy-source");
+                        let has_inm = lower.contains("if-none-match");
+                        if req.starts_with("DELETE") {
+                            respond(&mut stream, "HTTP/1.1 204 No Content");
+                        } else if is_copy && has_inm {
+                            if honor_if_none_match {
+                                respond(&mut stream, "HTTP/1.1 412 Precondition Failed");
+                            } else {
+                                respond(&mut stream, "HTTP/1.1 200 OK");
+                            }
+                        } else {
+                            respond(&mut stream, "HTTP/1.1 200 OK");
+                        }
+                    }
+                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        (format!("http://{addr}"), done, handle)
+    }
+
+    fn cfg_for(endpoint: &str) -> S3Config {
+        S3Config::with_static_credentials(
+            endpoint,
+            "us-east-1",
+            "gump",
+            "AKIA_TEST",
+            "secret-for-probe",
+        )
+    }
+
+    #[test]
+    fn capability_probe_rejects_server_ignoring_if_none_match() {
+        let (endpoint, done, handle) = spawn_mock(false);
+        let err = S3ObjectStore::new(cfg_for(&endpoint)).unwrap_err();
+        done.store(true, Ordering::Relaxed);
+        let _ = handle.join();
+        assert_eq!(err.kind(), ObjectStoreErrorKind::InvalidArgument);
+        assert!(
+            err.message().contains("If-None-Match"),
+            "unexpected message: {}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn capability_probe_accepts_server_honoring_if_none_match() {
+        let (endpoint, done, handle) = spawn_mock(true);
+        let store = S3ObjectStore::new(cfg_for(&endpoint)).expect("probe should pass");
+        drop(store);
+        done.store(true, Ordering::Relaxed);
+        let _ = handle.join();
     }
 }
