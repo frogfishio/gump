@@ -1,0 +1,12 @@
+{
+  "schema": "gump.local.machine.v1",
+  "protocol_major": 1,
+  "protocol_minor": 1,
+  "body": {
+    "kind": "cluster_admin",
+    "action": "members",
+    "memory_voters": 1,
+    "leader": 1,
+    "detail": "one-voter cluster"
+  }
+}

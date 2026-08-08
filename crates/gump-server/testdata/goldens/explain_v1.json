@@ -1,7 +1,7 @@
 {
   "schema": "gump.local.machine.v1",
   "protocol_major": 1,
-  "protocol_minor": 0,
+  "protocol_minor": 1,
   "body": {
     "kind": "explain",
     "subject": "unit/1",

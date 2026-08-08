@@ -1,0 +1,13 @@
+{
+  "schema": "gump.local.machine.v1",
+  "protocol_major": 1,
+  "protocol_minor": 1,
+  "body": {
+    "kind": "deploy",
+    "operation_id": "00000000-0000-4000-8000-0000000000aa",
+    "phase": "intent_recorded",
+    "reason_code": "deploy.intent_recorded",
+    "safe_message": "desired intent committed in cluster memory",
+    "desired_generation": 1
+  }
+}

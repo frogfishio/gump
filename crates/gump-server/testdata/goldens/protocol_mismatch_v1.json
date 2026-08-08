@@ -1,0 +1,11 @@
+{
+  "schema": "gump.local.machine.v1",
+  "protocol_major": 1,
+  "protocol_minor": 1,
+  "body": {
+    "kind": "error",
+    "code": "PROTOCOL_MISMATCH",
+    "reason": "protocol.version_unsupported",
+    "safe_message": "client 2.0 incompatible with server 1.1"
+  }
+}

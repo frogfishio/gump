@@ -1,0 +1,12 @@
+{
+  "schema": "gump.local.machine.v1",
+  "protocol_major": 1,
+  "protocol_minor": 1,
+  "body": {
+    "kind": "recovery",
+    "action": "status",
+    "sealed": true,
+    "requires_authority": true,
+    "detail": "cluster sealed; unseal authority required for new work"
+  }
+}

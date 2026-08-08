@@ -1,4 +1,4 @@
-//! Local CLI↔daemon Unix-domain API and product role composition (C08 / GUMP-N004).
+//! Local CLI↔daemon Unix-domain API and product role composition (C08 / GUMP-N004–N006).
 //!
 //! Peer credentials authenticate the connecting process. Valid peer identity is
 //! necessary but never sufficient authorization for cluster mutations later.
@@ -16,7 +16,6 @@ pub mod serve;
 use gump_types::{HardenError, ProcessHardenReport, prepare_service_for_custody};
 
 /// Early daemon hardening before accept/serve (STL-20 / SECURITY §8).
-/// Surfaces [`ProcessHardenReport`]; fails closed when service policy requires.
 pub fn harden_daemon_startup() -> Result<ProcessHardenReport, HardenError> {
     prepare_service_for_custody()
 }
@@ -25,8 +24,10 @@ pub use accept::{AcceptStats, CancelFlag, new_cancel_flag, run_accept_loop};
 pub use compose::{InitOptions, ProductRuntime};
 pub use framing::{FrameError, MAX_FRAME_BYTES, read_frame, write_frame};
 pub use machine::{
-    ErrorBody, LocalRequest, LocalResponse, MachineOutputV1, PROTOCOL_MAJOR, PROTOCOL_MINOR,
-    StatusBody, sample_explain, sample_hello_response, sample_status, unauthorized_error,
+    ErrorBody, LocalCall, LocalRequest, LocalResponse, MachineOutputV1, PROTOCOL_MAJOR,
+    PROTOCOL_MINOR, StatusBody, cancelled_error, deadline_exceeded_error, protocol_mismatch_error,
+    sample_cluster_admin, sample_deploy, sample_explain, sample_hello_response, sample_lifecycle,
+    sample_observe, sample_recovery, sample_status, unauthorized_error,
 };
 pub use peer::{PeerAllowlist, PeerAuthError, PeerCred};
 pub use roles::RoleSet;

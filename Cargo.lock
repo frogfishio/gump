@@ -905,6 +905,8 @@ dependencies = [
  "gump-telemetry",
  "gump-types",
  "rand_core 0.10.1",
+ "serde",
+ "serde_json",
  "tempfile",
 ]
 

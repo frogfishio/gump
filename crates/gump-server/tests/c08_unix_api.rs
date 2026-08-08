@@ -1,13 +1,13 @@
-//! C08 exit evidence: peer-auth policy and machine-output goldens.
-//!
-//! Authority: docs/v1/DELIVERY.md C08, DECISIONS D007.
+//! C08 / GUMP-N006 exit evidence: peer-auth, envelope, machine-output goldens.
 
 use std::io::{Cursor, Read, Write};
 use std::path::PathBuf;
 
 use gump_server::framing::{read_frame, write_frame};
 use gump_server::machine::{
-    LocalRequest, LocalResponse, MachineOutputV1, sample_explain, sample_hello_response,
+    LocalCall, LocalRequest, LocalResponse, MachineOutputV1, cancelled_error,
+    deadline_exceeded_error, protocol_mismatch_error, sample_cluster_admin, sample_deploy,
+    sample_explain, sample_hello_response, sample_lifecycle, sample_observe, sample_recovery,
     sample_status,
 };
 use gump_server::peer::{PeerAllowlist, PeerCred};
@@ -34,6 +34,12 @@ fn assert_golden(name: &str, actual: &str) {
         expected, actual,
         "golden mismatch for {name}; set GUMP_WRITE_GOLDENS=1 to regenerate"
     );
+}
+
+fn frame_call(req: LocalRequest) -> Vec<u8> {
+    let mut buf = Vec::new();
+    write_frame(&mut buf, &serde_json::to_vec(&LocalCall::new(req)).unwrap()).unwrap();
+    buf
 }
 
 #[test]
@@ -75,10 +81,27 @@ fn machine_output_unauthorized_golden() {
 }
 
 #[test]
+fn machine_output_new_ops_and_error_goldens() {
+    for (name, body) in [
+        ("observe_v1.json", sample_observe()),
+        ("deploy_v1.json", sample_deploy()),
+        ("lifecycle_v1.json", sample_lifecycle()),
+        ("recovery_v1.json", sample_recovery()),
+        ("cluster_admin_v1.json", sample_cluster_admin()),
+        ("protocol_mismatch_v1.json", protocol_mismatch_error(2, 0)),
+        ("deadline_exceeded_v1.json", deadline_exceeded_error()),
+        ("cancelled_v1.json", cancelled_error()),
+    ] {
+        let out = MachineOutputV1::wrap(body);
+        let json = out.to_canonical_json().unwrap();
+        assert_golden(name, &format!("{json}\n"));
+    }
+}
+
+#[test]
 fn denied_peer_receives_unauthorized_machine_output() {
     let daemon = LocalDaemon::new(PeerAllowlist::same_uid(1));
     let mut buf = Cursor::new(Vec::new());
-    // No request written — auth fails first and still emits a framed error.
     let body = serve_connection(&daemon, PeerCred::new(2, 2, None), &mut buf).unwrap();
     assert!(matches!(body, LocalResponse::Error(ref e) if e.code == "UNAUTHORIZED"));
 
@@ -95,11 +118,7 @@ fn authorized_peer_status_round_trip() {
     daemon.controller_epoch = 3;
     daemon.controller_holder = Some(1);
 
-    let req = serde_json::to_vec(&LocalRequest::Status).unwrap();
-    let mut client_buf = Vec::new();
-    write_frame(&mut client_buf, &req).unwrap();
-
-    let mut duplex = Duplex::new(client_buf);
+    let mut duplex = Duplex::new(frame_call(LocalRequest::Status));
     let body = serve_connection(&daemon, PeerCred::new(1000, 1000, Some(1)), &mut duplex).unwrap();
     assert!(matches!(body, LocalResponse::Status(ref s) if s.controller_epoch == 3));
 
@@ -107,6 +126,45 @@ fn authorized_peer_status_round_trip() {
     let frame = read_frame(&mut resp_cursor).unwrap();
     let parsed: MachineOutputV1 = serde_json::from_slice(&frame).unwrap();
     assert_eq!(parsed.schema, "gump.local.machine.v1");
+    assert_eq!(parsed.protocol_minor, 1);
+}
+
+#[test]
+fn incompatible_protocol_major_fails_clearly() {
+    let daemon = LocalDaemon::new(PeerAllowlist::same_uid(1));
+    let mut call = LocalCall::new(LocalRequest::Hello);
+    call.protocol_major = 9;
+    let mut buf = Vec::new();
+    write_frame(&mut buf, &serde_json::to_vec(&call).unwrap()).unwrap();
+    let mut duplex = Duplex::new(buf);
+    let body = serve_connection(&daemon, PeerCred::new(1, 1, None), &mut duplex).unwrap();
+    assert!(matches!(body, LocalResponse::Error(ref e) if e.code == "PROTOCOL_MISMATCH"));
+}
+
+#[test]
+fn zero_deadline_returns_deadline_exceeded() {
+    let daemon = LocalDaemon::new(PeerAllowlist::same_uid(1));
+    let call = LocalCall::new(LocalRequest::Status).with_deadline(0);
+    let mut buf = Vec::new();
+    write_frame(&mut buf, &serde_json::to_vec(&call).unwrap()).unwrap();
+    let mut duplex = Duplex::new(buf);
+    let body = serve_connection(&daemon, PeerCred::new(1, 1, None), &mut duplex).unwrap();
+    assert!(matches!(body, LocalResponse::Error(ref e) if e.code == "DEADLINE_EXCEEDED"));
+}
+
+#[test]
+fn cancelled_call_returns_cancelled() {
+    let daemon = LocalDaemon::new(PeerAllowlist::same_uid(1));
+    let mut call = LocalCall::new(LocalRequest::Lifecycle {
+        action: "cancel".into(),
+        subject: "attempt/1".into(),
+    });
+    call.cancelled = true;
+    let mut buf = Vec::new();
+    write_frame(&mut buf, &serde_json::to_vec(&call).unwrap()).unwrap();
+    let mut duplex = Duplex::new(buf);
+    let body = serve_connection(&daemon, PeerCred::new(1, 1, None), &mut duplex).unwrap();
+    assert!(matches!(body, LocalResponse::Error(ref e) if e.code == "CANCELLED"));
 }
 
 #[test]
@@ -123,7 +181,6 @@ fn handle_request_hello_uses_controller_epoch() {
     );
 }
 
-/// Simple in-memory duplex: reads from `to_read`, appends writes to `written`.
 struct Duplex {
     to_read: Cursor<Vec<u8>>,
     written: Vec<u8>,
@@ -167,8 +224,11 @@ fn unix_socketpair_peer_cred_round_trip() {
     assert_eq!(cred.uid, euid);
 
     let daemon = LocalDaemon::new(PeerAllowlist::same_uid(euid));
-    let req = serde_json::to_vec(&LocalRequest::Hello).unwrap();
-    write_frame(&mut client, &req).unwrap();
+    write_frame(
+        &mut client,
+        &serde_json::to_vec(&LocalCall::new(LocalRequest::Hello)).unwrap(),
+    )
+    .unwrap();
     serve_connection(&daemon, cred, &mut server).unwrap();
     let frame = read_frame(&mut client).unwrap();
     let parsed: MachineOutputV1 = serde_json::from_slice(&frame).unwrap();

@@ -11,7 +11,7 @@ use gump_memory::{Command, RaftCommand};
 use gump_server::accept::{AcceptStats, new_cancel_flag, run_accept_loop};
 use gump_server::compose::{InitOptions, ProductRuntime};
 use gump_server::framing::{read_frame, write_frame};
-use gump_server::machine::{LocalRequest, LocalResponse, MachineOutputV1};
+use gump_server::machine::{LocalCall, LocalRequest, LocalResponse, MachineOutputV1};
 use gump_server::roles::RoleSet;
 
 fn temp_sock() -> PathBuf {
@@ -62,7 +62,7 @@ fn init_status_reports_one_voter_via_live_raft() {
 
     thread::sleep(Duration::from_millis(40));
     let mut stream = UnixStream::connect(&sock).unwrap();
-    let req = serde_json::to_vec(&LocalRequest::Status).unwrap();
+    let req = serde_json::to_vec(&LocalCall::new(LocalRequest::Status)).unwrap();
     write_frame(&mut stream, &req).unwrap();
     let frame = read_frame(&mut stream).unwrap();
     let parsed: MachineOutputV1 = serde_json::from_slice(&frame).unwrap();

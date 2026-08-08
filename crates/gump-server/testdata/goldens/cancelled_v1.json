@@ -4,8 +4,8 @@
   "protocol_minor": 1,
   "body": {
     "kind": "error",
-    "code": "UNAUTHORIZED",
-    "reason": "peer.uid_denied",
-    "safe_message": "local peer credentials rejected"
+    "code": "CANCELLED",
+    "reason": "lifecycle.cancelled",
+    "safe_message": "local call cancelled by client"
   }
 }

@@ -1,0 +1,11 @@
+{
+  "schema": "gump.local.machine.v1",
+  "protocol_major": 1,
+  "protocol_minor": 1,
+  "body": {
+    "kind": "observe",
+    "subject": "cluster",
+    "state": "ready",
+    "detail": "one memory member; zero failure tolerance"
+  }
+}
