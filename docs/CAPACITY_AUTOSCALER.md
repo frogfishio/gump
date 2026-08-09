@@ -3,6 +3,12 @@
 > Status: product concept for later refinement. This is not yet a frozen
 > `gump/1` manifest, provider ABI, or delivery commitment.
 
+The autoscaler is also an early proving program for the broader purpose-built
+cloud infrastructure language described in
+[`CLOUD_INFRASTRUCTURE_LANGUAGE.md`](CLOUD_INFRASTRUCTURE_LANGUAGE.md). That
+language extends the same ideas across provider construction, machine
+configuration, application topology, reaction, and migration.
+
 ## 1. Thesis
 
 Gump may deploy an optional autoscaler application from an ordinary sealed

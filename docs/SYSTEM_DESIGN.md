@@ -118,6 +118,12 @@ or credentials in the kernel. Gump retains authoritative demand, placement,
 drain, membership, and fencing. The concept is developed in
 [`CAPACITY_AUTOSCALER.md`](CAPACITY_AUTOSCALER.md).
 
+A broader concept baseline explores a purpose-built cloud infrastructure
+language spanning provider resources, host configuration, Gump formation, and
+continuous lifecycle. It treats the autoscaler as an early program rather than
+a special language feature; see
+[`CLOUD_INFRASTRUCTURE_LANGUAGE.md`](CLOUD_INFRASTRUCTURE_LANGUAGE.md).
+
 An extension cannot create desired state, participate in controller election, bypass placement fencing, inspect unrelated runtime configuration, weaken Capsule verification, or store hidden Gump control state. Inputs and outputs are bounded and versioned; authority is explicit; timeouts and failure behavior are isolated. A missing optional extension affects only declarations that request it.
 
 ## 4. High-level architecture
@@ -184,7 +190,12 @@ Local parity means parity of contract, not a false promise of identical machines
 
 ### 4.3 Cluster startup
 
-Gump assumes that ordinary infrastructure automation has already created machines, installed the Gump executable, established basic network reachability, and knows the node addresses. Gump does not add a machine-provisioning or automatic-discovery system on top of Terraform, Ansible, cloud-init, systemd, or equivalent tooling.
+The Gump server's startup contract begins after a machine exists, the Gump
+executable is installed, basic network reachability exists, and at least one
+node address is known. Those preconditions may be fulfilled by Terraform and
+Ansible, direct SSH bootstrap, an autoscaler, or the proposed cloud
+infrastructure language. The Gump kernel itself does not contain a
+machine-provisioning or host-configuration engine.
 
 Startup is seed-based:
 
