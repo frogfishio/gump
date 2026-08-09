@@ -29,7 +29,7 @@ workdir = "."
 stop_signal = "TERM"
 stop_timeout = "30s"
 
-# Fixed high ports are an explicit Pilot 7 adapter until the live server
+# Fixed high ports are an explicit Pilot 8 adapter until the live server
 # composes manifest auto-allocation and injection.
 [runtime.ports.control]
 address = "127.0.0.1"

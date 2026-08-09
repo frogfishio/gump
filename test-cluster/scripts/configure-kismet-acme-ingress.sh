@@ -15,7 +15,7 @@ ssh_key="$(node_value 'ansible_ssh_private_key_file=')"
 ssh_opts=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new)
 if [[ -n "$ssh_key" ]]; then ssh_opts+=(-i "$ssh_key"); fi
 
-# Never create public forwarding unless the selected node owns the Pilot 7
+# Never create public forwarding unless the selected node owns the Pilot 8
 # control listener and both public listeners are already live.
 ssh "${ssh_opts[@]}" "manager@$public_ip" 'sudo bash -s' <<'REMOTE'
 set -euo pipefail
@@ -30,13 +30,13 @@ for _ in $(seq 1 120); do
 done
 for port in 18082 18083 18443; do
   if ! ss -ltnH "sport = :$port" | grep -q LISTEN; then
-    echo "Refusing to expose Pilot 7: selected node is not listening on $port after 120 seconds." >&2
+    echo "Refusing to expose Pilot 8: selected node is not listening on $port after 120 seconds." >&2
     exit 1
   fi
 done
 
 if ! ss -ltnH "sport = :18082" | awk '{print $4}' | grep -Eq '^127\.0\.0\.1:18082$'; then
-  echo 'Refusing to expose Pilot 7: its control listener is not loopback-only.' >&2
+  echo 'Refusing to expose Pilot 8: its control listener is not loopback-only.' >&2
   exit 1
 fi
 
@@ -54,4 +54,4 @@ iptables -t nat -C PREROUTING -p tcp --dport 80 -m comment --comment gump-kismet
 iptables -t nat -C PREROUTING -p tcp --dport 443 -m comment --comment gump-kismet-acme-https -j REDIRECT --to-ports 18443
 REMOTE
 
-echo "Pilot 7 ingress is active on $host ($public_ip): TCP/80 -> 18083, TCP/443 -> 18443."
+echo "Pilot 8 ingress is active on $host ($public_ip): TCP/80 -> 18083, TCP/443 -> 18443."

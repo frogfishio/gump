@@ -41,9 +41,9 @@ help:
 	  '  make live-kismet-pilot Deploy the first Kismet ELF on all nodes and accept process/health.' \
 	  '  make live-http-origin-pilot  Prove Hiccup origin discovery and Kismet hostname routing.' \
 	  '  make replace-http-origin-pilot  Replace origins and prove immediate attempt supersession.' \
-	  '  make live-kismet-acme-staging  Run Pilot 7 against real DNS and Let’s Encrypt staging.' \
+	  '  make live-kismet-acme-staging  Run Pilot 8 against real DNS and Let’s Encrypt staging.' \
 	  '  make live-kismet-acme-production  Replace staging with a fresh publicly trusted generation.' \
-	  '  make remove-kismet-acme-ingress  Remove only the Pilot 7 host forwarding rules.' \
+	  '  make remove-kismet-acme-ingress  Remove only the Pilot 8 host forwarding rules.' \
 	  '  make destroy    Destroy compute; requires CONFIRM_DESTROY=YES.'
 
 init:

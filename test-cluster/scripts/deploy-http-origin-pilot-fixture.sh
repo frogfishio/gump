@@ -29,7 +29,7 @@ for ordinal in 1 2 3; do
   ssh_opts=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new)
   if [[ -n "$ssh_key" ]]; then ssh_opts+=(-i "$ssh_key"); fi
 
-  echo "Trying idempotent deployment through $host..." >&2
+  echo "Trying deployment through $host..." >&2
   ssh "${ssh_opts[@]}" "manager@$public_ip" "sudo -u gump tee '$remote_capsule' >/dev/null" <"$capsule"
   set +e
   result="$(ssh "${ssh_opts[@]}" "manager@$public_ip" \

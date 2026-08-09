@@ -21,4 +21,4 @@ while ufw status | grep -q '18083/tcp'; do ufw --force delete allow 18083/tcp; d
 while ufw status | grep -q '18443/tcp'; do ufw --force delete allow 18443/tcp; done
 REMOTE
 
-echo 'Pilot 7 host forwarding and host-firewall admissions were removed.'
+echo 'Pilot 8 host forwarding and host-firewall admissions were removed.'

@@ -110,7 +110,7 @@ resource "digitalocean_firewall" "gump" {
   }
 }
 
-# Pilot 7 has one deliberately selected public entry. Keeping this separate
+# Pilot 8 has one deliberately selected public entry. Keeping this separate
 # from the cluster firewall prevents HTTP/S admission on the other two nodes.
 resource "digitalocean_firewall" "kismet_acme_edge" {
   name        = "${var.cluster_name}-kismet-acme-edge"

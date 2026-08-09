@@ -32,8 +32,10 @@ import json, os, re
 body = json.loads(os.environ["OBSERVATION"])["body"]
 detail = body["detail"]
 assert body["state"] == "running", body
-assert "ready=1" in detail, detail
-assert "hiccup_presence=1" in detail, detail
+match = re.search(r"ready=(\d+)", detail)
+assert match and int(match.group(1)) >= 1, detail
+match = re.search(r"hiccup_presence=(\d+)", detail)
+assert match and int(match.group(1)) >= 1, detail
 assert "ringtail_active=true" in detail, detail
 assert "ringtail_failed=0" in detail, detail
 assert "ringtail_dropped=0" in detail, detail

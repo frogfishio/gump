@@ -27,7 +27,7 @@ for ordinal in ${GUMP_DEPLOY_ORDINALS:-1 2 3}; do
   ssh_key="$(awk -v host="$host" '$1==host { for(i=1;i<=NF;i++) if($i ~ /^ansible_ssh_private_key_file=/){sub(/^ansible_ssh_private_key_file=/,"",$i); print $i} }' "$inventory")"
   ssh_opts=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new)
   if [[ -n "$ssh_key" ]]; then ssh_opts+=(-i "$ssh_key"); fi
-  echo "Trying idempotent Pilot 8 deployment through $host..." >&2
+  echo "Trying Pilot 8 deployment through $host..." >&2
   ssh "${ssh_opts[@]}" "manager@$public_ip" "sudo -u gump tee '$remote_capsule' >/dev/null" <"$capsule"
   set +e
   result="$(ssh "${ssh_opts[@]}" "manager@$public_ip" \

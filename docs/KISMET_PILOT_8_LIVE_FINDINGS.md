@@ -3,7 +3,7 @@
 Date: 2026-08-09  
 Cluster: `019fe385-e1ae-74b0-8a24-42254095cdcc`  
 Public hostname: `gump.frogfish.io`  
-Status: bootstrap and Capsule build passed; deployment blocked by Gump write availability
+Status: passed against Let's Encrypt staging after Gump write-path repair
 
 ## Passed
 
@@ -18,45 +18,62 @@ Status: bootstrap and Capsule build passed; deployment blocked by Gump write ava
 - Gump combined the existing release-signer scope with the isolated Kismet
   scope and built a cluster-sealed Capsule successfully.
 - The protected account value did not appear in build output or evidence.
-- Existing Pilot 7 production HTTPS remained healthy throughout.
+- The repaired three-node cluster accepted Ringtail, all three origins, and
+  Kismet Pilot 8 as new desired generations.
+- Pilot 8 obtained a Let's Encrypt staging certificate for
+  `gump.frogfish.io` through public address `159.223.56.100`.
+- HTTPS exercised all three private origins (`10.104.0.2`, `10.104.0.3`, and
+  `10.104.0.4`) while preserving the public Host header.
+- The supplied ACME account document was not persisted beneath the attempt
+  root, and Kismet-created private files were owner-only.
+- Fresh Pilot 8 generations committed through both `gump02` and `gump03`,
+  proving the repaired write path through every live node endpoint.
 
-## Blocking observation
+## Failure found and repaired
 
-The three nodes agree on three voters and leader `9709567021627360171`, but no
-node can currently complete the deploy transaction:
+The original cluster agreed on three voters and leader
+`9709567021627360171`, but no node could complete the deploy transaction:
 
-- `gump01` immediately returns `UNAVAILABLE / deploy.desired_generation` with
+- `gump01` immediately returned `UNAVAILABLE / deploy.desired_generation` with
   `ensure_linearizable: has to forward request to` the reported leader.
-- `gump03` returns the same bounded error.
-- `gump02` does not complete the leader-local linearizable request within the
+- `gump03` returned the same bounded error.
+- `gump02` did not complete the leader-local linearizable request within the
   harness's 60-second deadline.
 
-All three private QUIC listeners remain bound on UDP/7443 and the host firewall
-admits the three private addresses. Read-only status reports three voters and
-the same leader. Existing desired state continues to reconcile. This is a
-write-availability failure after a leadership change, not a Pilot 8 Capsule or
-ACME failure.
+All three private QUIC listeners remained bound on UDP/7443 and the host
+firewall admitted the three private addresses. Read-only status reported three
+voters and the same leader. Existing desired state continued to reconcile.
+This was a write-availability failure after a leadership change, not a Pilot 8
+Capsule or ACME failure.
+
+Gump now bounds cluster RPCs and leader barriers, routes small linearizable
+desired-state reads to the elected leader, and forwards writes from follower
+endpoints. The live three-node regression now shuts down the original seed,
+waits for a surviving-quorum election, reads through both survivors, and
+commits a new desired generation through a follower. The full workspace suite
+and strict lint pass.
 
 ## Harness corrections made
 
-- Per-node deploy attempts now have a 60-second remote deadline.
+- Per-node deploy attempts have a 60-second remote deadline.
 - Failed node responses are printed before trying the next node.
 - A caller may target selected ordinals for deterministic diagnosis.
 - Pilot 8 acceptance verifies its exact binary checksum and fails if supplied
   account credentials are persisted as `acme-account.json` beneath the attempt
   root.
+- Pilot naming now consistently identifies the live workload as Pilot 8.
 
-## Required Gump work
+## Remaining operator-quality follow-up
 
 1. Expose the local memory-node ID alongside the current leader ID so operators
    can identify the leader without inference.
-2. Make local deploy requests reach the leader for both the generation read and
-   Raft write, or eliminate the separate pre-write linearizable read.
-3. Bound server-side linearizable reads and return a stable timeout error.
-4. Add a three-node test that transfers leadership and then performs a deploy
-   through every local Unix socket.
-5. Repeat the test with a follower unavailable while quorum remains.
+2. Extend the end-to-end Unix-socket harness to force a leadership transition
+   and exercise every socket, complementing the live QUIC/Raft regression.
 
-Do not re-form the live cluster merely to hide this failure. Re-forming is an
-explicit destructive recovery rehearsal for a memory-only cluster and should
-be chosen separately.
+The controlled re-formation was explicitly approved after the regression was
+green. It retained the droplets, private/public IPs, DNS, S3 Capsules, cluster
+identity, and Macrun secrets; only the deliberately memory-only desired state
+was rebuilt.
+
+Sanitized final-generation acceptance evidence is under
+`test-cluster/evidence/kismet-acme-20260809T150408Z/`.

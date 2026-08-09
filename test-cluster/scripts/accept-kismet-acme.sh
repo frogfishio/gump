@@ -51,7 +51,7 @@ active = [item for item in value["hiccup"]["origins"] if item["state"] == "activ
 assert len(active) == 3
 PY
 then
-  echo "Pilot 7 did not discover all three private origins for $domain." >&2
+  echo "Pilot 8 did not discover all three private origins for $domain." >&2
   exit 1
 fi
 
@@ -100,7 +100,7 @@ print(json.dumps({"status": value["status"], "domain": safe}, indent=2, sort_key
 PY
 
 if ! "${remote[@]}" 'curl -fsS http://127.0.0.1:18082/ready >/dev/null'; then
-  echo 'Pilot 7 did not become ready after certificate issuance.' >&2
+  echo 'Pilot 8 did not become ready after certificate issuance.' >&2
   exit 1
 fi
 
@@ -173,4 +173,4 @@ result=passed
 public_trust_required=$require_public_trust
 EOF
 
-echo "Pilot 7 ACME acceptance passed for $domain; sanitized evidence: $evidence_dir"
+echo "Pilot 8 ACME acceptance passed for $domain; sanitized evidence: $evidence_dir"

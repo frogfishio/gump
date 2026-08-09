@@ -36,7 +36,7 @@ explicit workarounds for the not-yet-composed automatic port allocator/injector.
 
 `fixtures/http-origin-pilot/gump.toml` is a deliberately tiny all-node web
 application. In its current real-ACME generation each attempt advertises
-`http.origin/1` with only the live Pilot 7 hostname; public ACME must not be
+`http.origin/1` with only the live Pilot 8 hostname; public ACME must not be
 asked to issue certificates for synthetic `.test` names. It reads its Hiccup
 token from Gump's inherited descriptor and listens on its node-private address.
 Acceptance requires the selected Kismet attempt to report all three healthy
