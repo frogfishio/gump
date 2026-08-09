@@ -8,7 +8,7 @@
 
 use std::collections::VecDeque;
 use std::io::Read;
-use std::process::{Child, Command, Stdio};
+use std::process::Child;
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -200,45 +200,29 @@ pub fn signal_tree(child: &mut Child, signal: Signal) -> Result<(), DriverError>
         let pid = child.id() as i32;
         // process_group(0) ⇒ child's pgid == pid for the leader.
         let pgid = pid;
-        // Prefer /bin/kill -s NAME -<pgid>: portable across BSD (macOS) and GNU;
-        // avoid `--` (not accepted by macOS kill) and zsh's builtin `kill`.
-        let name = match signal {
-            Signal::Term => "TERM",
-            Signal::Int => "INT",
-            Signal::Kill => "KILL",
+        let raw_signal = match signal {
+            Signal::Term => libc::SIGTERM,
+            Signal::Int => libc::SIGINT,
+            Signal::Kill => libc::SIGKILL,
         };
-        let status = Command::new("/bin/kill")
-            .arg("-s")
-            .arg(name)
-            .arg(format!("-{pgid}"))
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map_err(|e| {
-                DriverError::new(
-                    DriverErrorKind::Signal,
-                    format!("kill process group failed: {e}"),
-                )
-            })?;
-        if !status.success() {
-            // Fallback: direct child, then ESRCH is fine on cleanup.
-            match signal {
-                Signal::Kill => {
-                    let _ = child.kill();
-                }
-                Signal::Term | Signal::Int => {
-                    // Best-effort single-process TERM if group signal failed.
-                    let _ = Command::new("/bin/kill")
-                        .arg("-s")
-                        .arg(name)
-                        .arg(child.id().to_string())
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::null())
-                        .status();
-                }
-            }
+
+        // A negative pid addresses the process group. Calling kill(2) directly
+        // avoids incompatible `/bin/kill` parsing across GNU and BSD: GNU can
+        // report success for `kill -s SIGNAL -PGID` without delivering it when
+        // the negative operand is not separated by `--`.
+        #[allow(unsafe_code)]
+        let result = unsafe { libc::kill(-pgid, raw_signal) };
+        if result == 0 {
+            return Ok(());
         }
-        Ok(())
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::NotFound {
+            return Ok(());
+        }
+        Err(DriverError::new(
+            DriverErrorKind::Signal,
+            format!("signal process group {pgid} failed: {error}"),
+        ))
     }
     #[cfg(not(unix))]
     {

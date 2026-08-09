@@ -3,6 +3,7 @@
 gump_cluster_port: 7443
 gump_workload_port_range: "20000:20999"
 gump_runtime_dir: /run/gump
+gump_server_state_root: /var/lib/gump
 
 # Supplied by `make configure`:
 gump_artifact_path: ""

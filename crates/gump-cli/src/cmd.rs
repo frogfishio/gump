@@ -127,6 +127,7 @@ pub fn dispatch_cli(args: &[String]) -> Result<ExitCode, String> {
             let client = LocalClient::new(socket);
             let deadline = deadline_ms.map(Duration::from_millis);
             let body = client.call(request, deadline).map_err(|e| e.to_string())?;
+            let exit = response_exit_code(&body);
             match format {
                 OutputFormat::Machine => {
                     let out = MachineOutputV1::wrap(body);
@@ -134,7 +135,7 @@ pub fn dispatch_cli(args: &[String]) -> Result<ExitCode, String> {
                 }
                 OutputFormat::Human => print_human(&body),
             }
-            Ok(ExitCode::SUCCESS)
+            Ok(exit)
         }
         Command::CapsuleBuild {
             workspace,
@@ -966,6 +967,14 @@ fn exit_from_code(code: Option<i32>) -> ExitCode {
     }
 }
 
+fn response_exit_code(response: &LocalResponse) -> ExitCode {
+    if matches!(response, LocalResponse::Error(_)) {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
 // Silence unused warning if LocalResponse pattern matching expands later.
 #[allow(dead_code)]
 fn _response_kind(r: &LocalResponse) -> &'static str {
@@ -991,8 +1000,10 @@ mod tests {
     use std::io::Write as _;
     use std::os::fd::AsRawFd as _;
     use std::os::unix::net::UnixStream;
+    use std::process::ExitCode;
 
-    use super::read_secret_fd;
+    use super::{read_secret_fd, response_exit_code};
+    use crate::local_api::{ErrorBody, LocalResponse};
 
     #[test]
     fn inherited_secret_fd_is_consumed_directly() {
@@ -1001,5 +1012,19 @@ mod tests {
         drop(writer);
         let encoded = read_secret_fd(u16::try_from(reader.as_raw_fd()).unwrap()).unwrap();
         assert_eq!(encoded, "5a".repeat(32));
+    }
+
+    #[test]
+    fn server_error_response_sets_failure_exit_status() {
+        let response = LocalResponse::Error(ErrorBody {
+            code: "CONFLICT".into(),
+            reason: "deploy.conflict".into(),
+            safe_message: "deployment conflicted".into(),
+        });
+        assert_eq!(response_exit_code(&response), ExitCode::from(1));
+        assert_eq!(
+            response_exit_code(&LocalResponse::Status(crate::local_api::sample_status())),
+            ExitCode::SUCCESS
+        );
     }
 }

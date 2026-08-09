@@ -117,6 +117,44 @@ filter = "app/*"
     .unwrap();
     let digest = *blake3::hash(&built.bytes).as_bytes();
     let operation_id = CapsuleId::new();
+    let capsule_bytes = built.bytes;
+    let mismatch_operation_id = CapsuleId::new();
+    let mismatch = {
+        let mut store = runtime
+            .local_api
+            .object_store
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap();
+        let mut orphans = runtime.local_api.deploy_orphans.lock().unwrap();
+        run_verified_deploy_txn(
+            &mut *store,
+            &runtime.local_api.signer_trust,
+            runtime.local_api.memory_cluster.as_ref().unwrap(),
+            &mut orphans,
+            DeployTxnRequest {
+                operation_id: *mismatch_operation_id.as_bytes(),
+                operation_id_display: mismatch_operation_id.to_hyphenated(),
+                namespace: "ci".into(),
+                app: "wrong-app".into(),
+                expected_generation: 0,
+                content_digest: digest,
+                capsule_bytes: Some(capsule_bytes.clone()),
+                cluster_id,
+                capsule_id,
+            },
+            1,
+        )
+    };
+    assert!(matches!(
+        mismatch,
+        DeployTxnOutcome::Failed {
+            phase: gump_connectors::DeployPhase::LocalValidation,
+            ..
+        }
+    ));
+
     let outcome = {
         let mut store = runtime
             .local_api
@@ -136,8 +174,9 @@ filter = "app/*"
                 operation_id_display: operation_id.to_hyphenated(),
                 namespace: "ci".into(),
                 app: "runtime-composition".into(),
+                expected_generation: 0,
                 content_digest: digest,
-                capsule_bytes: Some(built.bytes),
+                capsule_bytes: Some(capsule_bytes),
                 cluster_id,
                 capsule_id,
             },

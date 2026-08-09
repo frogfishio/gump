@@ -27,6 +27,7 @@ gump-capsule = { workspace = true }
 gump-telemetry = { workspace = true }
 gump-driver = { workspace = true }
 gump-protocol = { workspace = true }
+gump-hiccup = { workspace = true }
 blake3 = { workspace = true }
 prost = "0.14"
 serde = { workspace = true }

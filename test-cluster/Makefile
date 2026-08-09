@@ -1,4 +1,4 @@
-.PHONY: help init plan infra configure-base install-gump configure verify form unseal smoke fixture-finite deploy-finite accept-finite live-finite destroy
+.PHONY: help init plan infra configure-base install-gump configure verify form unseal smoke fixture-finite deploy-finite accept-finite live-finite fixture-ringtail deploy-ringtail fixture-ringtail-relay-probe deploy-ringtail-relay-probe accept-ringtail live-ringtail destroy
 
 ROOT_DIR := $(abspath .)
 TERRAFORM_DIR := $(ROOT_DIR)/terraform
@@ -27,6 +27,11 @@ help:
 	  '  make deploy-finite   Build and deploy the finite fixture through the live cluster.' \
 	  '  make accept-finite   Prove completion converged once across all three nodes.' \
 	  '  make live-finite     Deploy then run the finite-workload acceptance check.' \
+	  '  make fixture-ringtail  Build a signed all-nodes Ringtail Capsule.' \
+	  '  make deploy-ringtail   Build and deploy Ringtail to every Gump node.' \
+	  '  make deploy-ringtail-relay-probe  Emit one telemetry record on every node.' \
+	  '  make accept-ringtail   Exercise all three live Ringtail collectors.' \
+	  '  make live-ringtail     Deploy Ringtail + all-node probe, then accept end to end.' \
 	  '  make destroy    Destroy compute; requires CONFIRM_DESTROY=YES.'
 
 init:
@@ -77,6 +82,26 @@ accept-finite:
 	"$(ROOT_DIR)/scripts/accept-finite.sh"
 
 live-finite: deploy-finite accept-finite
+
+fixture-ringtail:
+	"$(MACRUN)" fixtures env GUMP_BIN="$(GUMP_LOCAL_BIN)" "$(ROOT_DIR)/scripts/build-ringtail-fixture.sh"
+
+deploy-ringtail: fixture-ringtail
+	"$(ROOT_DIR)/scripts/deploy-ringtail-fixture.sh"
+
+accept-ringtail:
+	"$(ROOT_DIR)/scripts/accept-ringtail.sh"
+
+fixture-ringtail-relay-probe:
+	"$(MACRUN)" fixtures env GUMP_BIN="$(GUMP_LOCAL_BIN)" "$(ROOT_DIR)/scripts/build-ringtail-relay-probe.sh"
+
+deploy-ringtail-relay-probe: fixture-ringtail-relay-probe
+	"$(ROOT_DIR)/scripts/deploy-ringtail-relay-probe.sh"
+
+live-ringtail:
+	$(MAKE) deploy-ringtail
+	$(MAKE) deploy-ringtail-relay-probe
+	$(MAKE) accept-ringtail
 
 destroy:
 	@test "$(CONFIRM_DESTROY)" = YES || { echo 'Refusing: rerun with CONFIRM_DESTROY=YES' >&2; exit 2; }

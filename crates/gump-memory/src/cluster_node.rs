@@ -299,6 +299,23 @@ impl MemoryCluster {
         })
     }
 
+    /// Current committed generation for one desired application (`0` when
+    /// absent), after a linearizable read barrier.
+    pub fn desired_generation(&self, namespace: &str, app: &str) -> Result<u64, String> {
+        self.runtime.block_on(async {
+            self.raft
+                .ensure_linearizable()
+                .await
+                .map_err(|e| format!("ensure_linearizable: {e}"))?;
+            Ok(self
+                .sm
+                .cluster_state()
+                .await
+                .desired_generation(namespace, app)
+                .unwrap_or(0))
+        })
+    }
+
     /// Local applied-state observation for followers. It may lag the leader but
     /// never includes uncommitted entries; controller decisions still use the
     /// leader-only linearizable APIs.

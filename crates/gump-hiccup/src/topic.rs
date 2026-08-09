@@ -151,13 +151,6 @@ pub fn resolve_topics(
                 }
                 out.push(c);
             }
-            if out.is_empty() {
-                if let Some(p) = &publish {
-                    out.push(p.clone());
-                } else {
-                    return Err(TopicError::ListenWithoutPublishRequiresListen);
-                }
-            }
             out
         }
     };
@@ -171,5 +164,42 @@ pub fn assert_self_isolation(a: WorkloadId, b: WorkloadId) -> Result<(), TopicEr
         Err(TopicError::CrossWorkloadSelf)
     } else {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn workload() -> WorkloadId {
+        WorkloadId::from_bytes([
+            0x01, 0x8f, 0x4a, 0, 0, 0, 0x70, 0, 0x80, 0, 0, 0, 0, 0, 0, 1,
+        ])
+        .unwrap()
+    }
+
+    #[test]
+    fn explicit_empty_listen_means_publish_only() {
+        let empty = Vec::<String>::new();
+        let resolved = resolve_topics(
+            Some(Some("telemetry/sink/ratatouille-http")),
+            Some(&empty),
+            workload(),
+        )
+        .unwrap();
+        assert!(resolved.publish.is_some());
+        assert!(resolved.listen.is_empty());
+    }
+
+    #[test]
+    fn omitted_listen_still_defaults_to_published_topic() {
+        let resolved = resolve_topics(
+            Some(Some("telemetry/sink/ratatouille-http")),
+            None,
+            workload(),
+        )
+        .unwrap();
+        assert_eq!(resolved.listen.len(), 1);
+        assert_eq!(resolved.publish.as_ref(), resolved.listen.first());
     }
 }

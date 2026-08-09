@@ -1045,6 +1045,7 @@ dependencies = [
  "gump-connectors",
  "gump-crypto",
  "gump-driver",
+ "gump-hiccup",
  "gump-memory",
  "gump-protocol",
  "gump-scheduler",

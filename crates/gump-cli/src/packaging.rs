@@ -8,9 +8,9 @@ use std::collections::BTreeMap;
 
 use gump_manifest::{
     AllowDeny, Check, CheckType, Classification, Coordination, Coverage, Driver, Encoding,
-    FailurePolicy, HealthBinding, Inject, IsolationPolicy, IsolationProfile, Lifetime, Manifest,
-    Overflow, PortValue, Priority, ProcVisibility, PublishProtocol, RolloutStrategy, StopSignal,
-    SuccessPolicy, Variable,
+    FailurePolicy, FdReference, HealthBinding, Inject, IsolationPolicy, IsolationProfile, Lifetime,
+    Manifest, Overflow, PortValue, Priority, ProcVisibility, PublishProtocol, RolloutStrategy,
+    StopSignal, SuccessPolicy, Variable,
 };
 use gump_protocol::pb;
 use gump_protocol::pb::{
@@ -66,7 +66,7 @@ pub fn package_release_config_with_env(
                 present: true,
                 value: bytes,
             });
-        } else {
+        } else if var.source != "gump:attempt-token" {
             // Optional unset: record absence with empty bytes (FORMATS §7).
             protected_values.push(ProtectedValueV1 {
                 logical_name: name.clone(),
@@ -307,6 +307,18 @@ fn to_manifest_v1(
                 HealthBinding::Liveness => "liveness".into(),
             }),
         });
+    let provides = manifest
+        .provides
+        .iter()
+        .map(|(name, capability)| pb::ProvidedCapabilityV1 {
+            name: name.to_string(),
+            protocol: capability.protocol.clone(),
+            port_name: capability.port.to_string(),
+            path: capability.path.clone(),
+            scope: capability.scope.clone(),
+            authentication: capability.authentication.clone(),
+        })
+        .collect();
     Ok(pb::ManifestV1 {
         schema: manifest.schema.as_str().into(),
         app: Some(app),
@@ -318,6 +330,7 @@ fn to_manifest_v1(
         publication,
         telemetry,
         hiccup,
+        provides,
     })
 }
 
@@ -386,6 +399,17 @@ fn to_runtime_variable(name: &str, var: &Variable) -> Result<RuntimeVariableV1, 
         injection: injection_wire(var.inject) as i32,
         inherited_fd: var.fd.map(u32::from),
         reference_env: var.reference_env.clone(),
+        reference_value: match var.reference_value {
+            FdReference::ProcPath => "proc_path",
+            FdReference::DescriptorNumber => "descriptor_number",
+        }
+        .into(),
+        source_kind: if var.source == "gump:attempt-token" {
+            "gump:attempt-token"
+        } else {
+            "external"
+        }
+        .into(),
     })
 }
 
@@ -401,6 +425,12 @@ fn resolve_variable(
         .and_then(|local| local.variables.get(name))
         .map(|lv| lv.source.as_str())
         .unwrap_or(var.source.as_str());
+
+    // Gump-generated attempt values do not exist during packaging and never
+    // enter the Capsule's protected segment.
+    if source == "gump:attempt-token" {
+        return Ok(None);
+    }
 
     let raw = match read_source(source, env_overrides)? {
         Some(v) => v,
@@ -658,5 +688,58 @@ format = "ndjson"
         .unwrap_err();
         assert_eq!(err.kind(), CliErrorKind::Policy);
         assert!(err.to_string().contains("provider"));
+    }
+
+    #[test]
+    fn gump_attempt_token_is_contract_only_and_never_packaged() {
+        let m = parse_manifest_str(
+            r#"
+schema = "gump/1"
+[app]
+id = "generated-token"
+namespace = "ci"
+[workload]
+lifetime = "continuous"
+coordination = "independent"
+success = "never"
+[package]
+root = "."
+include = ["bin/app"]
+[runtime]
+driver = "native"
+command = ["./bin/app"]
+[runtime.variables.RINGTAIL_TOKEN_FD]
+source = "gump:attempt-token"
+required = true
+classification = "secret"
+encoding = "utf8"
+max_bytes = "1KiB"
+inject = "fd"
+fd = 7
+reference_env = "RINGTAIL_TOKEN_FD"
+reference_value = "descriptor_number"
+[telemetry]
+protocol = "ratatouille/0.1"
+format = "ndjson"
+"#,
+        )
+        .unwrap();
+        let packed = package_release_config(
+            &m,
+            CapsuleId::from_bytes(fixed_v7(0x17)).unwrap(),
+            ClusterId::from_bytes(fixed_v7(0x18)).unwrap(),
+        )
+        .unwrap();
+        let release = ReleaseMetadataV1::decode(packed.public_metadata.as_slice()).unwrap();
+        let contract = release
+            .runtime_variables
+            .iter()
+            .find(|value| value.logical_name == "RINGTAIL_TOKEN_FD")
+            .unwrap();
+        assert_eq!(contract.source_kind, "gump:attempt-token");
+        assert_eq!(contract.reference_value, "descriptor_number");
+        let protected =
+            ProtectedConfigV1::decode(packed.protected_plaintext.expose().as_slice()).unwrap();
+        assert!(protected.values.is_empty());
     }
 }

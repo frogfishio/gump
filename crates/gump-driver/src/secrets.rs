@@ -24,11 +24,20 @@ pub struct DeliveryScope {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FdReferenceValue {
+    /// Export `/proc/self/fd/N` for consumers expecting a file name.
+    ProcPath,
+    /// Export `N` for consumers which take ownership of an inherited descriptor.
+    DescriptorNumber,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum InjectForm {
     Env,
     Fd {
         fd: u16,
         reference_env: Option<String>,
+        reference_value: FdReferenceValue,
     },
 }
 
@@ -152,7 +161,9 @@ fn validate_value(v: &SecretValue) -> Result<(), DriverError> {
                 ));
             }
         }
-        InjectForm::Fd { fd, reference_env } => {
+        InjectForm::Fd {
+            fd, reference_env, ..
+        } => {
             if *fd < 3 {
                 return Err(DriverError::new(
                     DriverErrorKind::Policy,
@@ -172,7 +183,7 @@ fn validate_value(v: &SecretValue) -> Result<(), DriverError> {
     Ok(())
 }
 
-/// Anonymous (unlinked) file holding secret bytes for FD inheritance.
+/// Anonymous memory-backed file holding secret bytes for FD inheritance.
 pub(crate) struct PreparedFd {
     pub target_fd: i32,
     pub file: std::fs::File,
@@ -185,10 +196,13 @@ pub(crate) fn prepare_fds(plan: &SecretPlan) -> Result<Vec<PreparedFd>, DriverEr
         return Ok(out);
     }
     for v in &plan.values {
-        if let InjectForm::Fd { fd, reference_env } = &v.form {
-            let mut file = tempfile::tempfile().map_err(|e| {
-                DriverError::new(DriverErrorKind::Start, format!("anon fd tempfile: {e}"))
-            })?;
+        if let InjectForm::Fd {
+            fd,
+            reference_env,
+            reference_value,
+        } = &v.form
+        {
+            let mut file = anonymous_secret_file()?;
             file.write_all(v.bytes.expose()).map_err(|e| {
                 DriverError::new(DriverErrorKind::Start, format!("anon fd write: {e}"))
             })?;
@@ -198,9 +212,14 @@ pub(crate) fn prepare_fds(plan: &SecretPlan) -> Result<Vec<PreparedFd>, DriverEr
             file.seek(SeekFrom::Start(0)).map_err(|e| {
                 DriverError::new(DriverErrorKind::Start, format!("anon fd rewind: {e}"))
             })?;
-            let reference_env = reference_env
-                .as_ref()
-                .map(|name| (name.clone(), format!("/proc/self/fd/{fd}")));
+            seal_secret_file(&file)?;
+            let reference_env = reference_env.as_ref().map(|name| {
+                let value = match reference_value {
+                    FdReferenceValue::ProcPath => format!("/proc/self/fd/{fd}"),
+                    FdReferenceValue::DescriptorNumber => fd.to_string(),
+                };
+                (name.clone(), value)
+            });
             out.push(PreparedFd {
                 target_fd: i32::from(*fd),
                 file,
@@ -209,4 +228,81 @@ pub(crate) fn prepare_fds(plan: &SecretPlan) -> Result<Vec<PreparedFd>, DriverEr
         }
     }
     Ok(out)
+}
+
+#[cfg(target_os = "linux")]
+fn anonymous_secret_file() -> Result<std::fs::File, DriverError> {
+    use std::ffi::CString;
+    use std::os::fd::FromRawFd;
+
+    let name = CString::new("gump-secret").expect("static memfd name");
+    // SAFETY: `memfd_create` returns a new owned descriptor or -1. The descriptor
+    // is immediately wrapped in `File`; no pathname is ever created.
+    #[allow(unsafe_code)]
+    let fd = unsafe {
+        libc::syscall(
+            libc::SYS_memfd_create,
+            name.as_ptr(),
+            libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
+        ) as i32
+    };
+    if fd < 0 {
+        return Err(DriverError::new(
+            DriverErrorKind::Start,
+            format!("create secret memfd: {}", std::io::Error::last_os_error()),
+        ));
+    }
+    // SAFETY: ownership of the newly-created descriptor transfers to `File`.
+    #[allow(unsafe_code)]
+    Ok(unsafe { std::fs::File::from_raw_fd(fd) })
+}
+
+#[cfg(target_os = "linux")]
+fn seal_secret_file(file: &std::fs::File) -> Result<(), DriverError> {
+    use std::os::fd::AsRawFd;
+
+    let seals = libc::F_SEAL_SEAL | libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_WRITE;
+    // SAFETY: `file` owns a valid memfd and `F_ADD_SEALS` takes an integer bitmask.
+    #[allow(unsafe_code)]
+    let result = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_ADD_SEALS, seals) };
+    if result < 0 {
+        return Err(DriverError::new(
+            DriverErrorKind::Start,
+            format!("seal secret memfd: {}", std::io::Error::last_os_error()),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn anonymous_secret_file() -> Result<std::fs::File, DriverError> {
+    // macOS has no memfd_create. `tempfile()` creates mode-0600 storage and
+    // unlinks it immediately; this is local-development compatibility only.
+    // Production Linux fails closed through the sealed-memfd path above.
+    tempfile::tempfile().map_err(|e| {
+        DriverError::new(
+            DriverErrorKind::Start,
+            format!("create unlinked secret descriptor: {e}"),
+        )
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn seal_secret_file(_file: &std::fs::File) -> Result<(), DriverError> {
+    // POSIX shared memory has no Linux-style write seals. The object was
+    // unlinked before bytes were written and remains reachable only by FD.
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn anonymous_secret_file() -> Result<std::fs::File, DriverError> {
+    Err(DriverError::new(
+        DriverErrorKind::Start,
+        "memory-only FD secret injection is unsupported on this platform",
+    ))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn seal_secret_file(_file: &std::fs::File) -> Result<(), DriverError> {
+    unreachable!("anonymous_secret_file fails on unsupported platforms")
 }

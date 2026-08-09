@@ -18,8 +18,8 @@ use gump_capsule::{GumpCapsuleMeta, SegmentDescriptor, SegmentType, StreamingCap
 use gump_connectors::{ByteRange, ObjectStore, RuntimeObjectStore, final_capsule_key};
 use gump_crypto::{SealedDek, build_protected_aad, hpke_info, open_protected};
 use gump_driver::{
-    DeliveryScope, DriverKind, InjectForm, NativeDriver, PipeChunkSink, RuntimeSpec, ScriptDriver,
-    SecretPlan, SecretValue, StreamKind,
+    DeliveryScope, DriverKind, FdReferenceValue, InjectForm, NativeDriver, PipeChunkSink,
+    RuntimeSpec, ScriptDriver, SecretPlan, SecretValue, StreamKind,
 };
 use gump_memory::{DesiredSnapshotEntry, MemoryCluster, RaftCommand, RaftResponse};
 use gump_protocol::pb::{
@@ -31,11 +31,13 @@ use gump_scheduler::{
     WorkloadRequirements,
 };
 use gump_telemetry::TelemetryPlane;
+use gump_types::ExecutionId;
 use gump_types::{AttemptId, CapsuleId, ClusterId, NodeId, Secret, UnitId, WorkloadId};
 use prost::Message;
 
 use crate::custody::ClusterCustody;
 use crate::deploy_txn::DesiredCapsuleBindingV1;
+use crate::ringtail_relay::{RelayTarget, RingtailRelay};
 
 const RECONCILE_FENCE: u64 = 1;
 
@@ -44,7 +46,13 @@ pub struct RuntimeStatus {
     pub desired: usize,
     pub placements: usize,
     pub completed: usize,
+    pub ready: usize,
+    pub hiccup_presence: usize,
     pub last_error: Option<String>,
+    pub ringtail_active: bool,
+    pub ringtail_accepted: u64,
+    pub ringtail_failed: u64,
+    pub ringtail_dropped: u64,
 }
 
 struct SecretBinding {
@@ -54,18 +62,28 @@ struct SecretBinding {
     node_id: u64,
     controller_epoch: u64,
     placement_fence: u64,
+    telemetry_sink: Option<TelemetrySinkContract>,
+    telemetry_token: Option<Secret<Vec<u8>>>,
+}
+
+#[derive(Clone)]
+struct TelemetrySinkContract {
+    port: u16,
+    path: String,
 }
 
 /// One node's live execution controller. No field is durable cluster state.
 pub struct RuntimeCoordinator {
     cluster_id: ClusterId,
     node_id: NodeId,
+    private_ip: Option<String>,
     memory_node_id: u64,
     state_root: PathBuf,
     scheduler: PlacementController,
     native: EffectExecutor<NativeDriver>,
     script: EffectExecutor<ScriptDriver>,
     secret_bindings: Arc<Mutex<BTreeMap<AttemptId, SecretBinding>>>,
+    ringtail_relay: RingtailRelay,
     known_units: BTreeSet<UnitId>,
     status: RuntimeStatus,
 }
@@ -85,6 +103,7 @@ impl RuntimeCoordinator {
     pub fn new(
         cluster_id: ClusterId,
         memory_node_id: u64,
+        private_ip: Option<String>,
         state_root: PathBuf,
         store: Arc<Mutex<RuntimeObjectStore>>,
         custody: Arc<Mutex<ClusterCustody>>,
@@ -102,6 +121,7 @@ impl RuntimeCoordinator {
             Arc::clone(&custody),
             Arc::clone(&bindings),
         );
+        let ringtail_relay = RingtailRelay::new();
         let mut native = EffectExecutor::new(
             NativeDriver::new(),
             attempts.join("native"),
@@ -112,7 +132,7 @@ impl RuntimeCoordinator {
             EffectExecutor::new(ScriptDriver::new(), attempts.join("script"), authority)
                 .with_secret_provider(secret_provider);
         if let Some(plane) = telemetry {
-            let factory = pipe_factory(plane);
+            let factory = pipe_factory(plane, ringtail_relay.clone(), cluster_id, node_id);
             native = native.with_pipe_sink_factory(Arc::clone(&factory));
             script = script.with_pipe_sink_factory(factory);
         }
@@ -124,18 +144,26 @@ impl RuntimeCoordinator {
         Ok(Self {
             cluster_id,
             node_id,
+            private_ip,
             memory_node_id,
             state_root,
             scheduler,
             native,
             script,
             secret_bindings: bindings,
+            ringtail_relay,
             known_units: BTreeSet::new(),
             status: RuntimeStatus {
                 desired: 0,
                 placements: 0,
                 completed: 0,
+                ready: 0,
+                hiccup_presence: 0,
                 last_error: None,
+                ringtail_active: false,
+                ringtail_accepted: 0,
+                ringtail_failed: 0,
+                ringtail_dropped: 0,
             },
         })
     }
@@ -156,6 +184,7 @@ impl RuntimeCoordinator {
         let mut native = Vec::new();
         let mut script = Vec::new();
         let mut current_units = BTreeSet::new();
+        let mut current_attempts = BTreeSet::new();
         let mut completion_targets = BTreeMap::new();
         let mut completed = 0usize;
 
@@ -229,6 +258,11 @@ impl RuntimeCoordinator {
                     capsule_id.as_bytes(),
                     b"attempt-1",
                 ])?;
+                current_attempts.insert(attempt_id);
+                let execution_id = stable_id::<ExecutionId>(&[
+                    loaded.workload_id.as_bytes(),
+                    &entry.generation.to_be_bytes(),
+                ])?;
                 if loaded.lifecycle_finite {
                     completion_targets.insert(
                         attempt_id,
@@ -243,17 +277,17 @@ impl RuntimeCoordinator {
                 self.secret_bindings
                     .lock()
                     .map_err(|_| "secret binding lock poisoned".to_string())?
-                    .insert(
-                        attempt_id,
-                        SecretBinding {
-                            capsule_id,
-                            workload_id: loaded.workload_id,
-                            unit: unit_index,
-                            node_id: self.memory_node_id,
-                            controller_epoch: RECONCILE_FENCE,
-                            placement_fence: RECONCILE_FENCE,
-                        },
-                    );
+                    .entry(attempt_id)
+                    .or_insert_with(|| SecretBinding {
+                        capsule_id,
+                        workload_id: loaded.workload_id,
+                        unit: unit_index,
+                        node_id: self.memory_node_id,
+                        controller_epoch: RECONCILE_FENCE,
+                        placement_fence: RECONCILE_FENCE,
+                        telemetry_sink: loaded.telemetry_sink.clone(),
+                        telemetry_token: None,
+                    });
                 let placement = AcceptedPlacement {
                     attempt_id,
                     unit_id,
@@ -263,7 +297,25 @@ impl RuntimeCoordinator {
                     lifecycle_finite: loaded.lifecycle_finite,
                     capsule_verified: true,
                     lifecycle: loaded.lifecycle.clone(),
-                    hiccup: None,
+                    hiccup: loaded.hiccup.then(|| gump_agent::HiccupPlacement {
+                        cluster_id: self.cluster_id,
+                        namespace: loaded.namespace.clone(),
+                        app_id: loaded.app_id.clone(),
+                        workload_id: loaded.workload_id,
+                        capsule_id,
+                        execution_id,
+                        node_id: self.node_id,
+                        agent_incarnation: 1,
+                        private_ip: self.private_ip.clone(),
+                        named_publish: loaded
+                            .telemetry_sink
+                            .as_ref()
+                            .map(|_| {
+                                BTreeSet::from(["telemetry/sink/ratatouille-http".to_string()])
+                            })
+                            .unwrap_or_default(),
+                        named_listen: BTreeSet::new(),
+                    }),
                 };
                 match loaded.runtime.kind {
                     DriverKind::Native => native.push(placement),
@@ -281,6 +333,10 @@ impl RuntimeCoordinator {
             let _ = self.scheduler.ledger.release(unit);
             self.known_units.remove(&unit);
         }
+        self.secret_bindings
+            .lock()
+            .map_err(|_| "secret binding lock poisoned".to_string())?
+            .retain(|attempt, _| current_attempts.contains(attempt));
         let native_reports = self
             .native
             .reconcile(&native, now_ms)
@@ -289,6 +345,7 @@ impl RuntimeCoordinator {
             .script
             .reconcile(&script, now_ms)
             .map_err(|e| e.to_string())?;
+        self.refresh_ringtail_relay();
         let native_completion_events = self.native.completion_events();
         let script_completion_events = self.script.completion_events();
         for (kind, attempt_id) in native_completion_events
@@ -321,11 +378,29 @@ impl RuntimeCoordinator {
                 }
             }
         }
+        let relay = self.ringtail_relay.stats();
+        let ready = native_reports
+            .iter()
+            .chain(&script_reports)
+            .filter(|report| report.ready == Some(true))
+            .count();
+        let hiccup_presence = self
+            .native
+            .hiccup_plane()
+            .board
+            .presence_count()
+            .saturating_add(self.script.hiccup_plane().board.presence_count());
         self.status = RuntimeStatus {
             desired: desired.len(),
             placements: native_reports.len() + script_reports.len(),
             completed,
+            ready,
+            hiccup_presence,
             last_error: None,
+            ringtail_active: relay.active,
+            ringtail_accepted: relay.accepted,
+            ringtail_failed: relay.failed,
+            ringtail_dropped: relay.dropped,
         };
         Ok(self.status.clone())
     }
@@ -333,10 +408,36 @@ impl RuntimeCoordinator {
     pub fn note_error(&mut self, error: String) {
         self.status.last_error = Some(error);
     }
+
+    fn refresh_ringtail_relay(&self) {
+        let Ok(bindings) = self.secret_bindings.lock() else {
+            self.ringtail_relay.set_target(None);
+            return;
+        };
+        let target = bindings.iter().find_map(|(attempt, binding)| {
+            self.native
+                .hiccup_plane()
+                .board
+                .presence_for_attempt(*attempt)?;
+            let sink = binding.telemetry_sink.as_ref()?;
+            let token = binding.telemetry_token.as_ref()?;
+            let token = std::str::from_utf8(token.expose()).ok()?.to_string();
+            Some(RelayTarget {
+                address: ([127, 0, 0, 1], sink.port).into(),
+                path: sink.path.clone(),
+                token: Secret::new(token),
+            })
+        });
+        self.ringtail_relay.set_target(target);
+    }
 }
 
 struct LoadedRelease {
     workload_id: WorkloadId,
+    namespace: String,
+    app_id: String,
+    hiccup: bool,
+    telemetry_sink: Option<TelemetrySinkContract>,
     units: u32,
     all_nodes: bool,
     driver_name: &'static str,
@@ -414,22 +515,61 @@ fn load_release(
     let required_enforced = resources.capabilities.clone();
     let lifecycle_finite =
         WorkloadLifetime::try_from(workload.lifetime).ok() == Some(WorkloadLifetime::Finite);
+    let readiness = manifest
+        .health
+        .as_ref()
+        .and_then(|h| h.readiness.as_ref())
+        .map(|spec| check_spec(spec, &runtime_pb.ports))
+        .transpose()?
+        .flatten();
+    let liveness = manifest
+        .health
+        .as_ref()
+        .and_then(|h| h.liveness.as_ref())
+        .map(|spec| check_spec(spec, &runtime_pb.ports))
+        .transpose()?
+        .flatten();
+    let completion = manifest
+        .health
+        .as_ref()
+        .and_then(|h| h.completion.as_ref())
+        .map(|spec| check_spec(spec, &runtime_pb.ports))
+        .transpose()?
+        .flatten();
+    let hiccup = manifest.hiccup.is_some()
+        || readiness
+            .as_ref()
+            .is_some_and(|c| c.kind == CheckKind::Http)
+        || liveness.as_ref().is_some_and(|c| c.kind == CheckKind::Http);
+    let telemetry_sink = manifest
+        .provides
+        .iter()
+        .find(|capability| capability.name == "telemetry_sink")
+        .map(|capability| -> Result<TelemetrySinkContract, String> {
+            if capability.protocol != "ratatouille-http-ndjson/1"
+                || capability.authentication != "gump-attempt-bearer"
+                || capability.scope.as_deref() != Some("node")
+            {
+                return Err("telemetry_sink capability does not match gump-ringtail/1".into());
+            }
+            let port = runtime_pb
+                .ports
+                .iter()
+                .find(|port| port.name == capability.port_name)
+                .and_then(|port| port.fixed_port)
+                .ok_or("telemetry_sink requires a currently resolvable fixed named port")?;
+            Ok(TelemetrySinkContract {
+                port: port
+                    .try_into()
+                    .map_err(|_| "telemetry_sink port is out of range")?,
+                path: capability.path.clone().unwrap_or_else(|| "/sink".into()),
+            })
+        })
+        .transpose()?;
     let lifecycle = LifecycleContract {
-        readiness: manifest
-            .health
-            .as_ref()
-            .and_then(|h| h.readiness.as_ref())
-            .and_then(check_spec),
-        liveness: manifest
-            .health
-            .as_ref()
-            .and_then(|h| h.liveness.as_ref())
-            .and_then(check_spec),
-        completion: manifest
-            .health
-            .as_ref()
-            .and_then(|h| h.completion.as_ref())
-            .and_then(check_spec),
+        readiness,
+        liveness,
+        completion,
         retry: RetryPolicy {
             max_attempts: workload.max_attempts.unwrap_or(0),
             ..RetryPolicy::default()
@@ -450,6 +590,10 @@ fn load_release(
         .unwrap_or(false);
     Ok(LoadedRelease {
         workload_id,
+        namespace: app.namespace,
+        app_id: app.app_id,
+        hiccup,
+        telemetry_sink,
         units,
         all_nodes,
         driver_name: match kind {
@@ -499,11 +643,11 @@ fn secret_provider(
     bindings: Arc<Mutex<BTreeMap<AttemptId, SecretBinding>>>,
 ) -> SecretPlanProvider {
     Arc::new(move |placement| {
-        let bindings = bindings
+        let mut bindings = bindings
             .lock()
             .map_err(|_| "secret binding lock poisoned".to_string())?;
         let binding = bindings
-            .get(&placement.attempt_id)
+            .get_mut(&placement.attempt_id)
             .ok_or("missing secret binding")?;
         let key = final_capsule_key(cluster_id, binding.capsule_id).map_err(|e| e.to_string())?;
         let store = store
@@ -574,6 +718,10 @@ fn secret_provider(
                         .try_into()
                         .map_err(|_| "inherited_fd out of range")?,
                     reference_env: contract.reference_env.clone(),
+                    reference_value: match contract.reference_value.as_str() {
+                        "descriptor_number" => FdReferenceValue::DescriptorNumber,
+                        _ => FdReferenceValue::ProcPath,
+                    },
                 },
                 _ => return Err("unsupported secret injection kind".into()),
             };
@@ -581,6 +729,87 @@ fn secret_provider(
                 logical_name: value.logical_name,
                 form,
                 bytes: Secret::new(value.value),
+            });
+        }
+        for contract in vars
+            .values()
+            .filter(|contract| contract.source_kind == "gump:attempt-token")
+        {
+            if values
+                .iter()
+                .any(|value| value.logical_name == contract.logical_name)
+            {
+                return Err("Gump-generated variable also has protected Capsule material".into());
+            }
+            let mut random = [0u8; 32];
+            getrandom::fill(&mut random)
+                .map_err(|e| format!("generate per-attempt credential: {e}"))?;
+            let bytes = hex_encode(&random).into_bytes();
+            if contract.max_bytes != 0 && bytes.len() as u64 > contract.max_bytes {
+                return Err(format!(
+                    "generated variable {} exceeds declared max_bytes",
+                    contract.logical_name
+                ));
+            }
+            let form = match InjectionKind::try_from(contract.injection).ok() {
+                Some(InjectionKind::Env) => InjectForm::Env,
+                Some(InjectionKind::Fd) => InjectForm::Fd {
+                    fd: contract
+                        .inherited_fd
+                        .ok_or("generated FD variable lacks inherited_fd")?
+                        .try_into()
+                        .map_err(|_| "generated inherited_fd out of range")?,
+                    reference_env: contract.reference_env.clone(),
+                    reference_value: match contract.reference_value.as_str() {
+                        "descriptor_number" => FdReferenceValue::DescriptorNumber,
+                        _ => FdReferenceValue::ProcPath,
+                    },
+                },
+                _ => return Err("unsupported generated secret injection kind".into()),
+            };
+            values.push(SecretValue {
+                logical_name: contract.logical_name.clone(),
+                form,
+                bytes: Secret::new(bytes),
+            });
+            if contract.logical_name == "RINGTAIL_TOKEN_FD" && binding.telemetry_sink.is_some() {
+                let token = values
+                    .last()
+                    .expect("generated value inserted")
+                    .bytes
+                    .expose()
+                    .clone();
+                binding.telemetry_token = Some(Secret::new(token));
+            }
+        }
+        if placement.hiccup.is_some() {
+            if values
+                .iter()
+                .any(|value| value.logical_name == gump_hiccup::TOKEN_FD_ENV)
+            {
+                return Err("GUMP_HICCUP_TOKEN_FD is reserved by Gump".into());
+            }
+            let used: BTreeSet<u16> = values
+                .iter()
+                .filter_map(|value| match value.form {
+                    InjectForm::Fd { fd, .. } => Some(fd),
+                    InjectForm::Env => None,
+                })
+                .collect();
+            let fd = (64u16..=255)
+                .rev()
+                .find(|fd| !used.contains(fd))
+                .ok_or("no inherited descriptor available for Hiccup token")?;
+            let mut token = vec![0u8; gump_hiccup::TOKEN_BYTES];
+            getrandom::fill(&mut token).map_err(|e| format!("generate Hiccup token: {e}"))?;
+            values.push(SecretValue {
+                logical_name: gump_hiccup::TOKEN_FD_ENV.into(),
+                form: InjectForm::Fd {
+                    fd,
+                    reference_env: Some(gump_hiccup::TOKEN_FD_ENV.into()),
+                    reference_value: FdReferenceValue::DescriptorNumber,
+                },
+                bytes: Secret::new(token),
             });
         }
         Ok(SecretPlan::scoped(
@@ -603,6 +832,10 @@ struct TelemetrySink {
     plane: Arc<Mutex<TelemetryPlane>>,
     stdout: AtomicU64,
     stderr: AtomicU64,
+    relay: RingtailRelay,
+    cluster_id: ClusterId,
+    node_id: NodeId,
+    attempt_id: AttemptId,
 }
 
 impl PipeChunkSink for TelemetrySink {
@@ -621,15 +854,32 @@ impl PipeChunkSink for TelemetrySink {
             }
             Err(TryLockError::WouldBlock | TryLockError::Poisoned(_)) => {}
         }
+        self.relay.try_emit(
+            topic,
+            seq,
+            chunk,
+            self.cluster_id.to_hyphenated(),
+            self.node_id.to_hyphenated(),
+            self.attempt_id.to_hyphenated(),
+        );
     }
 }
 
-fn pipe_factory(plane: Arc<Mutex<TelemetryPlane>>) -> PipeSinkFactory {
-    Arc::new(move |_| {
+fn pipe_factory(
+    plane: Arc<Mutex<TelemetryPlane>>,
+    relay: RingtailRelay,
+    cluster_id: ClusterId,
+    node_id: NodeId,
+) -> PipeSinkFactory {
+    Arc::new(move |attempt_id| {
         Arc::new(TelemetrySink {
             plane: Arc::clone(&plane),
             stdout: AtomicU64::new(0),
             stderr: AtomicU64::new(0),
+            relay: relay.clone(),
+            cluster_id,
+            node_id,
+            attempt_id,
         })
     })
 }
@@ -661,17 +911,42 @@ fn read_segment<S: ObjectStore>(
         .map_err(|e| e.to_string())
 }
 
-fn check_spec(spec: &CheckSpecV1) -> Option<CheckSpec> {
-    let kind = match PbCheckKind::try_from(spec.kind).ok()? {
-        PbCheckKind::Process => CheckKind::Process,
-        PbCheckKind::Tcp => CheckKind::Tcp,
-        PbCheckKind::Http => CheckKind::Http,
-        PbCheckKind::Command => CheckKind::Command,
-        _ => return None,
+fn check_spec(
+    spec: &CheckSpecV1,
+    ports: &[gump_protocol::pb::PortSpecV1],
+) -> Result<Option<CheckSpec>, String> {
+    let kind = match PbCheckKind::try_from(spec.kind).ok() {
+        Some(PbCheckKind::Process) => CheckKind::Process,
+        Some(PbCheckKind::Tcp) => CheckKind::Tcp,
+        Some(PbCheckKind::Http) => CheckKind::Http,
+        Some(PbCheckKind::Command) => CheckKind::Command,
+        _ => return Ok(None),
     };
-    Some(CheckSpec {
+    let target = match kind {
+        CheckKind::Http | CheckKind::Tcp => {
+            let name = spec
+                .port_name
+                .as_deref()
+                .ok_or("network health check lacks port name")?;
+            let port = ports
+                .iter()
+                .find(|port| port.name == name)
+                .ok_or_else(|| format!("health check refers to unknown port {name}"))?;
+            let number = port
+                .fixed_port
+                .ok_or_else(|| format!("automatic port {name} is not allocated yet"))?;
+            let base = format!("127.0.0.1:{number}");
+            Some(if kind == CheckKind::Http {
+                format!("http://{base}{}", spec.path.as_deref().unwrap_or("/"))
+            } else {
+                base
+            })
+        }
+        CheckKind::Process | CheckKind::Command => None,
+    };
+    Ok(Some(CheckSpec {
         kind,
-        target: spec.path.clone().or_else(|| spec.port_name.clone()),
+        target,
         command: if spec.command.is_empty() {
             None
         } else {
@@ -683,7 +958,7 @@ fn check_spec(spec: &CheckSpecV1) -> Option<CheckSpec> {
         success_threshold: spec.successes.max(1),
         failure_threshold: spec.failures.max(1),
         max_output_bytes: 4096,
-    })
+    }))
 }
 
 fn local_capabilities(node_id: NodeId) -> CapabilityReport {
@@ -750,7 +1025,7 @@ macro_rules! stable {
         }
     )*};
 }
-stable!(NodeId, UnitId, AttemptId, WorkloadId);
+stable!(NodeId, UnitId, AttemptId, WorkloadId, ExecutionId);
 
 fn parse_id<T: StableId>(bytes: &[u8], name: &str) -> Result<T, String> {
     let bytes: [u8; 16] = bytes
@@ -765,4 +1040,14 @@ fn nonempty(value: String) -> Option<String> {
     } else {
         Some(value.trim_start_matches("./").to_string())
     }
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len().saturating_mul(2));
+    for &byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
 }

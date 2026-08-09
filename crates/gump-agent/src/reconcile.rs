@@ -13,6 +13,7 @@ use gump_driver::{
     AttemptContext, Driver, DriverError, IoEndpoints, Observation, ReleaseRoot, ResourceGrant,
     RunningHandle, RuntimeSpec, SecretPlan, StartFence,
 };
+use gump_hiccup::{HiccupToken, TOKEN_BYTES, TOKEN_FD_ENV};
 use gump_types::{AttemptId, UnitId};
 
 use crate::checks::{CheckBudget, HttpRequestPlan, http_exchange, run_check};
@@ -379,6 +380,22 @@ impl<D: Driver> EffectExecutor<D> {
             Some(provider) => provider(p).map_err(AgentError::Driver)?,
             None => SecretPlan::deferred(),
         };
+        let hiccup_token = if p.hiccup.is_some() {
+            let value = secrets
+                .values
+                .iter()
+                .find(|value| value.logical_name == TOKEN_FD_ENV)
+                .ok_or_else(|| {
+                    AgentError::Driver("Hiccup placement lacks Gump-generated attempt token".into())
+                })?;
+            let bytes: [u8; TOKEN_BYTES] =
+                value.bytes.expose().as_slice().try_into().map_err(|_| {
+                    AgentError::Driver("Hiccup attempt token must be 32 bytes".into())
+                })?;
+            Some(HiccupToken::from_bytes(bytes))
+        } else {
+            None
+        };
         let admission = self.driver.admit(
             prepared,
             ResourceGrant {
@@ -400,6 +417,17 @@ impl<D: Driver> EffectExecutor<D> {
                     .map(|factory| factory(p.attempt_id)),
             },
         )?;
+        if let (Some(placement), Some(token)) = (&p.hiccup, hiccup_token) {
+            self.hiccup
+                .install_session(p.attempt_id, placement.workload_id, token);
+            self.hiccup.set_grant(
+                p.attempt_id,
+                crate::hiccup_bridge::HiccupGrant {
+                    named_publish: placement.named_publish.clone(),
+                    named_listen: placement.named_listen.clone(),
+                },
+            );
+        }
 
         let ready = p.lifecycle.readiness.as_ref().map(|_| false);
         let publication_eligible = if p.lifecycle.declares_publication {

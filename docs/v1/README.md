@@ -23,7 +23,8 @@ The documents have this precedence when they disagree:
 6. [`SECURITY.md`](SECURITY.md) — identity, authorization, cryptography, and secret custody.
 7. [`CONFORMANCE.md`](CONFORMANCE.md) — required tests and release gates.
 8. [`DELIVERY.md`](DELIVERY.md) — work decomposition and dependency order only.
-9. The parent design documents — product intent where this pack is silent.
+9. The parent design documents — product intent where this pack is silent,
+   including the [`cluster operations pattern registry`](../CLUSTER_OPERATIONS.md).
 
 [`RESOLUTION_MAP.md`](RESOLUTION_MAP.md) maps every formerly open parent-design
 question to its frozen v1 answer.

@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use gump_hiccup::{
-    AttemptSession, HealthInbound, OutboundHealth, PlacementStamp, PresenceBoard,
+    AttemptSession, HealthInbound, HiccupToken, OutboundHealth, PlacementStamp, PresenceBoard,
     handle_successful_health, plan_outbound_for,
 };
 use gump_types::{
@@ -22,6 +22,8 @@ pub struct HiccupPlacement {
     pub node_id: NodeId,
     pub agent_incarnation: u64,
     pub private_ip: Option<String>,
+    pub named_publish: BTreeSet<String>,
+    pub named_listen: BTreeSet<String>,
 }
 
 impl HiccupPlacement {
@@ -77,6 +79,17 @@ impl HiccupPlane {
         self.sessions
             .entry(attempt)
             .or_insert_with(|| AttemptSession::new(workload))
+    }
+
+    /// Install the exact token inherited by the workload for this attempt.
+    pub fn install_session(
+        &mut self,
+        attempt: AttemptId,
+        workload: WorkloadId,
+        token: HiccupToken,
+    ) {
+        self.sessions
+            .insert(attempt, AttemptSession::with_token(workload, token));
     }
 
     pub fn remove_attempt(&mut self, attempt: AttemptId) {

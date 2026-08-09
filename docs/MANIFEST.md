@@ -6,6 +6,8 @@
 >
 > The frozen v1 subset and machine-readable schema are in
 > [`v1/FORMATS.md`](v1/FORMATS.md) and [`../spec/v1/gump.schema.json`](../spec/v1/gump.schema.json).
+> The Ringtail capability and generated attempt-credential profile is defined
+> in [Gump–Ringtail Integration](RINGTAIL_INTEGRATION.md).
 
 ## 1. Role of the manifest
 
@@ -403,6 +405,9 @@ The initial source model should remain deliberately small:
 - `prompt` reads an interactive hidden prompt.
 - `stdin` or an inherited file descriptor supports automation without command-line exposure.
 - A credential-source connector may integrate an operating-system keychain or another secret provider.
+- `gump:attempt-token` asks the target Gump agent to generate a fresh
+  per-attempt credential. Only this non-sensitive source kind is retained in
+  public metadata; no value exists during packaging.
 
 Source connectors return bytes into protected process memory. Gump does not execute arbitrary source commands by default. Secret values MUST NOT be supplied directly as command-line arguments because shell history and process listings make that unsafe.
 
@@ -422,9 +427,12 @@ A future `public` class should be introduced only if there is a compelling need 
 Supported injection targets are:
 
 - `env`: add the value to the child environment under its logical name.
-- `file`: expose it through an anonymous memory-backed descriptor and inject a reference understood by the application.
+- `fd`: expose it through an anonymous memory-backed descriptor and inject a reference understood by the application.
 
-File injection requires an explicit application-visible path or descriptor contract. Gump does not materialize the value as an ordinary release file.
+Descriptor injection requires an explicit descriptor number. `reference_env`
+optionally names an environment entry and `reference_value` selects either
+`proc_path` (the default) or `descriptor_number`. Gump does not materialize the
+value as an ordinary release file. Production Linux uses a sealed `memfd`.
 
 ### 8.5 Local source overrides
 
@@ -573,6 +581,12 @@ rendezvous = "gump"
 `rendezvous = "gump"` asks Gump to deliver authenticated rank, peer-address, and rendezvous material in memory. It does not ask Gump to implement routes, RDMA, MPI, NCCL, or the collective protocol. Nodes must advertise the required capabilities, and cluster policy decides which vocabulary and probes are trusted.
 
 ## 12. Placement, rollout, and publication defaults
+
+The operational meaning of replacement modes, canaries, promotion gates,
+availability/surge budgets, pause, abort, and rollback is developed in
+[`CLUSTER_OPERATIONS.md`](CLUSTER_OPERATIONS.md). The manifest supplies release
+defaults; the accepted deployment declaration contains the normalized effective
+operation policy.
 
 These sections contribute defaults to deployment intent rather than changing release identity:
 

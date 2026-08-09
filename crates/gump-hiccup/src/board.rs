@@ -63,8 +63,18 @@ impl PresenceBoard {
         self.approx_bytes
     }
 
+    pub fn presence_count(&self) -> usize {
+        self.by_attempt.len()
+    }
+
     pub fn publisher_count(&self, topic: &CanonicalTopic) -> usize {
         self.by_topic.get(topic).map(|m| m.len()).unwrap_or(0)
+    }
+
+    /// Return current presence for an authoritative attempt, when any.
+    pub fn presence_for_attempt(&self, attempt: AttemptId) -> Option<&Presence> {
+        let topic = self.by_attempt.get(&attempt)?.first()?;
+        self.by_topic.get(topic)?.get(&attempt)
     }
 
     /// Replace prior declaration for this attempt completely (latest-presence).

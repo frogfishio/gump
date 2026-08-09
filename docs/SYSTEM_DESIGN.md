@@ -11,6 +11,7 @@ The developer-facing manifest contract is refined separately in [Gump Applicatio
 The distributed K/V contract is refined separately in [Gump Cluster Memory](CLUSTER_MEMORY.md).
 The user-facing state and recovery contract is refined separately in [Gump CLI and Lifecycle](CLI_LIFECYCLE.md).
 The native observability contract is refined separately in [Gump Telemetry with Ratatouille](TELEMETRY.md).
+The optional collector integration is refined separately in [Gump–Ringtail Integration](RINGTAIL_INTEGRATION.md).
 
 The native mTLS administration model is refined separately in
 [Gump Native Management Plane](MANAGEMENT_APP.md).
@@ -110,6 +111,12 @@ Gump's kernel consists of four mechanisms:
 4. **Supervision**: start, observe, coordinate, stop, and clean execution units.
 
 Everything else enters through a narrow, typed contract: Capsule storage connector, seal authority, execution driver, resource-capability provider, external-data connector, publication provider, or telemetry sink. These contracts are not a general plugin runtime.
+
+An optional Capsule-deployed capacity provider follows the same boundary. It
+may add, reshape, or remove machine supply without placing cloud-specific code
+or credentials in the kernel. Gump retains authoritative demand, placement,
+drain, membership, and fencing. The concept is developed in
+[`CAPACITY_AUTOSCALER.md`](CAPACITY_AUTOSCALER.md).
 
 An extension cannot create desired state, participate in controller election, bypass placement fencing, inspect unrelated runtime configuration, weaken Capsule verification, or store hidden Gump control state. Inputs and outputs are bounded and versioned; authority is explicit; timeouts and failure behavior are isolated. A missing optional extension affects only declarations that request it.
 
@@ -780,6 +787,12 @@ At no point does ingress request an unseal operation. At no point does the contr
 ### 13.3 Replacement and rollback
 
 For continuous workloads using replacement rollout, updates create new generation and unit attempts. Old and new generations may coexist only as permitted by update policy. When a publication provider is configured, it supplies the traffic handoff boundary: publish an eligible new unit before withdrawing an old one when availability policy requires overlap. Finite and coordinated workloads instead follow their declared supersession, cancellation, checkpoint, and restart semantics; rolling service behavior is not applied to them.
+
+The reusable operation state machine, progressive/canary algorithm, budgets,
+promotion gates, failure actions, and cross-workload applicability rules are
+maintained in [`CLUSTER_OPERATIONS.md`](CLUSTER_OPERATIONS.md). That registry is
+the design source for cluster-operation patterns before individual fields are
+frozen into a versioned implementation contract.
 
 Rollback is a new declaration generation referencing a previous capsule. Its protected runtime material is the material sealed into that capsule unless the new declaration explicitly references an authorized runtime-configuration replacement capsule under a future dialect extension.
 

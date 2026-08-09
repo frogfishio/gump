@@ -122,6 +122,9 @@ impl ProductRuntime {
         cluster_network: Option<ClusterNetworkConfig>,
     ) -> Result<Self, String> {
         let cluster_id = opts.cluster_id.unwrap_or_default();
+        let private_ip = cluster_network
+            .as_ref()
+            .map(|network| network.advertise.ip().to_string());
         let roles = opts.roles;
 
         let memory_on = roles.contains(NodeRole::Memory) || roles.contains(NodeRole::Controller);
@@ -193,6 +196,7 @@ impl ProductRuntime {
                     .as_ref()
                     .expect("execution has memory cluster")
                     .node_id(),
+                private_ip,
                 state_root,
                 Arc::clone(store),
                 Arc::clone(custody),

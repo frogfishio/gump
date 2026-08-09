@@ -1,0 +1,113 @@
+schema = "gump/1"
+
+[app]
+id = "ringtail"
+namespace = "default"
+version = "0.1.0"
+description = "Diskless Ringtail telemetry collector on every Gump node"
+
+[workload]
+lifetime = "continuous"
+coordination = "independent"
+success = "never"
+failure = "restart_unit"
+max_attempts = 20
+isolation = "continue_existing"
+isolation_grace = "5m"
+
+[package]
+root = "."
+include = ["bin/ringtail"]
+exclude = []
+format = "tar+zstd"
+
+[runtime]
+driver = "native"
+command = [
+  "./bin/ringtail",
+  "sink",
+  "--listen", "0.0.0.0:20080",
+  "--filter", "*",
+  "--ring-bytes", "32MB",
+  "--max-event-bytes", "256KB",
+  "--max-conns", "64",
+  "--control-listen", "127.0.0.1:20443",
+  "--control-insecure-loopback",
+]
+workdir = "."
+stop_signal = "TERM"
+stop_timeout = "10s"
+
+[runtime.ports.ingest]
+address = "0.0.0.0"
+value = 20080
+
+[runtime.ports.control]
+address = "127.0.0.1"
+value = 20443
+
+[runtime.variables.RINGTAIL_TOKEN_FD]
+source = "gump:attempt-token"
+required = true
+classification = "secret"
+encoding = "utf8"
+max_bytes = "1KiB"
+inject = "fd"
+fd = 7
+reference_env = "RINGTAIL_TOKEN_FD"
+reference_value = "descriptor_number"
+
+[health.readiness]
+type = "http"
+port = "ingest"
+path = "/health/ready"
+interval = "2s"
+timeout = "250ms"
+initial_delay = "250ms"
+successes = 1
+failures = 3
+
+[health.liveness]
+type = "http"
+port = "ingest"
+path = "/health/live"
+interval = "5s"
+timeout = "250ms"
+initial_delay = "1s"
+successes = 1
+failures = 3
+
+[discovery.hiccup]
+required_for_eligibility = false
+health_binding = "readiness"
+
+[provides.telemetry_sink]
+protocol = "ratatouille-http-ndjson/1"
+port = "ingest"
+path = "/sink"
+scope = "node"
+authentication = "gump-attempt-bearer"
+
+[provides.ringtail_control]
+protocol = "ringtail-control-mtls/1"
+port = "control"
+authentication = "mtls"
+
+[resources]
+cpu_request = "50m"
+memory_request = "96MiB"
+
+[deploy]
+coverage = "all_nodes"
+priority = "normal"
+preemptible = false
+
+[telemetry]
+protocol = "ratatouille/0.1"
+format = "ndjson"
+filter = "app/*"
+
+[telemetry.relay]
+capacity = "1MiB"
+max_record = "64KiB"
+overflow = "drop_oldest"

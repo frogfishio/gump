@@ -27,6 +27,46 @@ pub(crate) fn normalize_manifest(raw: RawManifest) -> Result<Manifest, ManifestE
     let resources = raw.resources.map(normalize_resources).transpose()?;
     let deploy = raw.deploy.map(normalize_deploy).transpose()?;
     let discovery = raw.discovery.map(normalize_discovery).transpose()?;
+    let mut provides = BTreeMap::new();
+    for (name, capability) in raw.provides {
+        if name.is_empty()
+            || name.len() > 63
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+        {
+            return Err(ManifestError::new(
+                ManifestErrorKind::InvalidValue,
+                format!("provides.{name}"),
+                "capability name must contain only lowercase ASCII, digits, and underscore",
+            ));
+        }
+        let port = label(&format!("provides.{name}.port"), &capability.port)?;
+        if !runtime.ports.contains_key(&port) {
+            return Err(ManifestError::new(
+                ManifestErrorKind::Semantic,
+                format!("provides.{name}.port"),
+                "provided capability refers to an undeclared runtime port",
+            ));
+        }
+        if capability.protocol.is_empty() || capability.authentication.is_empty() {
+            return Err(ManifestError::new(
+                ManifestErrorKind::InvalidValue,
+                format!("provides.{name}"),
+                "protocol and authentication must be non-empty",
+            ));
+        }
+        provides.insert(
+            name,
+            ProvidedCapability {
+                protocol: capability.protocol,
+                port,
+                path: capability.path,
+                scope: capability.scope,
+                authentication: capability.authentication,
+            },
+        );
+    }
     let publish = raw.publish.map(normalize_publish).transpose()?;
     let telemetry = raw.telemetry.map(normalize_telemetry).transpose()?;
     let local = raw.local.map(normalize_local).transpose()?;
@@ -42,6 +82,7 @@ pub(crate) fn normalize_manifest(raw: RawManifest) -> Result<Manifest, ManifestE
         resources,
         deploy,
         discovery,
+        provides,
         publish,
         telemetry,
         local,
@@ -274,6 +315,11 @@ fn normalize_variable(raw: RawVariable) -> Result<Variable, ManifestError> {
         inject,
         fd: raw.fd,
         reference_env: raw.reference_env,
+        reference_value: match raw.reference_value.as_deref().unwrap_or("proc_path") {
+            "proc_path" => FdReference::ProcPath,
+            "descriptor_number" => FdReference::DescriptorNumber,
+            other => return Err(invalid("runtime.variables.reference_value", other)),
+        },
     })
 }
 

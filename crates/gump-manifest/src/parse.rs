@@ -27,11 +27,25 @@ pub(crate) struct RawManifest {
     #[serde(default)]
     pub discovery: Option<RawDiscovery>,
     #[serde(default)]
+    pub provides: BTreeMap<String, RawProvidedCapability>,
+    #[serde(default)]
     pub publish: Option<RawPublish>,
     #[serde(default)]
     pub telemetry: Option<RawTelemetry>,
     #[serde(default)]
     pub local: Option<RawLocal>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawProvidedCapability {
+    pub protocol: String,
+    pub port: String,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub scope: Option<String>,
+    pub authentication: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -126,6 +140,8 @@ pub(crate) struct RawVariable {
     pub fd: Option<u16>,
     #[serde(default)]
     pub reference_env: Option<String>,
+    #[serde(default)]
+    pub reference_value: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

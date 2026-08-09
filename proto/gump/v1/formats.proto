@@ -105,6 +105,8 @@ message RuntimeVariableV1 {
   InjectionKind injection = 6;
   optional uint32 inherited_fd = 7;
   optional string reference_env = 8;
+  string reference_value = 9; // proc_path or descriptor_number
+  string source_kind = 10; // non-sensitive kind; never a local source locator
 }
 
 message PortSpecV1 {
@@ -211,6 +213,15 @@ message TelemetrySpecV1 {
   string overflow = 5;
 }
 
+message ProvidedCapabilityV1 {
+  string name = 1;
+  string protocol = 2;
+  string port_name = 3;
+  optional string path = 4;
+  optional string scope = 5;
+  string authentication = 6;
+}
+
 message ManifestV1 {
   string schema = 1; // gump/1
   AppIdentityV1 app = 2;
@@ -222,6 +233,7 @@ message ManifestV1 {
   optional PublicationSpecV1 publication = 8;
   TelemetrySpecV1 telemetry = 9;
   optional HiccupDiscoverySpecV1 hiccup = 10;
+  repeated ProvidedCapabilityV1 provides = 11; // sorted name
 }
 
 message ArchiveEntryV1 {

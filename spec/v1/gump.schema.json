@@ -16,6 +16,12 @@
     "resources": { "$ref": "#/$defs/resources" },
     "deploy": { "$ref": "#/$defs/deploy" },
     "discovery": { "$ref": "#/$defs/discovery" },
+    "provides": {
+      "type": "object",
+      "maxProperties": 64,
+      "propertyNames": { "type": "string", "pattern": "^[a-z0-9_]{1,63}$" },
+      "additionalProperties": { "$ref": "#/$defs/providedCapability" }
+    },
     "publish": { "$ref": "#/$defs/publish" },
     "telemetry": { "$ref": "#/$defs/telemetry" },
     "local": { "$ref": "#/$defs/local" }
@@ -25,6 +31,18 @@
       "type": "string",
       "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$",
       "maxLength": 63
+    },
+    "providedCapability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol", "port", "authentication"],
+      "properties": {
+        "protocol": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "port": { "$ref": "#/$defs/name" },
+        "path": { "type": "string", "pattern": "^/", "maxLength": 1024 },
+        "scope": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "authentication": { "type": "string", "minLength": 1, "maxLength": 128 }
+      }
     },
     "duration": {
       "type": "string",
@@ -140,14 +158,15 @@
       "additionalProperties": false,
       "required": ["source", "required", "classification", "inject"],
       "properties": {
-        "source": { "type": "string", "pattern": "^(?:env:[A-Za-z_][A-Za-z0-9_]*|prompt|stdin|connector:[^\\s]+)$" },
+        "source": { "type": "string", "pattern": "^(?:env:[A-Za-z_][A-Za-z0-9_]*|gump:attempt-token|prompt|stdin|connector:[^\\s]+)$" },
         "required": { "type": "boolean" },
         "classification": { "enum": ["internal", "secret"] },
         "encoding": { "enum": ["utf8", "bytes"] },
         "max_bytes": { "$ref": "#/$defs/bytes" },
         "inject": { "enum": ["env", "fd"] },
         "fd": { "type": "integer", "minimum": 3, "maximum": 1023 },
-        "reference_env": { "type": "string", "pattern": "^[A-Z_][A-Z0-9_]{0,127}$" }
+        "reference_env": { "type": "string", "pattern": "^[A-Z_][A-Z0-9_]{0,127}$" },
+        "reference_value": { "enum": ["proc_path", "descriptor_number"] }
       }
     },
     "port": {

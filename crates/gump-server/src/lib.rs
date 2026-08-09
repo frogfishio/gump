@@ -13,6 +13,7 @@ pub mod framing;
 pub mod machine;
 pub mod peer;
 pub mod recovery_txn;
+mod ringtail_relay;
 pub mod roles;
 pub mod runtime;
 pub mod serve;

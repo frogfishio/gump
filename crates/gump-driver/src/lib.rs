@@ -23,7 +23,7 @@ pub use abi::{
 pub use error::{DriverError, DriverErrorKind};
 pub use native::NativeDriver;
 pub use script::ScriptDriver;
-pub use secrets::{DeliveryScope, InjectForm, SecretValue};
+pub use secrets::{DeliveryScope, FdReferenceValue, InjectForm, SecretValue};
 pub use supervisor::{
     CAPTURE_RING_BYTES, CaptureRing, DRAIN_JOIN_TIMEOUT, PipeChunkSink, PipeDrains, StreamKind,
 };

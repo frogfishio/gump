@@ -356,12 +356,18 @@ fn handle_observe(
         subject,
         state: state.into(),
         detail: format!(
-            "cluster={} voters={} leader={leader:?} desired={} local_placements={} completed_units={} last_error={}",
+            "cluster={} voters={} leader={leader:?} desired={} local_placements={} ready={} completed_units={} hiccup_presence={} ringtail_active={} ringtail_accepted={} ringtail_failed={} ringtail_dropped={} last_error={}",
             daemon.cluster_id,
             memory_voters,
             status.desired,
             status.placements,
+            status.ready,
             status.completed,
+            status.hiccup_presence,
+            status.ringtail_active,
+            status.ringtail_accepted,
+            status.ringtail_failed,
+            status.ringtail_dropped,
             status.last_error.as_deref().unwrap_or("none")
         ),
     }
@@ -733,11 +739,23 @@ fn handle_deploy(
         });
     }
 
+    let expected_generation = match cluster.desired_generation(&namespace, &app) {
+        Ok(generation) => generation,
+        Err(message) => {
+            return LocalResponse::Error(ErrorBody {
+                code: "UNAVAILABLE".into(),
+                reason: "deploy.desired_generation".into(),
+                safe_message: message,
+            });
+        }
+    };
+
     let req = DeployTxnRequest {
         operation_id: op_bytes,
         operation_id_display: operation_id.clone(),
         namespace,
         app,
+        expected_generation,
         content_digest: digest,
         capsule_bytes: None,
         cluster_id: daemon_cluster,

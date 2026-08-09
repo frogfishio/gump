@@ -52,6 +52,14 @@
     group: gump
     mode: "0700"
 
+- name: Create non-authoritative executable application cache
+  ansible.builtin.file:
+    path: "{{ gump_server_state_root }}"
+    state: directory
+    owner: gump
+    group: gump
+    mode: "0700"
+
 - name: Upload Gump artifact to staging path
   ansible.builtin.copy:
     src: "{{ gump_artifact_path }}"

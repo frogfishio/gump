@@ -7,8 +7,8 @@ use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use gump_driver::{
-    AttemptContext, DeliveryScope, Driver, DriverKind, InjectForm, IoEndpoints, NativeDriver,
-    ReleaseRoot, ResourceGrant, RuntimeSpec, SecretPlan, SecretValue, StartFence,
+    AttemptContext, DeliveryScope, Driver, DriverKind, FdReferenceValue, InjectForm, IoEndpoints,
+    NativeDriver, ReleaseRoot, ResourceGrant, RuntimeSpec, SecretPlan, SecretValue, StartFence,
 };
 use gump_types::{AttemptId, CapsuleId, ClusterId, Secret, WorkloadId};
 
@@ -75,6 +75,7 @@ fn env_and_fd_injection_round_trip_and_no_root_leak() {
                 form: InjectForm::Fd {
                     fd: 7,
                     reference_env: Some("SECRET_FD".into()),
+                    reference_value: FdReferenceValue::ProcPath,
                 },
                 bytes: Secret::new(b"fd-payload".to_vec()),
             },

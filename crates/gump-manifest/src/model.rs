@@ -17,9 +17,19 @@ pub struct Manifest {
     pub resources: Option<Resources>,
     pub deploy: Option<Deploy>,
     pub discovery: Option<Discovery>,
+    pub provides: BTreeMap<String, ProvidedCapability>,
     pub publish: Option<Publish>,
     pub telemetry: Option<Telemetry>,
     pub local: Option<Local>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProvidedCapability {
+    pub protocol: String,
+    pub port: Label,
+    pub path: Option<String>,
+    pub scope: Option<String>,
+    pub authentication: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -163,6 +173,12 @@ pub enum Inject {
     Fd,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum FdReference {
+    ProcPath,
+    DescriptorNumber,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Variable {
     pub source: String,
@@ -173,6 +189,7 @@ pub struct Variable {
     pub inject: Inject,
     pub fd: Option<u16>,
     pub reference_env: Option<String>,
+    pub reference_value: FdReference,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

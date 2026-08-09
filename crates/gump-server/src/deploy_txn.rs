@@ -8,14 +8,16 @@
 
 use std::io::Cursor;
 
-use gump_capsule::StreamingCapsuleReader;
+use gump_capsule::{SegmentType, StreamingCapsuleReader};
 use gump_connectors::{
-    DeployPhase, ObjectLocator, ObjectStore, ObjectStoreErrorKind, OrphanCapsule, StreamedIngress,
-    final_capsule_key,
+    ByteRange, DeployPhase, ObjectLocator, ObjectStore, ObjectStoreErrorKind, OrphanCapsule,
+    StreamedIngress, final_capsule_key,
 };
 use gump_crypto::SignerTrustPolicy;
 use gump_memory::{MemoryCluster, RaftCommand, RaftResponse};
+use gump_protocol::pb::ReleaseMetadataV1;
 use gump_types::{CapsuleId, ClusterId};
+use prost::Message;
 use serde::{Deserialize, Serialize};
 
 /// Versioned pointer committed into RAM desired state. Executable declarations
@@ -35,6 +37,8 @@ pub struct DeployTxnRequest {
     pub operation_id_display: String,
     pub namespace: String,
     pub app: String,
+    /// Compare-and-set generation observed immediately before intent commit.
+    pub expected_generation: u64,
     pub content_digest: [u8; 32],
     /// Sealed Capsule bytes for quarantine→publish. Optional when the final
     /// object already exists with a matching digest (idempotent republish).
@@ -63,12 +67,13 @@ pub enum DeployTxnOutcome {
 
 /// Digest bound into Raft `Idempotent` (PROTOCOL.md §15 / D014).
 pub fn deploy_request_digest(req: &DeployTxnRequest) -> [u8; 32] {
-    let mut buf = Vec::with_capacity(16 + 32 + req.namespace.len() + req.app.len() + 2);
+    let mut buf = Vec::with_capacity(16 + 32 + 8 + req.namespace.len() + req.app.len() + 2);
     buf.extend_from_slice(&req.operation_id);
     buf.extend_from_slice(&req.content_digest);
     buf.extend_from_slice(req.namespace.as_bytes());
     buf.push(0);
     buf.extend_from_slice(req.app.as_bytes());
+    buf.extend_from_slice(&req.expected_generation.to_be_bytes());
     *blake3::hash(&buf).as_bytes()
 }
 
@@ -282,7 +287,7 @@ pub fn run_deploy_txn<S: ObjectStore>(
         inner: Box::new(RaftCommand::PutDesired {
             namespace: req.namespace.clone(),
             app: req.app.clone(),
-            expected_generation: 0,
+            expected_generation: req.expected_generation,
             payload,
             content_digest: req.content_digest,
         }),
@@ -411,7 +416,58 @@ pub fn run_verified_deploy_reader<S: ObjectStore>(
             orphan: None,
         };
     }
+    if let Err(reason) = verify_requested_application(store, &req) {
+        return DeployTxnOutcome::Failed {
+            phase: DeployPhase::LocalValidation,
+            reason,
+            orphan: None,
+        };
+    }
     run_deploy_txn(store, cluster, orphans, req)
+}
+
+fn verify_requested_application<S: ObjectStore>(
+    store: &S,
+    req: &DeployTxnRequest,
+) -> Result<(), String> {
+    let key = final_capsule_key(req.cluster_id, req.capsule_id).map_err(|e| e.to_string())?;
+    let meta = StreamingCapsuleReader::new(
+        store
+            .get_reader(&key, None)
+            .map_err(|e| format!("open verified Capsule metadata: {e}"))?,
+    )
+    .verify()
+    .map_err(|e| format!("verify published Capsule metadata: {e}"))?;
+    let descriptor = meta
+        .table
+        .descriptors
+        .iter()
+        .find(|descriptor| descriptor.segment_type == SegmentType::PublicMetadata)
+        .ok_or("Capsule lacks public release metadata")?;
+    let start = meta.inner_file_offset.saturating_add(descriptor.offset);
+    let public = store
+        .get(
+            &key,
+            Some(ByteRange {
+                start,
+                end: Some(start.saturating_add(descriptor.stored_length)),
+            }),
+        )
+        .map_err(|e| format!("read verified Capsule metadata: {e}"))?;
+    let release = ReleaseMetadataV1::decode(public.as_slice())
+        .map_err(|e| format!("decode verified release metadata: {e}"))?;
+    let app = release
+        .normalized_manifest
+        .and_then(|manifest| manifest.app)
+        .or(release.app)
+        .ok_or("Capsule lacks signed application identity")?;
+    if app.namespace != req.namespace || app.app_id != req.app {
+        return Err(format!(
+            "deployment target {}/{} does not match signed Capsule application {}/{}",
+            req.namespace, req.app, app.namespace, app.app_id
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -436,6 +492,7 @@ mod tests {
             operation_id_display: "019fdad7-510c-7ef0-8a2f-8ee3db130710".into(),
             namespace: "default".into(),
             app: "demo".into(),
+            expected_generation: 0,
             content_digest,
             capsule_bytes: Some(bytes.to_vec()),
             cluster_id: ClusterId::from_bytes(v7_from_hash(b"test-cluster")).unwrap(),
@@ -519,6 +576,34 @@ mod tests {
         )
         .unwrap();
         assert_eq!(store.head(&key).unwrap().digest, digest(body));
+    }
+
+    #[test]
+    fn later_deploy_advances_generation_with_compare_and_set() {
+        let mut store = FakeObjectStore::new();
+        let cluster = cluster();
+        let mut orphans = Vec::new();
+        let first = base_req(b"release-one");
+        assert!(matches!(
+            run_deploy_txn(&mut store, &cluster, &mut orphans, first),
+            DeployTxnOutcome::Success {
+                desired_generation: 1,
+                ..
+            }
+        ));
+
+        let mut second = base_req(b"release-two");
+        second.operation_id = parse_operation_id("019fdad7-510c-7ef0-8a2f-8ee3db130711").unwrap();
+        second.operation_id_display = "019fdad7-510c-7ef0-8a2f-8ee3db130711".into();
+        second.expected_generation = 1;
+        assert!(matches!(
+            run_deploy_txn(&mut store, &cluster, &mut orphans, second),
+            DeployTxnOutcome::Success {
+                desired_generation: 2,
+                ..
+            }
+        ));
+        assert!(orphans.is_empty());
     }
 
     #[test]

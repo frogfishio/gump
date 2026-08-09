@@ -1,0 +1,45 @@
+schema = "gump/1"
+
+[app]
+id = "ringtail-relay-probe"
+namespace = "default"
+description = "One finite telemetry event on every Gump node"
+
+[workload]
+lifetime = "finite"
+coordination = "independent"
+success = "all_exit_zero"
+failure = "fail_unit"
+
+[package]
+root = "."
+include = ["bin/probe.sh"]
+exclude = []
+format = "tar+zstd"
+
+[runtime]
+driver = "script"
+command = ["./bin/probe.sh"]
+interpreter = ["/bin/sh"]
+workdir = "."
+stop_signal = "TERM"
+stop_timeout = "5s"
+
+[resources]
+cpu_request = "10m"
+memory_request = "16MiB"
+
+[deploy]
+coverage = "all_nodes"
+priority = "normal"
+preemptible = false
+
+[telemetry]
+protocol = "ratatouille/0.1"
+format = "ndjson"
+filter = "app/*"
+
+[telemetry.relay]
+capacity = "1MiB"
+max_record = "64KiB"
+overflow = "drop_oldest"
