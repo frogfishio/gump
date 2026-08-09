@@ -25,6 +25,8 @@ use crate::cluster_state::DesiredSnapshotEntry;
 use crate::cluster_state::{RaftCommand, RaftResponse};
 use crate::ram_store::{MemoryNodeId, RamStateMachine, TypeConfig, ram_v2_stores};
 
+const LINEARIZABLE_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Snapshot of live Raft + applied controller authority for status surfaces.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ClusterStatusSnapshot {
@@ -158,7 +160,7 @@ impl MemoryCluster {
                 .map_err(|e| format!("raft new: {e}"))
         })?;
 
-        spawn_cluster_server(&runtime, raft.clone(), &network);
+        spawn_cluster_server(&runtime, raft.clone(), sm_handle.clone(), &network);
 
         if let Some(join) = network.join.take() {
             let response = runtime
@@ -241,16 +243,21 @@ impl MemoryCluster {
     /// Mutate through the live Raft node (never call [`crate::ClusterState::apply`] here).
     pub fn client_write(&self, cmd: RaftCommand) -> Result<RaftResponse, String> {
         self.runtime.block_on(async {
-            match self.raft.client_write(cmd.clone()).await {
-                Ok(resp) => Ok(resp.data),
-                Err(local_error) => {
-                    let leader = self.raft.metrics().borrow().current_leader;
+            let local =
+                tokio::time::timeout(LINEARIZABLE_TIMEOUT, self.raft.client_write(cmd.clone()))
+                    .await;
+            match local {
+                Ok(Ok(resp)) => Ok(resp.data),
+                Err(_) => Err("client_write timed out".to_string()),
+                Ok(Err(local_error)) => {
                     let Some(network) = &self.network else {
                         return Err(format!("client_write: {local_error}"));
                     };
-                    let Some(leader) = leader.filter(|id| *id != self.node_id) else {
-                        return Err(format!("client_write: {local_error}"));
-                    };
+                    let leader = await_remote_leader(&self.raft, self.node_id)
+                        .await
+                        .map_err(|leader_error| {
+                            format!("client_write: {local_error}; {leader_error}")
+                        })?;
                     let addr = network
                         .peers
                         .lock()
@@ -292,11 +299,16 @@ impl MemoryCluster {
     /// Linearizable read of applied desired-state length (GUMP-N016).
     pub fn desired_len(&self) -> Result<usize, String> {
         self.runtime.block_on(async {
-            self.raft
-                .ensure_linearizable()
-                .await
-                .map_err(|e| format!("ensure_linearizable: {e}"))?;
-            Ok(self.sm.cluster_state().await.desired_len())
+            match bounded_linearizable(&self.raft).await {
+                Ok(()) => Ok(self.sm.cluster_state().await.desired_len()),
+                Err(local_error) => match self.forward_read(ClusterRpc::DesiredLen).await? {
+                    ClusterReply::DesiredLen(len) => Ok(len),
+                    ClusterReply::Error(error) => Err(format!("forward desired_len: {error}")),
+                    _ => Err(format!(
+                        "forward desired_len returned unexpected response after {local_error}"
+                    )),
+                },
+            }
         })
     }
 
@@ -304,16 +316,29 @@ impl MemoryCluster {
     /// absent), after a linearizable read barrier.
     pub fn desired_generation(&self, namespace: &str, app: &str) -> Result<u64, String> {
         self.runtime.block_on(async {
-            self.raft
-                .ensure_linearizable()
-                .await
-                .map_err(|e| format!("ensure_linearizable: {e}"))?;
-            Ok(self
-                .sm
-                .cluster_state()
-                .await
-                .desired_generation(namespace, app)
-                .unwrap_or(0))
+            match bounded_linearizable(&self.raft).await {
+                Ok(()) => Ok(self
+                    .sm
+                    .cluster_state()
+                    .await
+                    .desired_generation(namespace, app)
+                    .unwrap_or(0)),
+                Err(local_error) => match self
+                    .forward_read(ClusterRpc::DesiredGeneration {
+                        namespace: namespace.to_string(),
+                        app: app.to_string(),
+                    })
+                    .await?
+                {
+                    ClusterReply::DesiredGeneration(generation) => Ok(generation),
+                    ClusterReply::Error(error) => {
+                        Err(format!("forward desired_generation: {error}"))
+                    }
+                    _ => Err(format!(
+                        "forward desired_generation returned unexpected response after {local_error}"
+                    )),
+                },
+            }
         })
     }
 
@@ -411,10 +436,7 @@ impl MemoryCluster {
     /// Linearizable committed desired-state view for the controller reconciler.
     pub fn desired_snapshot(&self) -> Result<Vec<DesiredSnapshotEntry>, String> {
         self.runtime.block_on(async {
-            self.raft
-                .ensure_linearizable()
-                .await
-                .map_err(|e| format!("ensure_linearizable: {e}"))?;
+            bounded_linearizable(&self.raft).await?;
             Ok(self.sm.cluster_state().await.desired_snapshot())
         })
     }
@@ -422,16 +444,44 @@ impl MemoryCluster {
     /// Whether live desired state references `digest` (GUMP-N016 inventory).
     pub fn desired_references_digest(&self, digest: &[u8; 32]) -> Result<bool, String> {
         self.runtime.block_on(async {
-            self.raft
-                .ensure_linearizable()
-                .await
-                .map_err(|e| format!("ensure_linearizable: {e}"))?;
-            Ok(self
-                .sm
-                .cluster_state()
-                .await
-                .desired_references_digest(digest))
+            match bounded_linearizable(&self.raft).await {
+                Ok(()) => Ok(self
+                    .sm
+                    .cluster_state()
+                    .await
+                    .desired_references_digest(digest)),
+                Err(local_error) => match self
+                    .forward_read(ClusterRpc::DesiredReferencesDigest(*digest))
+                    .await?
+                {
+                    ClusterReply::DesiredReferencesDigest(referenced) => Ok(referenced),
+                    ClusterReply::Error(error) => {
+                        Err(format!("forward desired_references_digest: {error}"))
+                    }
+                    _ => Err(format!(
+                        "forward desired_references_digest returned unexpected response after {local_error}"
+                    )),
+                },
+            }
         })
+    }
+
+    async fn forward_read(&self, request: ClusterRpc) -> Result<ClusterReply, String> {
+        let leader = await_remote_leader(&self.raft, self.node_id).await?;
+        let network = self
+            .network
+            .as_ref()
+            .ok_or_else(|| "linearizable read has no cluster network".to_string())?;
+        let addr = network
+            .peers
+            .lock()
+            .map_err(|_| "peer map poisoned".to_string())?
+            .get(&leader)
+            .copied()
+            .ok_or_else(|| format!("leader {leader} address unknown"))?;
+        call_addr(&network.client, addr, request)
+            .await
+            .map_err(|e| format!("forward linearizable read: {e}"))
     }
 
     pub fn shutdown(&self) -> Result<(), String> {
@@ -448,14 +498,48 @@ impl MemoryCluster {
     }
 }
 
+async fn bounded_linearizable(raft: &Raft<TypeConfig>) -> Result<(), String> {
+    match tokio::time::timeout(LINEARIZABLE_TIMEOUT, raft.ensure_linearizable()).await {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(error)) => Err(format!("ensure_linearizable: {error}")),
+        Err(_) => Err(format!(
+            "ensure_linearizable timed out after {}ms",
+            LINEARIZABLE_TIMEOUT.as_millis()
+        )),
+    }
+}
+
+async fn await_remote_leader(
+    raft: &Raft<TypeConfig>,
+    local_node: MemoryNodeId,
+) -> Result<MemoryNodeId, String> {
+    let deadline = tokio::time::Instant::now() + LINEARIZABLE_TIMEOUT;
+    loop {
+        if let Some(leader) = raft
+            .metrics()
+            .borrow()
+            .current_leader
+            .filter(|leader| *leader != local_node)
+        {
+            return Ok(leader);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err("linearizable operation has no known remote leader before deadline".into());
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 fn spawn_cluster_server(
     runtime: &tokio::runtime::Runtime,
     raft: Raft<TypeConfig>,
+    sm: RamStateMachine,
     network: &LiveClusterNetwork,
 ) {
     let endpoint = Arc::clone(&network.server);
     let state = ClusterRpcState {
         raft,
+        sm,
         client: Arc::clone(&network.client),
         peers: Arc::clone(&network.peers),
         allowed: Arc::clone(&network.join_tokens),
@@ -512,6 +596,7 @@ fn spawn_cluster_server(
 #[derive(Clone)]
 struct ClusterRpcState {
     raft: Raft<TypeConfig>,
+    sm: RamStateMachine,
     client: Arc<gump_transport::QuicEndpoint>,
     peers: Arc<std::sync::Mutex<std::collections::BTreeMap<MemoryNodeId, std::net::SocketAddr>>>,
     allowed: Arc<std::sync::Mutex<std::collections::BTreeMap<MemoryNodeId, [u8; 32]>>>,
@@ -545,10 +630,43 @@ async fn handle_cluster_rpc(
             Ok(r) => ClusterReply::Install(r),
             Err(e) => ClusterReply::Error(e.to_string()),
         },
-        ClusterRpc::ClientWrite(command) => match state.raft.client_write(command).await {
-            Ok(response) => ClusterReply::ClientWrite(response.data),
-            Err(e) => ClusterReply::Error(e.to_string()),
+        ClusterRpc::ClientWrite(command) => {
+            match tokio::time::timeout(LINEARIZABLE_TIMEOUT, state.raft.client_write(command)).await
+            {
+                Ok(Ok(response)) => ClusterReply::ClientWrite(response.data),
+                Ok(Err(e)) => ClusterReply::Error(e.to_string()),
+                Err(_) => ClusterReply::Error("client_write timed out".into()),
+            }
+        }
+        ClusterRpc::DesiredGeneration { namespace, app } => {
+            match bounded_linearizable(&state.raft).await {
+                Ok(()) => ClusterReply::DesiredGeneration(
+                    state
+                        .sm
+                        .cluster_state()
+                        .await
+                        .desired_generation(&namespace, &app)
+                        .unwrap_or(0),
+                ),
+                Err(error) => ClusterReply::Error(error),
+            }
+        }
+        ClusterRpc::DesiredLen => match bounded_linearizable(&state.raft).await {
+            Ok(()) => ClusterReply::DesiredLen(state.sm.cluster_state().await.desired_len()),
+            Err(error) => ClusterReply::Error(error),
         },
+        ClusterRpc::DesiredReferencesDigest(digest) => {
+            match bounded_linearizable(&state.raft).await {
+                Ok(()) => ClusterReply::DesiredReferencesDigest(
+                    state
+                        .sm
+                        .cluster_state()
+                        .await
+                        .desired_references_digest(&digest),
+                ),
+                Err(error) => ClusterReply::Error(error),
+            }
+        }
         ClusterRpc::HiccupPull => match fresh_hiccup_snapshot(&state.hiccup_snapshot) {
             Ok(snapshot) => ClusterReply::HiccupSnapshot(snapshot),
             Err(error) => ClusterReply::Error(error),

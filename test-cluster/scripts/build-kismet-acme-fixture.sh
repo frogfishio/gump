@@ -5,8 +5,8 @@ root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 inventory="$root_dir/ansible/inventory/terraform.ini"
 gump_bin="${GUMP_BIN:-$root_dir/../dist/bin/aarch64-apple-darwin/gump}"
 fixture_spec="$root_dir/fixtures/kismet-acme-pilot"
-kismet_asset="${KISMET_PILOT_ASSET:-$root_dir/../../kismet/dist/gump-handoff/pilot-7/kismet-v0.1.0-gump-pilot.7-x86_64-unknown-linux-gnu}"
-expected_sha256="de47f7798534662849ec904feed5aa6ecf3cad3427545413e0e6ba1a24ab5bb5"
+kismet_asset="${KISMET_PILOT_ASSET:-$root_dir/../../kismet/dist/gump-handoff/pilot-8/kismet-v0.1.0-gump-pilot.8-x86_64-unknown-linux-gnu}"
+expected_sha256="404c0e1199757be36e54cd6d07e49a4e683eafa1cf983ea2b39c1de983af2441"
 staging="$(mktemp -d)"
 trap 'rm -rf "$staging"' EXIT
 
@@ -26,13 +26,21 @@ if [[ -z "${KISMET_ACME_DIRECTORY_URL:-}" ]]; then
   echo "KISMET_ACME_DIRECTORY_URL is required." >&2
   exit 2
 fi
+if [[ "${KISMET_TLS_ISSUER:-}" != acme ]]; then
+  echo "KISMET_TLS_ISSUER must be acme." >&2
+  exit 2
+fi
+if [[ -z "${KISMET_ACME_ACCOUNT_JSON:-}" ]]; then
+  echo "KISMET_ACME_ACCOUNT_JSON is required." >&2
+  exit 2
+fi
 if [[ ! -x "$kismet_asset" ]]; then
-  echo "Missing Kismet Pilot 7 asset: $kismet_asset" >&2
+  echo "Missing Kismet Pilot 8 asset: $kismet_asset" >&2
   exit 2
 fi
 actual_sha256="$(shasum -a 256 "$kismet_asset" | awk '{print $1}')"
 if [[ "$actual_sha256" != "$expected_sha256" ]]; then
-  echo "Kismet Pilot 7 checksum mismatch: expected $expected_sha256, got $actual_sha256" >&2
+  echo "Kismet Pilot 8 checksum mismatch: expected $expected_sha256, got $actual_sha256" >&2
   exit 2
 fi
 
@@ -65,6 +73,8 @@ output="$root_dir/evidence/kismet-acme-pilot-$capsule_id.capsule"
 receipt="$root_dir/evidence/kismet-acme-pilot-$capsule_id.receipt.json"
 build_result="$(KISMET_ACME_EMAIL="$KISMET_ACME_EMAIL" \
   KISMET_ACME_DIRECTORY_URL="$KISMET_ACME_DIRECTORY_URL" \
+  KISMET_ACME_ACCOUNT_JSON="$KISMET_ACME_ACCOUNT_JSON" \
+  KISMET_TLS_ISSUER="$KISMET_TLS_ISSUER" \
   "$gump_bin" capsule build \
   --workspace "$staging" \
   --manifest gump.toml \

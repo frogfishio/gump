@@ -5,7 +5,7 @@ root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 inventory="$root_dir/ansible/inventory/terraform.ini"
 domain="${KISMET_ACME_DOMAIN:-gump.frogfish.io}"
 expected_ip="${KISMET_ACME_PUBLIC_IP:-159.223.56.100}"
-expected_sha256="de47f7798534662849ec904feed5aa6ecf3cad3427545413e0e6ba1a24ab5bb5"
+expected_sha256="404c0e1199757be36e54cd6d07e49a4e683eafa1cf983ea2b39c1de983af2441"
 require_public_trust="${KISMET_ACME_REQUIRE_PUBLIC_TRUST:-0}"
 expected_origins=(10.104.0.2 10.104.0.3 10.104.0.4)
 evidence_dir="$root_dir/evidence/kismet-acme-$(date -u +%Y%m%dT%H%M%SZ)"
@@ -152,11 +152,15 @@ test "$actual" = "$expected"
 attempt_root="$(tr '\0' '\n' <"/proc/$pid/environ" | sed -n 's/^GUMP_ATTEMPT_ROOT=//p')"
 test -n "$attempt_root"
 test -d "$attempt_root/kismet"
+if find "$attempt_root/kismet" -type f -name 'acme-account.json' -print -quit | grep -q .; then
+  echo 'Kismet persisted the supplied ACME account document.' >&2
+  exit 1
+fi
 if find "$attempt_root/kismet" -type f -perm /077 -print -quit | grep -q .; then
   echo 'Kismet wrote a credential, key, or state file with group/other permissions.' >&2
   exit 1
 fi
-printf 'pid=%s\nartifact_sha256=%s\nprivate_files=owner-only\n' "$pid" "$actual"
+printf 'pid=%s\nartifact_sha256=%s\nprivate_files=owner-only\nacme_account_persisted=false\n' "$pid" "$actual"
 REMOTE
 )"
 printf '%s\n' "$runtime_check" >"$evidence_dir/runtime.txt"

@@ -10,6 +10,10 @@ GUMP_LOCAL_BIN ?= $(abspath ../dist/bin/aarch64-apple-darwin/gump)
 GUMP_ARTIFACT_SHA256 ?=
 KISMET_ACME_STAGING_URL := https://acme-staging-v02.api.letsencrypt.org/directory
 KISMET_ACME_PRODUCTION_URL := https://acme-v02.api.letsencrypt.org/directory
+KISMET_MACRUN_PROJECT ?= kismet-gump-pilot8
+KISMET_MACRUN_STAGING_ENV ?= staging
+KISMET_MACRUN_PRODUCTION_ENV ?= production
+MACRUN_BIN ?= $(shell command -v macrun)
 
 help:
 	@printf '%s\n' \
@@ -137,13 +141,13 @@ replace-http-origin-pilot: deploy-http-origin-pilot
 	EXPECT_SUPERSEDED=1 "$(ROOT_DIR)/scripts/accept-http-origin-pilot.sh"
 
 fixture-kismet-acme-staging:
-	"$(MACRUN)" fixtures env KISMET_ACME_DIRECTORY_URL="$(KISMET_ACME_STAGING_URL)" GUMP_BIN="$(GUMP_LOCAL_BIN)" "$(ROOT_DIR)/scripts/build-kismet-acme-fixture.sh"
+	"$(MACRUN)" fixtures "$(MACRUN_BIN)" run "$(KISMET_MACRUN_PROJECT)" "$(KISMET_MACRUN_STAGING_ENV)" -- env GUMP_BIN="$(GUMP_LOCAL_BIN)" "$(ROOT_DIR)/scripts/build-kismet-acme-fixture.sh"
 
 deploy-kismet-acme-staging: fixture-kismet-acme-staging
 	"$(ROOT_DIR)/scripts/deploy-kismet-acme-fixture.sh"
 
 fixture-kismet-acme-production:
-	"$(MACRUN)" fixtures env KISMET_ACME_DIRECTORY_URL="$(KISMET_ACME_PRODUCTION_URL)" GUMP_BIN="$(GUMP_LOCAL_BIN)" "$(ROOT_DIR)/scripts/build-kismet-acme-fixture.sh"
+	"$(MACRUN)" fixtures "$(MACRUN_BIN)" run "$(KISMET_MACRUN_PROJECT)" "$(KISMET_MACRUN_PRODUCTION_ENV)" -- env GUMP_BIN="$(GUMP_LOCAL_BIN)" "$(ROOT_DIR)/scripts/build-kismet-acme-fixture.sh"
 
 deploy-kismet-acme-production: fixture-kismet-acme-production
 	"$(ROOT_DIR)/scripts/deploy-kismet-acme-fixture.sh"

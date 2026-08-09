@@ -46,13 +46,16 @@ retains trusted `X-Forwarded-Host`, and connects directly to the node-private
 backend. Replacement additionally proves that old attempt observations are
 marked superseded while only current attempts remain routable.
 
-`fixtures/kismet-acme-pilot/gump.toml` carries Pilot 7 as one fixed unit. Its
+`fixtures/kismet-acme-pilot/gump.toml` carries Pilot 8 as one fixed unit. Its
 control plane stays on loopback while dedicated high HTTP/S ports are exposed
 only through narrowly labelled forwarding rules on `gump01`. A separate cloud
 firewall admits 80/443 to that node alone. The fixture takes its ACME contact
 and directory as Capsule-protected runtime configuration, starts with Let's
 Encrypt staging, and retains a fresh-attempt boundary before production. The
-acceptance probe checks exact DNS, private control-plane isolation, three
+ACME account document is bootstrapped by Kismet into an isolated Macrun scope,
+then transported as an opaque protected Capsule value. The acceptance probe
+checks that the account document is never persisted under the attempt root in
+addition to exact DNS, private control-plane isolation, three
 discovered origins, issuance completion, certificate hostname coverage,
 unknown-SNI rejection, owner-only TLS state, and HTTPS routing across all three
 private origins without collecting challenge or private-key material.

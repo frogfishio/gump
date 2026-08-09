@@ -54,6 +54,12 @@ pub(crate) enum ClusterRpc {
     Vote(VoteRequest<MemoryNodeId>),
     Install(InstallSnapshotRequest<TypeConfig>),
     ClientWrite(RaftCommand),
+    DesiredGeneration {
+        namespace: String,
+        app: String,
+    },
+    DesiredLen,
+    DesiredReferencesDigest([u8; 32]),
     Join {
         node_id: MemoryNodeId,
         advertise: SocketAddr,
@@ -74,6 +80,9 @@ pub(crate) enum ClusterReply {
     Vote(VoteResponse<MemoryNodeId>),
     Install(InstallSnapshotResponse<MemoryNodeId>),
     ClientWrite(RaftResponse),
+    DesiredGeneration(u64),
+    DesiredLen(usize),
+    DesiredReferencesDigest(bool),
     Joined {
         peers: BTreeMap<MemoryNodeId, SocketAddr>,
     },
@@ -84,6 +93,9 @@ pub(crate) enum ClusterReply {
 
 pub(crate) const MAX_HICCUP_SNAPSHOT_BYTES: usize = 192 * 1024;
 const HICCUP_SNAPSHOT_FRESH_FOR: Duration = Duration::from_secs(5);
+// Keep this longer than the server-side five-second Raft barriers so a peer can
+// return the bounded failure instead of racing the transport deadline.
+const CLUSTER_RPC_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(crate) struct LocalHiccupSnapshot {
     pub payload: String,
@@ -188,6 +200,19 @@ impl QuicRaftNetwork {
 }
 
 pub(crate) async fn call_addr(
+    endpoint: &QuicEndpoint,
+    addr: SocketAddr,
+    request: ClusterRpc,
+) -> Result<ClusterReply, io::Error> {
+    tokio::time::timeout(
+        CLUSTER_RPC_TIMEOUT,
+        call_addr_inner(endpoint, addr, request),
+    )
+    .await
+    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "cluster RPC timed out"))?
+}
+
+async fn call_addr_inner(
     endpoint: &QuicEndpoint,
     addr: SocketAddr,
     mut request: ClusterRpc,

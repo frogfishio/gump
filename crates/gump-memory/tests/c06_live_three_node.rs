@@ -160,7 +160,46 @@ fn three_nodes_join_promote_and_replicate_desired_state() {
     assert!(seed.observed_finite_completed("default", "live-three", 1, &unit_id));
     assert!(node3.observed_finite_completed("default", "live-three", 1, &unit_id));
 
+    // A cluster that still has quorum must remain writable after the original
+    // seed loses leadership. Every surviving local API needs the same
+    // leader-routed linearizable generation view; callers cannot be expected
+    // to infer the leader from an opaque numeric node ID.
+    seed.shutdown().unwrap();
+    let mut elected = None;
+    for _ in 0..100 {
+        for node in [&node2, &node3] {
+            let status = node.status_snapshot().unwrap();
+            if status.current_leader == Some(status.node_id) {
+                elected = status.current_leader;
+                break;
+            }
+        }
+        if elected.is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(elected.is_some(), "surviving quorum did not elect a leader");
+    assert_eq!(
+        node2.desired_generation("default", "live-three").unwrap(),
+        1
+    );
+    assert_eq!(
+        node3.desired_generation("default", "live-three").unwrap(),
+        1
+    );
+
+    let replacement = node3
+        .client_write(RaftCommand::PutDesired {
+            namespace: "default".into(),
+            app: "after-election".into(),
+            expected_generation: 0,
+            payload: b"replacement".to_vec(),
+            content_digest: [9; 32],
+        })
+        .unwrap();
+    assert!(matches!(replacement, gump_memory::RaftResponse::Applied(_)));
+
     node3.shutdown().unwrap();
     node2.shutdown().unwrap();
-    seed.shutdown().unwrap();
 }

@@ -21,17 +21,17 @@ PY
 remote_capsule="/run/gump/incoming-$capsule_id.capsule"
 operation_id="$(python3 -c 'import uuid; print(uuid.uuid7())')"
 result=""
-for ordinal in 1 2 3; do
+for ordinal in ${GUMP_DEPLOY_ORDINALS:-1 2 3}; do
   host="gump0${ordinal}"
   public_ip="$(awk -v host="$host" '$1==host { for(i=1;i<=NF;i++) if($i ~ /^ansible_host=/){split($i,a,"="); print a[2]} }' "$inventory")"
   ssh_key="$(awk -v host="$host" '$1==host { for(i=1;i<=NF;i++) if($i ~ /^ansible_ssh_private_key_file=/){sub(/^ansible_ssh_private_key_file=/,"",$i); print $i} }' "$inventory")"
   ssh_opts=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new)
   if [[ -n "$ssh_key" ]]; then ssh_opts+=(-i "$ssh_key"); fi
-  echo "Trying idempotent Pilot 7 deployment through $host..." >&2
+  echo "Trying idempotent Pilot 8 deployment through $host..." >&2
   ssh "${ssh_opts[@]}" "manager@$public_ip" "sudo -u gump tee '$remote_capsule' >/dev/null" <"$capsule"
   set +e
   result="$(ssh "${ssh_opts[@]}" "manager@$public_ip" \
-    "sudo -u gump /usr/local/bin/gump deploy --operation-id '$operation_id' --digest '$digest' --capsule '$remote_capsule' --namespace default --app kismet-acme-pilot --socket /run/gump/gump.sock --wait intent_accepted --format machine")"
+    "sudo -u gump timeout 60s /usr/local/bin/gump deploy --operation-id '$operation_id' --digest '$digest' --capsule '$remote_capsule' --namespace default --app kismet-acme-pilot --socket /run/gump/gump.sock --wait intent_accepted --format machine")"
   deploy_rc=$?
   set -e
   ssh "${ssh_opts[@]}" "manager@$public_ip" "sudo -u gump rm -f '$remote_capsule'"
@@ -39,6 +39,7 @@ for ordinal in 1 2 3; do
     printf '%s\n' "$result"
     exit 0
   fi
+  printf 'Pilot 8 deployment through %s failed (rc=%s):\n%s\n' "$host" "$deploy_rc" "$result" >&2
 done
 printf '%s\n' "$result"
 exit 1

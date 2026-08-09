@@ -3,8 +3,8 @@ schema = "gump/1"
 [app]
 id = "kismet-acme-pilot"
 namespace = "default"
-version = "0.1.0-gump-pilot.7"
-description = "Single-entry Kismet real DNS and ACME pilot"
+version = "0.1.0-gump-pilot.8"
+description = "Single-entry Kismet ACME bootstrap and protected-account pilot"
 
 [workload]
 lifetime = "continuous"
@@ -54,12 +54,28 @@ encoding = "utf8"
 max_bytes = "1KiB"
 inject = "env"
 
+[runtime.variables.KISMET_TLS_ISSUER]
+source = "env:KISMET_TLS_ISSUER"
+required = true
+classification = "internal"
+encoding = "utf8"
+max_bytes = "1KiB"
+inject = "env"
+
 [runtime.variables.KISMET_ACME_DIRECTORY_URL]
 source = "env:KISMET_ACME_DIRECTORY_URL"
 required = true
 classification = "internal"
 encoding = "utf8"
 max_bytes = "1KiB"
+inject = "env"
+
+[runtime.variables.KISMET_ACME_ACCOUNT_JSON]
+source = "env:KISMET_ACME_ACCOUNT_JSON"
+required = true
+classification = "secret"
+encoding = "utf8"
+max_bytes = "64KiB"
 inject = "env"
 
 [health.liveness]
