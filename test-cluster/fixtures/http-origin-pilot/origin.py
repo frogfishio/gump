@@ -5,7 +5,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
 PORT = 18081
-DOMAINS = ["origin.gump.test", "alternate.gump.test", "gump.frogfish.io"]
+DOMAINS = ["gump.frogfish.io"]
 MEDIA_TYPE = "application/vnd.gump.hiccup+json; version=1"
 
 

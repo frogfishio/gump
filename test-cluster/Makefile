@@ -1,4 +1,4 @@
-.PHONY: help init plan infra configure-base install-gump configure verify form unseal smoke fixture-finite deploy-finite accept-finite live-finite fixture-ringtail deploy-ringtail fixture-ringtail-relay-probe deploy-ringtail-relay-probe accept-ringtail live-ringtail fixture-kismet-pilot deploy-kismet-pilot accept-kismet-pilot live-kismet-pilot fixture-http-origin-pilot deploy-http-origin-pilot accept-http-origin-pilot live-http-origin-pilot replace-http-origin-pilot destroy
+.PHONY: help init plan infra configure-base install-gump configure verify form unseal smoke fixture-finite deploy-finite accept-finite live-finite fixture-ringtail deploy-ringtail fixture-ringtail-relay-probe deploy-ringtail-relay-probe accept-ringtail live-ringtail fixture-kismet-pilot deploy-kismet-pilot accept-kismet-pilot live-kismet-pilot fixture-http-origin-pilot deploy-http-origin-pilot accept-http-origin-pilot live-http-origin-pilot replace-http-origin-pilot fixture-kismet-acme-staging deploy-kismet-acme-staging fixture-kismet-acme-production deploy-kismet-acme-production configure-kismet-acme-ingress accept-kismet-acme live-kismet-acme-staging live-kismet-acme-production remove-kismet-acme-ingress destroy
 
 ROOT_DIR := $(abspath .)
 TERRAFORM_DIR := $(ROOT_DIR)/terraform
@@ -8,6 +8,8 @@ MACRUN := $(ROOT_DIR)/scripts/macrun-exec.sh
 GUMP_ARTIFACT ?= $(abspath ../dist/bin/x86_64-unknown-linux-gnu/gump)
 GUMP_LOCAL_BIN ?= $(abspath ../dist/bin/aarch64-apple-darwin/gump)
 GUMP_ARTIFACT_SHA256 ?=
+KISMET_ACME_STAGING_URL := https://acme-staging-v02.api.letsencrypt.org/directory
+KISMET_ACME_PRODUCTION_URL := https://acme-v02.api.letsencrypt.org/directory
 
 help:
 	@printf '%s\n' \
@@ -35,6 +37,9 @@ help:
 	  '  make live-kismet-pilot Deploy the first Kismet ELF on all nodes and accept process/health.' \
 	  '  make live-http-origin-pilot  Prove Hiccup origin discovery and Kismet hostname routing.' \
 	  '  make replace-http-origin-pilot  Replace origins and prove immediate attempt supersession.' \
+	  '  make live-kismet-acme-staging  Run Pilot 7 against real DNS and Let’s Encrypt staging.' \
+	  '  make live-kismet-acme-production  Replace staging with a fresh publicly trusted generation.' \
+	  '  make remove-kismet-acme-ingress  Remove only the Pilot 7 host forwarding rules.' \
 	  '  make destroy    Destroy compute; requires CONFIRM_DESTROY=YES.'
 
 init:
@@ -130,6 +135,38 @@ live-http-origin-pilot: deploy-http-origin-pilot accept-http-origin-pilot
 
 replace-http-origin-pilot: deploy-http-origin-pilot
 	EXPECT_SUPERSEDED=1 "$(ROOT_DIR)/scripts/accept-http-origin-pilot.sh"
+
+fixture-kismet-acme-staging:
+	"$(MACRUN)" fixtures env KISMET_ACME_DIRECTORY_URL="$(KISMET_ACME_STAGING_URL)" GUMP_BIN="$(GUMP_LOCAL_BIN)" "$(ROOT_DIR)/scripts/build-kismet-acme-fixture.sh"
+
+deploy-kismet-acme-staging: fixture-kismet-acme-staging
+	"$(ROOT_DIR)/scripts/deploy-kismet-acme-fixture.sh"
+
+fixture-kismet-acme-production:
+	"$(MACRUN)" fixtures env KISMET_ACME_DIRECTORY_URL="$(KISMET_ACME_PRODUCTION_URL)" GUMP_BIN="$(GUMP_LOCAL_BIN)" "$(ROOT_DIR)/scripts/build-kismet-acme-fixture.sh"
+
+deploy-kismet-acme-production: fixture-kismet-acme-production
+	"$(ROOT_DIR)/scripts/deploy-kismet-acme-fixture.sh"
+
+configure-kismet-acme-ingress:
+	"$(ROOT_DIR)/scripts/configure-kismet-acme-ingress.sh"
+
+accept-kismet-acme:
+	"$(ROOT_DIR)/scripts/accept-kismet-acme.sh"
+
+live-kismet-acme-staging:
+	$(MAKE) deploy-http-origin-pilot
+	$(MAKE) deploy-kismet-acme-staging
+	$(MAKE) configure-kismet-acme-ingress
+	$(MAKE) accept-kismet-acme
+
+live-kismet-acme-production:
+	$(MAKE) deploy-kismet-acme-production
+	$(MAKE) configure-kismet-acme-ingress
+	KISMET_ACME_REQUIRE_PUBLIC_TRUST=1 $(MAKE) accept-kismet-acme
+
+remove-kismet-acme-ingress:
+	"$(ROOT_DIR)/scripts/remove-kismet-acme-ingress.sh"
 
 destroy:
 	@test "$(CONFIRM_DESTROY)" = YES || { echo 'Refusing: rerun with CONFIRM_DESTROY=YES' >&2; exit 2; }

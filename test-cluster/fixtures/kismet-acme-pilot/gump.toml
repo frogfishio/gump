@@ -3,7 +3,7 @@ schema = "gump/1"
 [app]
 id = "kismet-acme-pilot"
 namespace = "default"
-version = "0.1.0-gump-pilot.7-staging"
+version = "0.1.0-gump-pilot.7"
 description = "Single-entry Kismet real DNS and ACME pilot"
 
 [workload]
@@ -36,7 +36,7 @@ address = "127.0.0.1"
 value = 18082
 inject = "env:KISMET_LISTEN_PORT"
 
-[runtime.ports.public_http]
+[runtime.ports.public-http]
 address = "0.0.0.0"
 value = 18083
 inject = "env:KISMET_PUBLIC_HTTP_LISTEN_PORT"
@@ -51,7 +51,7 @@ source = "env:KISMET_ACME_EMAIL"
 required = true
 classification = "internal"
 encoding = "utf8"
-max_bytes = "320B"
+max_bytes = "1KiB"
 inject = "env"
 
 [runtime.variables.KISMET_ACME_DIRECTORY_URL]

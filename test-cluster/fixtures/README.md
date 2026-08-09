@@ -35,15 +35,27 @@ supplied ELF checksum through `/proc`. The fixed port and wrapper remain
 explicit workarounds for the not-yet-composed automatic port allocator/injector.
 
 `fixtures/http-origin-pilot/gump.toml` is a deliberately tiny all-node web
-application. Each attempt advertises `http.origin/1` with two test hostnames,
-reads its Hiccup token from Gump's inherited descriptor, and listens on its
-node-private address. Acceptance requires all three Kismet attempts to report
-all three healthy origins and route `origin.gump.test` without a publication
-file or seed address. The probe verifies that Kismet preserves the requested
-public `Host`, retains trusted `X-Forwarded-Host`, and connects directly to the
-node-private backend. Its replacement target additionally proves that old
-attempt observations are marked superseded while only current attempts remain
-routable.
+application. In its current real-ACME generation each attempt advertises
+`http.origin/1` with only the live Pilot 7 hostname; public ACME must not be
+asked to issue certificates for synthetic `.test` names. It reads its Hiccup
+token from Gump's inherited descriptor and listens on its node-private address.
+Acceptance requires the selected Kismet attempt to report all three healthy
+origins and route `gump.frogfish.io` without a publication file or seed
+address. The probe verifies that Kismet preserves the requested public `Host`,
+retains trusted `X-Forwarded-Host`, and connects directly to the node-private
+backend. Replacement additionally proves that old attempt observations are
+marked superseded while only current attempts remain routable.
+
+`fixtures/kismet-acme-pilot/gump.toml` carries Pilot 7 as one fixed unit. Its
+control plane stays on loopback while dedicated high HTTP/S ports are exposed
+only through narrowly labelled forwarding rules on `gump01`. A separate cloud
+firewall admits 80/443 to that node alone. The fixture takes its ACME contact
+and directory as Capsule-protected runtime configuration, starts with Let's
+Encrypt staging, and retains a fresh-attempt boundary before production. The
+acceptance probe checks exact DNS, private control-plane isolation, three
+discovered origins, issuance completion, certificate hostname coverage,
+unknown-SNI rejection, owner-only TLS state, and HTTPS routing across all three
+private origins without collecting challenge or private-key material.
 
 Fixture application values come from the narrow macrun `fixtures` scope. No
 plaintext `.env` or generated secret file belongs in this directory.
