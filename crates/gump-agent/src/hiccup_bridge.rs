@@ -1,4 +1,4 @@
-//! One-node Hiccup wiring on the agent reconcile path (GUMP-N017 / D016).
+//! Hiccup wiring on the agent reconcile path (GUMP-N017 / D016).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -24,6 +24,9 @@ pub struct HiccupPlacement {
     pub private_ip: Option<String>,
     pub named_publish: BTreeSet<String>,
     pub named_listen: BTreeSet<String>,
+    /// `true` binds Hiccup negotiation to the liveness HTTP check; `false`
+    /// retains the original readiness binding.
+    pub bind_liveness: bool,
 }
 
 impl HiccupPlacement {
@@ -50,7 +53,8 @@ impl HiccupPlacement {
     }
 }
 
-/// Agent-local one-node board + per-attempt sessions.
+/// Agent-local board + per-attempt sessions. Gump-server exchanges bounded
+/// local-node snapshots between authenticated memory peers.
 #[derive(Default)]
 pub struct HiccupPlane {
     pub board: PresenceBoard,
@@ -112,6 +116,20 @@ impl HiccupPlane {
                     .map(|g| g.named_listen.contains(topic.as_str()))
                     .unwrap_or(false)
         }))
+    }
+
+    pub fn export_cluster_snapshot(
+        &self,
+        local_node: NodeId,
+        now_ms: u64,
+    ) -> Result<String, String> {
+        self.board
+            .export_cluster_snapshot(local_node, InstantMillis::from_millis(now_ms))
+    }
+
+    pub fn merge_cluster_snapshot(&mut self, snapshot: &str, now_ms: u64) -> Result<usize, String> {
+        self.board
+            .merge_cluster_snapshot(snapshot, InstantMillis::from_millis(now_ms))
     }
 
     pub fn on_health_ok(&mut self, ctx: HealthOkCtx<'_>) -> bool {

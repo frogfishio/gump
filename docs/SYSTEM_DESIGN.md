@@ -639,13 +639,22 @@ Gump does not implement the underlying fabric, routes, NCCL, MPI, collective alg
 Hiccup is Gump's optional, health-driven discovery facility. An application can
 extend an ordinary HTTP health response to advertise Hiccup support. Gump then
 uses authenticated POST exchanges on that endpoint to receive one current
-declaration and deliver current matching peer presence.
+declaration and deliver current peer presence. Capability-mode applications
+receive the complete bounded directory of integration points advertised by
+healthy attempts and filter it themselves; they do not declare dependencies or
+subscriptions to Gump.
 
 Gump stamps stable workload/unit identity, exact attempt incarnation, and the
 receiver-reachable private IP. `@self` introduces instances of the same
 workload without a configured topic; authorized named topics support broader
 discovery. Applications may attach public JSON and opaque application-encrypted
 data whose keys Gump does not manage as part of Hiccup.
+
+An attempt may advertise several opaque capability identifiers with public
+contact metadata. Gump attests only which current unit and attempt made the
+claim and which private IP is reachable. It does not attest that a capability
+is legitimate, compatible, or accessible. Authentication and authorization of
+the subsequent direct connection belong entirely to the applications.
 
 Hiccup is a speed-dating venue, not a relationship participant. It does not
 proxy application traffic, replicate application state, establish consensus,
@@ -805,6 +814,23 @@ The publication contract is deliberately narrow: reconcile an authorized ready e
 Kismet is Gump's first-class publication provider. The two products have native identity mapping, lifecycle integration, useful discovery defaults, and excellent diagnostics when colocated, but neither product is required for the other to function. Gump must be independently installable, testable, operable, and recoverable with no Kismet components present.
 
 When the Kismet provider is selected, the agent communicates with its local Kismet daemon over an authenticated Unix-domain protocol.
+
+Kismet itself may also run as an ordinary Gump workload. In that case Hiccup
+supplies only ephemeral peer candidates: Kismet advertises its public Kismet
+node ID and cluster port through the liveness-bound `/health` response, while
+Gump stamps the current private IP and attempt identity. Kismet remains
+authoritative for transport authentication, membership, failure detection,
+quorum, and removal. Cluster-aware `/ready` must not drive this discovery,
+because requiring established peers before exchanging candidates creates a
+bootstrap cycle.
+
+Running Kismet as an `all_nodes` workload does not make its identity stateless.
+Every allocation requires a unique cluster-issued credential, protected node
+key, cluster manifest, and crash-safe incarnation state. One credential must
+never be cloned across several Gump units. The node-affinity, recovery, and
+identity-provisioning contract for these files is a separate integration
+boundary and must be satisfied before the Kismet fixture can claim production
+convergence. Hiccup intentionally does not solve it.
 
 A publication request contains:
 

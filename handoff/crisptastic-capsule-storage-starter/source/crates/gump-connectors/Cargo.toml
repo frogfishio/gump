@@ -1,0 +1,25 @@
+[package]
+name = "gump-connectors"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Object store, ingress, declaration accept (D04), and deploy workflow (D05)."
+
+[dependencies]
+gump-types = { workspace = true }
+gump-capsule = { workspace = true }
+gump-crypto = { workspace = true }
+blake3 = { workspace = true }
+rusty-s3 = "0.10.2"
+ureq = { version = "2.12", default-features = false, features = ["tls"] }
+url = "2.5.4"
+rustix = { version = "1", features = ["process"] }
+tempfile = { workspace = true }
+
+[dev-dependencies]
+rand_core = { workspace = true }
+rusty-s3 = "0.10.2"
+ureq = { version = "2.12", default-features = false, features = ["tls"] }
+url = "2.5.4"

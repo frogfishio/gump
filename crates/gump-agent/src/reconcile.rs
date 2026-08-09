@@ -178,9 +178,25 @@ impl<D: Driver> EffectExecutor<D> {
         }
     }
 
-    /// Shared one-node Hiccup presence board (GUMP-N017).
+    /// Local Hiccup keeper view (GUMP-N017), including ephemeral peer snapshots.
     pub fn hiccup_plane(&self) -> &HiccupPlane {
         &self.hiccup
+    }
+
+    pub fn hiccup_cluster_snapshot(
+        &self,
+        local_node: gump_types::NodeId,
+        now_ms: u64,
+    ) -> Result<String, String> {
+        self.hiccup.export_cluster_snapshot(local_node, now_ms)
+    }
+
+    pub fn merge_hiccup_cluster_snapshot(
+        &mut self,
+        snapshot: &str,
+        now_ms: u64,
+    ) -> Result<usize, String> {
+        self.hiccup.merge_cluster_snapshot(snapshot, now_ms)
     }
 
     pub fn with_isolation(mut self, policy: IsolationPolicy) -> Self {
@@ -638,7 +654,7 @@ impl<D: Driver> EffectExecutor<D> {
                 let unit_id = self.live.get(&id).map(|a| a.unit_id);
                 let fence = self.live.get(&id).map(|a| a.placement_fence).unwrap_or(0);
                 let out = match (spec.kind, hiccup_bind.as_ref(), unit_id) {
-                    (CheckKind::Http, Some(bind), Some(unit)) => {
+                    (CheckKind::Http, Some(bind), Some(unit)) if !bind.bind_liveness => {
                         self.run_http_with_hiccup(id, &spec, bind, unit, fence, now_ms, budget)
                     }
                     _ => run_check(&spec, process_running, budget),
@@ -661,7 +677,15 @@ impl<D: Driver> EffectExecutor<D> {
                 .map(|a| a.liveness.due(now_ms, started_ms, &spec))
                 .unwrap_or(false);
             if due {
-                let out = run_check(&spec, process_running, budget);
+                let hiccup_bind = self.live.get(&id).and_then(|a| a.hiccup.clone());
+                let unit_id = self.live.get(&id).map(|a| a.unit_id);
+                let fence = self.live.get(&id).map(|a| a.placement_fence).unwrap_or(0);
+                let out = match (spec.kind, hiccup_bind.as_ref(), unit_id) {
+                    (CheckKind::Http, Some(bind), Some(unit)) if bind.bind_liveness => {
+                        self.run_http_with_hiccup(id, &spec, bind, unit, fence, now_ms, budget)
+                    }
+                    _ => run_check(&spec, process_running, budget),
+                };
                 if let Some(a) = self.live.get_mut(&id) {
                     a.liveness.last_run_ms = now_ms;
                     a.liveness.record(out.ok, &spec);

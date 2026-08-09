@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use gump_transport::{CaBundle, IdentityMaterial, QuicEndpoint, QuicSession, TransportLimits};
 use openraft::error::{InstallSnapshotError, RPCError, RaftError, Unreachable};
@@ -62,6 +63,9 @@ pub(crate) enum ClusterRpc {
         node_id: MemoryNodeId,
         advertise: SocketAddr,
     },
+    /// Pull the peer's current process-local Hiccup keeper snapshot. This is
+    /// deliberately outside Raft and is never written to durable storage.
+    HiccupPull,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -74,7 +78,16 @@ pub(crate) enum ClusterReply {
         peers: BTreeMap<MemoryNodeId, SocketAddr>,
     },
     Ack,
+    HiccupSnapshot(Option<String>),
     Error(String),
+}
+
+pub(crate) const MAX_HICCUP_SNAPSHOT_BYTES: usize = 192 * 1024;
+const HICCUP_SNAPSHOT_FRESH_FOR: Duration = Duration::from_secs(5);
+
+pub(crate) struct LocalHiccupSnapshot {
+    pub payload: String,
+    pub published_at: Instant,
 }
 
 pub(crate) struct LiveClusterNetwork {
@@ -86,6 +99,7 @@ pub(crate) struct LiveClusterNetwork {
     pub join_tokens: Arc<Mutex<BTreeMap<MemoryNodeId, [u8; 32]>>>,
     pub used_tokens: Arc<Mutex<BTreeSet<[u8; 32]>>>,
     pub join: Option<ClusterJoinConfig>,
+    pub hiccup_snapshot: Arc<Mutex<Option<LocalHiccupSnapshot>>>,
 }
 
 impl LiveClusterNetwork {
@@ -128,8 +142,20 @@ impl LiveClusterNetwork {
             join_tokens: Arc::new(Mutex::new(join_tokens)),
             used_tokens: Arc::new(Mutex::new(BTreeSet::new())),
             join: config.join,
+            hiccup_snapshot: Arc::new(Mutex::new(None)),
         })
     }
+}
+
+pub(crate) fn fresh_hiccup_snapshot(
+    snapshot: &Arc<Mutex<Option<LocalHiccupSnapshot>>>,
+) -> Result<Option<String>, String> {
+    let guard = snapshot
+        .lock()
+        .map_err(|_| "Hiccup snapshot lock poisoned".to_string())?;
+    Ok(guard.as_ref().and_then(|entry| {
+        (entry.published_at.elapsed() <= HICCUP_SNAPSHOT_FRESH_FOR).then(|| entry.payload.clone())
+    }))
 }
 
 fn node_u64(id: gump_types::NodeId) -> u64 {

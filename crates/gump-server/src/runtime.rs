@@ -213,11 +213,11 @@ impl RuntimeCoordinator {
                 loaded.units
             };
             for unit_index in 0..units {
-                let unit_id = stable_id::<UnitId>(&[
-                    loaded.workload_id.as_bytes(),
-                    &entry.generation.to_be_bytes(),
-                    &unit_index.to_be_bytes(),
-                ])?;
+                // A unit is the stable logical slot of a workload. Release
+                // generation belongs to execution/attempt identity; including
+                // it here prevents consumers from superseding replaced
+                // attempts for the same slot.
+                let unit_id = stable_unit_id(loaded.workload_id, unit_index)?;
                 if loaded.lifecycle_finite
                     && cluster.observed_finite_completed(
                         &entry.namespace,
@@ -315,6 +315,7 @@ impl RuntimeCoordinator {
                             })
                             .unwrap_or_default(),
                         named_listen: BTreeSet::new(),
+                        bind_liveness: loaded.hiccup_binding_liveness,
                     }),
                 };
                 match loaded.runtime.kind {
@@ -345,6 +346,7 @@ impl RuntimeCoordinator {
             .script
             .reconcile(&script, now_ms)
             .map_err(|e| e.to_string())?;
+        self.exchange_hiccup(cluster, now_ms)?;
         self.refresh_ringtail_relay();
         let native_completion_events = self.native.completion_events();
         let script_completion_events = self.script.completion_events();
@@ -430,6 +432,19 @@ impl RuntimeCoordinator {
         });
         self.ringtail_relay.set_target(target);
     }
+
+    fn exchange_hiccup(&mut self, cluster: &MemoryCluster, now_ms: u64) -> Result<(), String> {
+        let native = self.native.hiccup_cluster_snapshot(self.node_id, now_ms)?;
+        let script = self.script.hiccup_cluster_snapshot(self.node_id, now_ms)?;
+        let payload = gump_hiccup::combine_cluster_snapshots(self.node_id, &[&native, &script])?;
+        for snapshot in cluster.exchange_hiccup_snapshot(payload)? {
+            self.native
+                .merge_hiccup_cluster_snapshot(&snapshot, now_ms)?;
+            self.script
+                .merge_hiccup_cluster_snapshot(&snapshot, now_ms)?;
+        }
+        Ok(())
+    }
 }
 
 struct LoadedRelease {
@@ -437,6 +452,7 @@ struct LoadedRelease {
     namespace: String,
     app_id: String,
     hiccup: bool,
+    hiccup_binding_liveness: bool,
     telemetry_sink: Option<TelemetrySinkContract>,
     units: u32,
     all_nodes: bool,
@@ -541,6 +557,12 @@ fn load_release(
             .as_ref()
             .is_some_and(|c| c.kind == CheckKind::Http)
         || liveness.as_ref().is_some_and(|c| c.kind == CheckKind::Http);
+    let hiccup_binding_liveness = manifest
+        .hiccup
+        .as_ref()
+        .and_then(|spec| spec.health_binding.as_deref())
+        .map(|binding| binding == "liveness")
+        .unwrap_or_else(|| readiness.is_none() && liveness.is_some());
     let telemetry_sink = manifest
         .provides
         .iter()
@@ -593,6 +615,7 @@ fn load_release(
         namespace: app.namespace,
         app_id: app.app_id,
         hiccup,
+        hiccup_binding_liveness,
         telemetry_sink,
         units,
         all_nodes,
@@ -1013,6 +1036,10 @@ where
     T::from_bytes(bytes)
 }
 
+fn stable_unit_id(workload_id: WorkloadId, unit_index: u32) -> Result<UnitId, String> {
+    stable_id::<UnitId>(&[workload_id.as_bytes(), &unit_index.to_be_bytes()])
+}
+
 trait StableId: Sized {
     fn from_bytes(bytes: [u8; 16]) -> Result<Self, String>;
 }
@@ -1050,4 +1077,30 @@ fn hex_encode(bytes: &[u8]) -> String {
         out.push(HEX[(byte & 0x0f) as usize] as char);
     }
     out
+}
+
+#[cfg(test)]
+mod unit_identity_tests {
+    use super::*;
+
+    #[test]
+    fn unit_slot_identity_is_stable_while_attempt_identity_changes() {
+        let workload = WorkloadId::new();
+        let unit = stable_unit_id(workload, 0).expect("unit");
+        assert_eq!(unit, stable_unit_id(workload, 0).expect("same unit"));
+        assert_ne!(unit, stable_unit_id(workload, 1).expect("next unit"));
+
+        let first_capsule = CapsuleId::new();
+        let replacement_capsule = CapsuleId::new();
+        let first_attempt =
+            stable_id::<AttemptId>(&[unit.as_bytes(), first_capsule.as_bytes(), b"attempt-1"])
+                .expect("first attempt");
+        let replacement_attempt = stable_id::<AttemptId>(&[
+            unit.as_bytes(),
+            replacement_capsule.as_bytes(),
+            b"attempt-1",
+        ])
+        .expect("replacement attempt");
+        assert_ne!(first_attempt, replacement_attempt);
+    }
 }

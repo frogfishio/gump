@@ -18,7 +18,8 @@ use openraft::raft::{
 use openraft::{Config, Raft, ServerState};
 
 use crate::cluster_net::{
-    ClusterNetworkConfig, ClusterReply, ClusterRpc, LiveClusterNetwork, call_addr, reply,
+    ClusterNetworkConfig, ClusterReply, ClusterRpc, LiveClusterNetwork, LocalHiccupSnapshot,
+    MAX_HICCUP_SNAPSHOT_BYTES, call_addr, fresh_hiccup_snapshot, reply,
 };
 use crate::cluster_state::DesiredSnapshotEntry;
 use crate::cluster_state::{RaftCommand, RaftResponse};
@@ -357,6 +358,56 @@ impl MemoryCluster {
         voters
     }
 
+    /// Publish this node's current Hiccup board and pull the current boards of
+    /// authenticated peers. The exchange is bounded, expiring and non-Raft.
+    pub fn exchange_hiccup_snapshot(&self, payload: String) -> Result<Vec<String>, String> {
+        if payload.len() > MAX_HICCUP_SNAPSHOT_BYTES {
+            return Err(format!(
+                "Hiccup snapshot {} exceeds {} bytes",
+                payload.len(),
+                MAX_HICCUP_SNAPSHOT_BYTES
+            ));
+        }
+        let Some(network) = &self.network else {
+            return Ok(Vec::new());
+        };
+        *network
+            .hiccup_snapshot
+            .lock()
+            .map_err(|_| "Hiccup snapshot lock poisoned".to_string())? =
+            Some(LocalHiccupSnapshot {
+                payload,
+                published_at: std::time::Instant::now(),
+            });
+        let peers = network
+            .peers
+            .lock()
+            .map_err(|_| "peer map poisoned".to_string())?
+            .clone();
+        self.runtime.block_on(async {
+            let mut snapshots = Vec::new();
+            for (peer_id, addr) in peers {
+                if peer_id == self.node_id {
+                    continue;
+                }
+                match call_addr(&network.client, addr, ClusterRpc::HiccupPull).await {
+                    Ok(ClusterReply::HiccupSnapshot(Some(snapshot)))
+                        if snapshot.len() <= MAX_HICCUP_SNAPSHOT_BYTES =>
+                    {
+                        snapshots.push(snapshot);
+                    }
+                    Ok(ClusterReply::HiccupSnapshot(None)) => {}
+                    Ok(ClusterReply::Error(error)) => {
+                        tracing::debug!(peer_id, %error, "Hiccup peer pull rejected");
+                    }
+                    Ok(_) => tracing::debug!(peer_id, "unexpected Hiccup peer reply"),
+                    Err(error) => tracing::debug!(peer_id, %error, "Hiccup peer unavailable"),
+                }
+            }
+            Ok(snapshots)
+        })
+    }
+
     /// Linearizable committed desired-state view for the controller reconciler.
     pub fn desired_snapshot(&self) -> Result<Vec<DesiredSnapshotEntry>, String> {
         self.runtime.block_on(async {
@@ -403,24 +454,31 @@ fn spawn_cluster_server(
     network: &LiveClusterNetwork,
 ) {
     let endpoint = Arc::clone(&network.server);
-    let client = Arc::clone(&network.client);
-    let peers = Arc::clone(&network.peers);
-    let allowed = Arc::clone(&network.join_tokens);
-    let used = Arc::clone(&network.used_tokens);
+    let state = ClusterRpcState {
+        raft,
+        client: Arc::clone(&network.client),
+        peers: Arc::clone(&network.peers),
+        allowed: Arc::clone(&network.join_tokens),
+        used: Arc::clone(&network.used_tokens),
+        hiccup_snapshot: Arc::clone(&network.hiccup_snapshot),
+    };
     runtime.spawn(async move {
         loop {
             let session = match endpoint.accept().await {
                 Ok(session) => session,
-                Err(e) => {
-                    tracing::warn!("cluster accept stopped: {e}");
+                Err(gump_transport::TransportError::Closed) => {
+                    tracing::debug!("cluster accept stopped: endpoint closed");
                     break;
                 }
+                Err(e) => {
+                    tracing::warn!("cluster connection rejected: {e}");
+                    // A failed, interrupted, malformed, or unauthorized QUIC
+                    // handshake belongs to that connection. It must never
+                    // disable the node's cluster listener for every peer.
+                    continue;
+                }
             };
-            let raft = raft.clone();
-            let client = Arc::clone(&client);
-            let peers = Arc::clone(&peers);
-            let allowed = Arc::clone(&allowed);
-            let used = Arc::clone(&used);
+            let state = state.clone();
             tokio::spawn(async move {
                 let (send, mut recv) = match session.accept_bi().await {
                     Ok(streams) => streams,
@@ -442,9 +500,7 @@ fn spawn_cluster_server(
                         return;
                     }
                 };
-                let response =
-                    handle_cluster_rpc(&session, &raft, &client, &peers, &allowed, &used, request)
-                        .await;
+                let response = handle_cluster_rpc(&session, &state, request).await;
                 if let Err(e) = reply(&session, send, response).await {
                     tracing::warn!("cluster reply failed: {e}");
                 }
@@ -453,13 +509,19 @@ fn spawn_cluster_server(
     });
 }
 
+#[derive(Clone)]
+struct ClusterRpcState {
+    raft: Raft<TypeConfig>,
+    client: Arc<gump_transport::QuicEndpoint>,
+    peers: Arc<std::sync::Mutex<std::collections::BTreeMap<MemoryNodeId, std::net::SocketAddr>>>,
+    allowed: Arc<std::sync::Mutex<std::collections::BTreeMap<MemoryNodeId, [u8; 32]>>>,
+    used: Arc<std::sync::Mutex<std::collections::BTreeSet<[u8; 32]>>>,
+    hiccup_snapshot: Arc<std::sync::Mutex<Option<LocalHiccupSnapshot>>>,
+}
+
 async fn handle_cluster_rpc(
     session: &gump_transport::QuicSession,
-    raft: &Raft<TypeConfig>,
-    client: &gump_transport::QuicEndpoint,
-    peers: &Arc<std::sync::Mutex<std::collections::BTreeMap<MemoryNodeId, std::net::SocketAddr>>>,
-    allowed: &Arc<std::sync::Mutex<std::collections::BTreeMap<MemoryNodeId, [u8; 32]>>>,
-    used: &Arc<std::sync::Mutex<std::collections::BTreeSet<[u8; 32]>>>,
+    state: &ClusterRpcState,
     request: ClusterRpc,
 ) -> ClusterReply {
     let peer_node = node_u64(session.peer.node_id);
@@ -471,24 +533,29 @@ async fn handle_cluster_rpc(
         return ClusterReply::Error("peer certificate lacks memory role".into());
     }
     match request {
-        ClusterRpc::Append(req) => match raft.append_entries(req).await {
+        ClusterRpc::Append(req) => match state.raft.append_entries(req).await {
             Ok(r) => ClusterReply::Append(r),
             Err(e) => ClusterReply::Error(e.to_string()),
         },
-        ClusterRpc::Vote(req) => match raft.vote(req).await {
+        ClusterRpc::Vote(req) => match state.raft.vote(req).await {
             Ok(r) => ClusterReply::Vote(r),
             Err(e) => ClusterReply::Error(e.to_string()),
         },
-        ClusterRpc::Install(req) => match raft.install_snapshot(req).await {
+        ClusterRpc::Install(req) => match state.raft.install_snapshot(req).await {
             Ok(r) => ClusterReply::Install(r),
             Err(e) => ClusterReply::Error(e.to_string()),
         },
-        ClusterRpc::ClientWrite(command) => match raft.client_write(command).await {
+        ClusterRpc::ClientWrite(command) => match state.raft.client_write(command).await {
             Ok(response) => ClusterReply::ClientWrite(response.data),
             Err(e) => ClusterReply::Error(e.to_string()),
         },
+        ClusterRpc::HiccupPull => match fresh_hiccup_snapshot(&state.hiccup_snapshot) {
+            Ok(snapshot) => ClusterReply::HiccupSnapshot(snapshot),
+            Err(error) => ClusterReply::Error(error),
+        },
         ClusterRpc::Announce { node_id, advertise } => {
-            let is_voter = raft
+            let is_voter = state
+                .raft
                 .metrics()
                 .borrow()
                 .membership_config
@@ -498,7 +565,7 @@ async fn handle_cluster_rpc(
             if !is_voter {
                 return ClusterReply::Error("announcement target is not a voter".into());
             }
-            match peers.lock() {
+            match state.peers.lock() {
                 Ok(mut peers) => {
                     peers.insert(node_id, advertise);
                     ClusterReply::Ack
@@ -516,7 +583,8 @@ async fn handle_cluster_rpc(
             }
             let digest = *blake3::hash(token.as_bytes()).as_bytes();
             zeroize::Zeroize::zeroize(&mut token);
-            let authorized = allowed
+            let authorized = state
+                .allowed
                 .lock()
                 .ok()
                 .and_then(|a| a.get(&node_id).copied())
@@ -526,22 +594,23 @@ async fn handle_cluster_rpc(
                 return ClusterReply::Error("join token unauthorized".into());
             }
             {
-                let Ok(mut used) = used.lock() else {
+                let Ok(mut used) = state.used.lock() else {
                     return ClusterReply::Error("join replay store poisoned".into());
                 };
                 if !used.insert(digest) {
                     return ClusterReply::Error("join token replayed".into());
                 }
             }
-            if let Ok(mut peers) = peers.lock() {
+            if let Ok(mut peers) = state.peers.lock() {
                 peers.insert(node_id, advertise);
             } else {
                 return ClusterReply::Error("peer map poisoned".into());
             }
-            if let Err(e) = raft.add_learner(node_id, (), true).await {
+            if let Err(e) = state.raft.add_learner(node_id, (), true).await {
                 return ClusterReply::Error(format!("add learner: {e}"));
             }
-            let mut voters: BTreeSet<_> = raft
+            let mut voters: BTreeSet<_> = state
+                .raft
                 .metrics()
                 .borrow()
                 .membership_config
@@ -549,10 +618,10 @@ async fn handle_cluster_rpc(
                 .voter_ids()
                 .collect();
             voters.insert(node_id);
-            if let Err(e) = raft.change_membership(voters, true).await {
+            if let Err(e) = state.raft.change_membership(voters, true).await {
                 return ClusterReply::Error(format!("promote learner: {e}"));
             }
-            let snapshot = match peers.lock() {
+            let snapshot = match state.peers.lock() {
                 Ok(peers) => peers.clone(),
                 Err(_) => return ClusterReply::Error("peer map poisoned".into()),
             };
@@ -561,7 +630,7 @@ async fn handle_cluster_rpc(
                     continue;
                 }
                 let _ = call_addr(
-                    client,
+                    &state.client,
                     *other_addr,
                     ClusterRpc::Announce { node_id, advertise },
                 )

@@ -1,0 +1,24 @@
+{
+  "hiccup": 1,
+  "messages": [
+    {
+      "topic": "http.origin/1",
+      "from": {
+        "id": "0198c6ef-5d5a-7d80-9ca0-54dc88879a35",
+        "attempt": "0198c6ef-5d5a-7d80-9ca0-54dc88879a36",
+        "ip": "10.20.4.12"
+      },
+      "capabilities": {
+        "http.origin/1": {
+          "port": 8080,
+          "domains": ["abc.com", "cde.org", "def.net"]
+        }
+      },
+      "data": {
+        "port": 8080,
+        "domains": ["abc.com", "cde.org", "def.net"]
+      }
+    }
+  ],
+  "more": false
+}

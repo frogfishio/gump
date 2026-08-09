@@ -16,7 +16,7 @@ mod stamp;
 mod token;
 mod topic;
 
-pub use board::{Presence, PresenceBoard};
+pub use board::{MAX_CLUSTER_SNAPSHOT_BYTES, Presence, PresenceBoard, combine_cluster_snapshots};
 pub use codec::{
     CodecError, Declaration, Delivery, Introduction, PublicFrom, encode_declaration,
     encode_delivery, media_type, media_type_matches, parse_declaration, parse_delivery,
@@ -27,9 +27,9 @@ pub use exchange::{
     handle_successful_health, offer_headers, plan_outbound_for,
 };
 pub use limits::{
-    AUTH_SCHEME, MAX_DECLARATION_BYTES, MAX_DELIVERY_BYTES, MAX_INTRODUCTIONS_PER_POST,
-    MAX_KEEPER_BYTES, MEDIA_TYPE, OFFER_HEADER, OFFER_VALUE, PROFILE, TOKEN_BYTES, TOKEN_FD_ENV,
-    presence_ttl_ms,
+    AUTH_SCHEME, MAX_CAPABILITIES_PER_ATTEMPT, MAX_DECLARATION_BYTES, MAX_DELIVERY_BYTES,
+    MAX_INTRODUCTIONS_PER_POST, MAX_KEEPER_BYTES, MEDIA_TYPE, OFFER_HEADER, OFFER_VALUE, PROFILE,
+    TOKEN_BYTES, TOKEN_FD_ENV, presence_ttl_ms,
 };
 pub use sdk::{SdkConfig, SdkHttpResponse, SdkMiddleware, decode_delivery_corpus};
 pub use stamp::{PlacementStamp, application_topic};

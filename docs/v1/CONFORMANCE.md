@@ -74,6 +74,8 @@ reference scripts must reproduce the cryptographic and archive vectors.
 | INV-025 | Hiccup overload cannot alter health or control-plane progress | saturated board/continuation/keeper fault test |
 | INV-026 | Keeper loss produces bounded omission and rebuilds from health refresh | one/two/three keeper crash simulation |
 | INV-027 | Gump sends no application traffic after peer introduction | connection tracing after Hiccup delivery |
+| INV-028 | Capability mode returns every current bounded advertised capability without treating unknown names/data as invalid | multi-workload heterogeneous directory and pagination corpus |
+| INV-029 | Capability discovery does not grant access or cause Gump to join the application data path | malicious capability claim plus application-authentication trace |
 | INV-028 | `all_nodes` continuously tracks eligible node membership | join/drain/capability-change/remove simulation |
 
 ## 4. Distributed-system matrix
@@ -175,9 +177,13 @@ stamped current peers, establishes a direct authenticated connection, survives
 duplicate/incomplete views, and reconciles a peer moving to a new node and attempt.
 
 A Kismet Capsule deployed with `--nodes=all` starts once on every eligible node,
-discovers current Kismet peers through Hiccup without a seed list, and forms its
-own cluster. Adding and draining a Gump node changes both coverage and the
-Hiccup view without rebuilding the Capsule.
+discovers current Kismet candidates through liveness-bound Hiccup without a
+changing seed-address list, and passes their advertised Kismet node IDs, private
+IPs, and port `7600` into Kismet's authenticated clustering protocol. Adding and
+draining a Gump node changes both coverage and the Hiccup view without
+rebuilding the Capsule only when the Kismet identity/provisioning contract can
+supply a unique recoverable identity to the new allocation. Hiccup disappearance
+is never treated as authoritative Kismet departure.
 
 ## 7. Performance gates
 

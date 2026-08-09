@@ -120,7 +120,7 @@ throwaway architecture:
 6. Gang admission → rank delivery → member failure → group policy.
 7. Total memory loss → empty init → explicit Capsule reintroduction.
 8. Hiccup `@self` discovery → direct peer connection → movement and restart reconciliation.
-9. Kismet all-node deployment → Hiccup formation → optional publish/withdraw.
+9. Kismet all-node deployment → Hiccup candidate discovery → authenticated Kismet membership → optional publish/withdraw.
 10. OCI and GPU-capability fixtures through the same placement/driver contracts.
 
 Every slice adds evidence to the same contracts and remains in CI.

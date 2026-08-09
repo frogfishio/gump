@@ -418,6 +418,236 @@ fn outbound_switches_to_authenticated_post_when_active() {
 }
 
 #[test]
+fn capability_mode_receives_complete_cross_workload_directory() {
+    let mut board = PresenceBoard::new();
+    let kismet_workload = WorkloadId::new();
+    let ringtail_workload = WorkloadId::new();
+    let consumer_workload = WorkloadId::new();
+    let mut kismet = AttemptSession::new(kismet_workload);
+    let mut ringtail = AttemptSession::new(ringtail_workload);
+    let mut consumer = AttemptSession::new(consumer_workload);
+
+    let _ = apply(
+        &mut kismet,
+        &mut board,
+        stamp(
+            kismet_workload,
+            UnitId::new(),
+            AttemptId::new(),
+            "10.0.0.10",
+            1,
+        ),
+        br#"{"hiccup":1,"capabilities":{"kismet.cluster/1":{"nodeId":"abc","port":7600},"kismet.ingress/1":{"port":443}}}"#,
+        10_000,
+        InstantMillis::from_millis(0),
+    );
+    let _ = apply(
+        &mut ringtail,
+        &mut board,
+        stamp(
+            ringtail_workload,
+            UnitId::new(),
+            AttemptId::new(),
+            "10.0.0.20",
+            1,
+        ),
+        br#"{"hiccup":1,"capabilities":{"ratatouille.sink/1":{"port":8081,"path":"/sink"}}}"#,
+        10_000,
+        InstantMillis::from_millis(1),
+    );
+    let out = apply(
+        &mut consumer,
+        &mut board,
+        stamp(
+            consumer_workload,
+            UnitId::new(),
+            AttemptId::new(),
+            "10.0.0.30",
+            1,
+        ),
+        br#"{"hiccup":1,"capabilities":{}}"#,
+        10_000,
+        InstantMillis::from_millis(2),
+    );
+
+    assert!(consumer.directory_mode);
+    let directory = out.delivery.expect("initial directory");
+    assert_eq!(directory.messages.len(), 3);
+    let topics: std::collections::BTreeSet<_> = directory
+        .messages
+        .iter()
+        .map(|message| message.topic.as_str())
+        .collect();
+    assert_eq!(
+        topics,
+        std::collections::BTreeSet::from([
+            "kismet.cluster/1",
+            "kismet.ingress/1",
+            "ratatouille.sink/1",
+        ])
+    );
+    assert!(
+        directory
+            .messages
+            .iter()
+            .all(|message| message.from.id.len() == 36 && message.from.attempt.len() == 36)
+    );
+    assert!(directory.messages.iter().any(|message| {
+        message.topic == "ratatouille.sink/1"
+            && message.from.ip.as_deref() == Some("10.0.0.20")
+            && message
+                .capabilities
+                .get("ratatouille.sink/1")
+                .and_then(|data| data.get("port"))
+                == Some(&serde_json::json!(8081))
+            && message.data.as_ref().and_then(|data| data.get("port"))
+                == Some(&serde_json::json!(8081))
+    }));
+}
+
+#[test]
+fn http_origin_is_delivered_with_gump_stamps_and_new_capability_shape() {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Pilot5Delivery {
+        hiccup: u8,
+        messages: Vec<Pilot5Message>,
+        more: bool,
+    }
+
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Pilot5Message {
+        topic: String,
+        from: Pilot5Sender,
+        #[serde(default)]
+        capabilities: std::collections::BTreeMap<String, serde_json::Value>,
+        #[serde(default)]
+        data: Option<serde_json::Value>,
+        #[serde(rename = "secretData")]
+        secret_data: Option<String>,
+    }
+
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Pilot5Sender {
+        id: String,
+        attempt: String,
+        ip: Option<std::net::IpAddr>,
+    }
+
+    let mut board = PresenceBoard::new();
+    let origin_workload = WorkloadId::new();
+    let kismet_workload = WorkloadId::new();
+    let origin_unit = UnitId::new();
+    let origin_attempt = AttemptId::new();
+    let mut origin = AttemptSession::new(origin_workload);
+    let mut kismet = AttemptSession::new(kismet_workload);
+
+    let _ = apply(
+        &mut origin,
+        &mut board,
+        stamp(
+            origin_workload,
+            origin_unit,
+            origin_attempt,
+            "10.20.4.12",
+            1,
+        ),
+        br#"{"hiccup":1,"capabilities":{"http.origin/1":{"port":8080,"domains":["abc.com","cde.org","def.net"]}}}"#,
+        10_000,
+        InstantMillis::from_millis(0),
+    );
+    let delivered = apply(
+        &mut kismet,
+        &mut board,
+        stamp(
+            kismet_workload,
+            UnitId::new(),
+            AttemptId::new(),
+            "10.20.4.20",
+            1,
+        ),
+        br#"{"hiccup":1,"capabilities":{"kismet.cluster/1":{"nodeId":"11111111111111111111111111111111","port":7600}}}"#,
+        10_000,
+        InstantMillis::from_millis(1),
+    )
+    .delivery
+    .expect("directory delivery");
+
+    let entry = delivered
+        .messages
+        .iter()
+        .find(|message| message.topic == "http.origin/1")
+        .expect("HTTP origin entry");
+    assert_eq!(entry.from.id, origin_unit.to_string());
+    assert_eq!(entry.from.attempt, origin_attempt.to_string());
+    assert_eq!(entry.from.ip.as_deref(), Some("10.20.4.12"));
+    assert_eq!(
+        entry.capabilities.get("http.origin/1"),
+        Some(&serde_json::json!({
+            "port": 8080,
+            "domains": ["abc.com", "cde.org", "def.net"]
+        }))
+    );
+
+    // Mirror Pilot 5's deny-unknown-fields decoder so the checked wire bytes,
+    // not only Gump's in-memory representation, form the handoff contract.
+    let wire = gump_hiccup::encode_delivery(&delivered).expect("encode delivery");
+    let pilot: Pilot5Delivery = serde_json::from_slice(&wire).expect("Pilot 5 wire shape");
+    assert_eq!(pilot.hiccup, 1);
+    assert!(!pilot.more);
+    let pilot_entry = pilot
+        .messages
+        .iter()
+        .find(|message| message.capabilities.contains_key("http.origin/1"))
+        .expect("Pilot 5 HTTP origin");
+    assert_eq!(pilot_entry.topic, "http.origin/1");
+    assert_eq!(pilot_entry.from.id, origin_unit.to_string());
+    assert_eq!(pilot_entry.from.attempt, origin_attempt.to_string());
+    assert_eq!(
+        pilot_entry.from.ip,
+        Some("10.20.4.12".parse().expect("private IP"))
+    );
+    assert!(pilot_entry.data.is_some());
+    assert!(pilot_entry.secret_data.is_none());
+}
+
+#[test]
+fn legacy_topic_mode_remains_selective() {
+    let workload = WorkloadId::new();
+    let mut board = PresenceBoard::new();
+    let capability_workload = WorkloadId::new();
+    let mut capability_provider = AttemptSession::new(capability_workload);
+    let _ = apply(
+        &mut capability_provider,
+        &mut board,
+        stamp(
+            capability_workload,
+            UnitId::new(),
+            AttemptId::new(),
+            "10.0.0.40",
+            1,
+        ),
+        br#"{"hiccup":1,"capabilities":{"ratatouille.sink/1":{"port":8081}}}"#,
+        10_000,
+        InstantMillis::from_millis(0),
+    );
+    let attempt = AttemptId::new();
+    let mut legacy = AttemptSession::new(workload);
+    let out = apply(
+        &mut legacy,
+        &mut board,
+        stamp(workload, UnitId::new(), attempt, "10.0.0.50", 1),
+        br#"{"hiccup":1}"#,
+        10_000,
+        InstantMillis::from_millis(1),
+    );
+    assert!(!legacy.directory_mode);
+    assert!(out.delivery.expect("legacy delivery").messages.is_empty());
+}
+
+#[test]
 fn corpus_examples_parse() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let decl = std::fs::read(root.join("spec/v1/hiccup/response.example.json")).unwrap();

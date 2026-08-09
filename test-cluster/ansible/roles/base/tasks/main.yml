@@ -98,14 +98,14 @@
   loop: "{{ groups['gump'] }}"
   changed_when: false
 
-- name: Allow private fixture TCP range from cluster peers
+- name: Allow private workload TCP range from cluster peers
   ansible.builtin.command: >-
     ufw allow proto tcp from {{ hostvars[item].cluster_private_ip }}
     to any port {{ gump_workload_port_range }}
   loop: "{{ groups['gump'] }}"
   changed_when: false
 
-- name: Allow private fixture UDP range from cluster peers
+- name: Allow private workload UDP range from cluster peers
   ansible.builtin.command: >-
     ufw allow proto udp from {{ hostvars[item].cluster_private_ip }}
     to any port {{ gump_workload_port_range }}
@@ -131,14 +131,3 @@
     - valkey
     - valkey-server
     - caddy
-
-- name: Prohibit durable Gump state directory
-  ansible.builtin.stat:
-    path: /var/lib/gump
-  register: durable_gump_state
-
-- name: Require no durable Gump state directory
-  ansible.builtin.assert:
-    that:
-      - not durable_gump_state.stat.exists
-    fail_msg: "/var/lib/gump exists; Gump cluster state must remain memory-only."

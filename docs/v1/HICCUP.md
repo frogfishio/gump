@@ -6,8 +6,9 @@
 
 ## 1. Purpose
 
-Hiccup lets running Gump applications discover one another without seed IPs,
-DNS registration, a service-discovery installation, or a message broker.
+Hiccup lets running Gump applications discover one another and inspect a live
+directory of advertised capabilities without seed IPs, DNS registration, a
+service-discovery installation, or a message broker.
 
 It is a speed-dating venue. Gump introduces applications and then leaves. The
 applications connect directly over their private network and own everything
@@ -86,6 +87,44 @@ also remains the ordinary health check. There is no second application API.
 This GET/declaration → POST/messages/declaration cycle is the complete public
 protocol.
 
+### Capability-directory form
+
+An application that may offer several integration points uses the capability
+form instead of `topic`, `listen`, `data`, or `secretData`:
+
+```json
+{
+  "hiccup": 1,
+  "capabilities": {
+    "kismet.cluster/1": {
+      "nodeId": "0123456789abcdef0123456789abcdef",
+      "port": 7600
+    },
+    "kismet.ingress/1": {
+      "port": 443
+    }
+  }
+}
+```
+
+The keys are opaque capability identifiers. Each value is bounded public JSON
+owned and interpreted only by applications. An empty map is valid for an
+application that advertises nothing but still wants the directory.
+
+A capability-mode attempt receives the complete current capability directory,
+subject only to Hiccup's page and visibility bounds. Each v1 directory message
+contains a `capabilities` map, Gump-stamped `from` identity and IP, and a
+compatibility projection in which `topic` contains the capability identifier
+and `data` contains the same opaque value. Gump currently emits one capability
+per message so older `topic` + `data` consumers continue to work. Consumers
+must inspect capability names before decoding values, ignore names they do not
+understand, and must not rely on the map forever containing exactly one entry.
+There is no `seeks`, subscription, dependency, selection, or routing
+declaration.
+
+Legacy topic declarations remain selective and unchanged. Capability mode and
+legacy topic mode are mutually exclusive in one declaration.
+
 ## 3. Defaults
 
 The smallest valid declaration is:
@@ -100,7 +139,7 @@ Omitted `topic` defaults to `@self`. Omitted `listen` defaults to the published
 topic. Therefore `{ "hiccup": 1 }` means “introduce me to other current
 instances of this same Gump workload.”
 
-`data` and `secretData` are optional. An application may listen without
+`data` and `secretData` are optional in legacy topic mode. An application may listen without
 publishing by setting `topic` to `null`; in that case it must provide `listen`.
 
 ## 4. Identity and IP address
@@ -135,7 +174,7 @@ understand them.
 `@self` is resolved internally to the stable Gump workload ID. Another workload
 cannot claim or subscribe to it.
 
-Named topics are lowercase ASCII, 1–128 bytes, slash-separated, and written
+Named topics and capability identifiers are lowercase ASCII, 1–128 bytes, slash-separated, and written
 without a leading `#` in JSON. `#banana` is acceptable human notation for the
 canonical topic `banana`.
 
@@ -143,13 +182,15 @@ Named topics are namespace-scoped by default. Cluster policy authorizes wider
 publish/listen scopes. A manifest cannot grant itself access. `gump/` is
 reserved.
 
-`listen` contains at most 32 unique topics. v1 publishes at most one current
-topic per attempt. Multiple publications are deliberately absent.
+`listen` contains at most 32 unique topics. Legacy mode publishes at most one
+current topic per attempt. Capability mode advertises at most 32 capabilities
+per attempt.
 
 ## 6. Current presence, not messages
 
 Despite the JSON field name `messages`, Hiccup stores only current presence.
-For every running attempt, Gump remembers its latest successful declaration.
+For every running attempt, Gump remembers its latest successful declaration,
+including all capabilities in the capability form.
 The next successful response replaces the previous one completely.
 
 Presence exists only while all of these remain true:
@@ -204,7 +245,12 @@ fields `hiccup`, `topic`, `listen`, and optional data.
 
 ## 9. Public and secret data
 
-`data` is optional public JSON visible to authorized listeners. It is untrusted
+`data` is optional public JSON visible to recipients. Capability values are
+equally untrusted public JSON. They are claims by an identified running
+attempt, not proof of compatibility, authority, or access. Gump bounds this data
+but does not interpret, merge, index, or log it.
+
+In legacy mode, `data` is optional public JSON visible to authorized listeners. It is untrusted
 application data. Gump bounds it but does not interpret, merge, index, or log it.
 
 `secretData` is an optional bounded string. Conventionally it is base64url
@@ -230,6 +276,7 @@ Initial limits are:
 | `secretData` | 32 KiB encoded |
 | JSON nesting depth | 16 |
 | listened topics | 32 |
+| capabilities advertised per attempt | 32 |
 | current publishers per topic | 10,000 |
 | delivered introductions per POST | 256 |
 | Hiccup memory per keeper | 64 MiB |
@@ -277,9 +324,11 @@ Gump never observes or proxies the resulting connection.
 
 ## 13. Authorization and privacy
 
-Actions are `hiccup.use`, `hiccup.publish:<topic>`, and
+Legacy topic actions are `hiccup.use`, `hiccup.publish:<topic>`, and
 `hiccup.listen:<topic>`. `@self` is available only to the current workload when
-Hiccup is allowed by policy.
+Hiccup is allowed by policy. Capability advertisements are untrusted directory
+claims and require no semantic approval by Gump. Directory visibility and
+payload bounds remain cluster policy; discovery never grants access.
 
 Gump ignores application-supplied identity or IP fields. It excludes the token,
 public data, and secret data from logs, Ratatouille, status output, crash
@@ -299,8 +348,9 @@ if request is authenticated Hiccup POST:
     return normal health + current Hiccup declaration
 ```
 
-The SDK validates bounds and tokens, supplies default `@self`, and deduplicates
-exact repeated introductions if the application requests it.
+The SDK validates bounds and tokens, supplies default `@self` for legacy mode,
+deduplicates exact repeated introductions if requested, and exposes capability
+entries without attempting to interpret unknown values.
 
 ## 15. Kismet example
 
@@ -310,17 +360,45 @@ Kismet deployed with `--nodes=all` can respond:
 {
   "hiccup": 1,
   "data": {
-    "port": 9400,
-    "protocol": "kismet/formation/1"
-  },
-  "secretData": "encrypted-formation-material"
+    "protocol": "kismet-cluster/1",
+    "nodeId": "0123456789abcdef0123456789abcdef",
+    "port": 7600
+  }
+}
+```
+
+The capability-directory equivalent is:
+
+```json
+{
+  "hiccup": 1,
+  "capabilities": {
+    "kismet.cluster/1": {
+      "nodeId": "0123456789abcdef0123456789abcdef",
+      "port": 7600
+    }
+  }
 }
 ```
 
 Because topic and listen default to `@self`, every current Kismet instance sees
-the other Kismet instances with Gump-stamped IPs. Kismet authenticates them and
-forms its own cluster. No seed list or machine-specific Kismet configuration is
+the other Kismet instances with Gump-stamped IPs. `nodeId` is Kismet's public
+authenticated node identity; it is not interchangeable with Gump's unit ID.
+Kismet treats each `IP + port + nodeId` tuple only as an ephemeral connection
+candidate, then authenticates it and owns membership, failure detection,
+quorum, and removal through its own protocol. No changing seed-address list is
 required.
+
+Kismet binds Hiccup to its successful `/health` liveness check, not its
+cluster-aware `/ready` check. Binding discovery to readiness would deadlock
+bootstrap: a node without peers would remain unready and therefore never
+publish or receive the candidates needed to become ready.
+
+Hiccup does not provision Kismet. Every allocation still requires a unique
+cluster-issued Kismet identity and the durable state needed to preserve that
+identity and its incarnation. Gump deployment must supply that state through a
+separately defined identity/provisioning contract; copying one node credential
+to every `all_nodes` instance is invalid.
 
 ## 16. Testable invariants
 
@@ -336,3 +414,6 @@ required.
 10. Keeper loss affects discovery only and rebuilds from health responses.
 11. Hiccup never relays application traffic or claims complete membership.
 12. Named-topic publish/listen authorization is enforced.
+13. Capability-mode attempts receive all current bounded capability entries
+    and unknown capabilities do not invalidate the directory.
+14. A capability claim does not grant or imply application-protocol access.

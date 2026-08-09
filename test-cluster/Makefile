@@ -1,4 +1,4 @@
-.PHONY: help init plan infra configure-base install-gump configure verify form unseal smoke fixture-finite deploy-finite accept-finite live-finite fixture-ringtail deploy-ringtail fixture-ringtail-relay-probe deploy-ringtail-relay-probe accept-ringtail live-ringtail destroy
+.PHONY: help init plan infra configure-base install-gump configure verify form unseal smoke fixture-finite deploy-finite accept-finite live-finite fixture-ringtail deploy-ringtail fixture-ringtail-relay-probe deploy-ringtail-relay-probe accept-ringtail live-ringtail fixture-kismet-pilot deploy-kismet-pilot accept-kismet-pilot live-kismet-pilot fixture-http-origin-pilot deploy-http-origin-pilot accept-http-origin-pilot live-http-origin-pilot replace-http-origin-pilot destroy
 
 ROOT_DIR := $(abspath .)
 TERRAFORM_DIR := $(ROOT_DIR)/terraform
@@ -32,6 +32,9 @@ help:
 	  '  make deploy-ringtail-relay-probe  Emit one telemetry record on every node.' \
 	  '  make accept-ringtail   Exercise all three live Ringtail collectors.' \
 	  '  make live-ringtail     Deploy Ringtail + all-node probe, then accept end to end.' \
+	  '  make live-kismet-pilot Deploy the first Kismet ELF on all nodes and accept process/health.' \
+	  '  make live-http-origin-pilot  Prove Hiccup origin discovery and Kismet hostname routing.' \
+	  '  make replace-http-origin-pilot  Replace origins and prove immediate attempt supersession.' \
 	  '  make destroy    Destroy compute; requires CONFIRM_DESTROY=YES.'
 
 init:
@@ -102,6 +105,31 @@ live-ringtail:
 	$(MAKE) deploy-ringtail
 	$(MAKE) deploy-ringtail-relay-probe
 	$(MAKE) accept-ringtail
+
+fixture-kismet-pilot:
+	"$(MACRUN)" fixtures env GUMP_BIN="$(GUMP_LOCAL_BIN)" "$(ROOT_DIR)/scripts/build-kismet-pilot-fixture.sh"
+
+deploy-kismet-pilot: fixture-kismet-pilot
+	"$(ROOT_DIR)/scripts/deploy-kismet-pilot-fixture.sh"
+
+accept-kismet-pilot:
+	"$(ROOT_DIR)/scripts/accept-kismet-pilot.sh"
+
+live-kismet-pilot: deploy-kismet-pilot accept-kismet-pilot
+
+fixture-http-origin-pilot:
+	"$(MACRUN)" fixtures env GUMP_BIN="$(GUMP_LOCAL_BIN)" "$(ROOT_DIR)/scripts/build-http-origin-pilot-fixture.sh"
+
+deploy-http-origin-pilot: fixture-http-origin-pilot
+	"$(ROOT_DIR)/scripts/deploy-http-origin-pilot-fixture.sh"
+
+accept-http-origin-pilot:
+	"$(ROOT_DIR)/scripts/accept-http-origin-pilot.sh"
+
+live-http-origin-pilot: deploy-http-origin-pilot accept-http-origin-pilot
+
+replace-http-origin-pilot: deploy-http-origin-pilot
+	EXPECT_SUPERSEDED=1 "$(ROOT_DIR)/scripts/accept-http-origin-pilot.sh"
 
 destroy:
 	@test "$(CONFIRM_DESTROY)" = YES || { echo 'Refusing: rerun with CONFIRM_DESTROY=YES' >&2; exit 2; }

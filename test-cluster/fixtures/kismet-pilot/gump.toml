@@ -1,0 +1,79 @@
+schema = "gump/1"
+
+[app]
+id = "kismet-pilot"
+namespace = "default"
+version = "0.1.0-gump-pilot.6"
+description = "Kismet capability-directory, origin routing, and supersession pilot"
+
+[workload]
+lifetime = "continuous"
+coordination = "independent"
+success = "never"
+failure = "restart_unit"
+max_attempts = 20
+isolation = "continue_existing"
+isolation_grace = "5m"
+
+[package]
+root = "."
+include = ["bin/kismet", "bin/run-kismet.sh"]
+exclude = []
+format = "tar+zstd"
+
+[runtime]
+driver = "script"
+command = ["./bin/run-kismet.sh"]
+interpreter = ["/bin/sh"]
+workdir = "."
+stop_signal = "TERM"
+stop_timeout = "30s"
+
+# Pilot workaround: Gump's runtime port allocator/injector is not composed yet.
+# Keep this loopback-only fixed port in sync with bin/run-kismet.sh.
+[runtime.ports.http]
+address = "127.0.0.1"
+value = 18080
+
+[health.liveness]
+type = "http"
+port = "http"
+path = "/health"
+interval = "2s"
+timeout = "500ms"
+initial_delay = "250ms"
+successes = 1
+failures = 3
+
+[health.readiness]
+type = "http"
+port = "http"
+path = "/ready"
+interval = "2s"
+timeout = "500ms"
+initial_delay = "250ms"
+successes = 1
+failures = 3
+
+[discovery.hiccup]
+required_for_eligibility = true
+health_binding = "liveness"
+
+[resources]
+cpu_request = "50m"
+memory_request = "128MiB"
+
+[deploy]
+coverage = "all_nodes"
+priority = "normal"
+preemptible = false
+
+[telemetry]
+protocol = "ratatouille/0.1"
+format = "ndjson"
+filter = "app/*"
+
+[telemetry.relay]
+capacity = "1MiB"
+max_record = "64KiB"
+overflow = "drop_oldest"

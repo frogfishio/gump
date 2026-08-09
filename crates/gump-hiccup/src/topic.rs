@@ -54,6 +54,20 @@ impl CanonicalTopic {
     pub fn self_for(workload: WorkloadId) -> Self {
         Self(format!("@self/{}", workload.to_hyphenated()))
     }
+
+    /// Reconstitute a topic previously emitted by a trusted Gump keeper.
+    /// Internal workload-scoped `@self/<id>` topics are accepted only when
+    /// they match the stamped workload; named topics pass normal validation.
+    pub(crate) fn from_keeper(raw: &str, workload: WorkloadId) -> Result<Self, TopicError> {
+        let self_topic = Self::self_for(workload);
+        if raw == self_topic.as_str() {
+            return Ok(self_topic);
+        }
+        if raw.starts_with("@self/") {
+            return Err(TopicError::CrossWorkloadSelf);
+        }
+        canonicalize_topic(raw, workload)
+    }
 }
 
 impl fmt::Display for CanonicalTopic {

@@ -32,7 +32,7 @@ value = "auto"
 
 [runtime.ports.cluster]
 address = "0.0.0.0"
-value = 9400
+value = 7600
 
 [runtime.variables.KISMET_CLUSTER_KEY]
 source = "env:KISMET_CLUSTER_KEY"
@@ -44,10 +44,19 @@ inject = "fd"
 fd = 7
 reference_env = "KISMET_CLUSTER_KEY_FILE"
 
-[health.readiness]
+[health.liveness]
 type = "http"
 port = "health"
 path = "/health"
+interval = "5s"
+timeout = "2s"
+successes = 1
+failures = 3
+
+[health.readiness]
+type = "http"
+port = "health"
+path = "/ready"
 interval = "5s"
 timeout = "2s"
 successes = 1
@@ -70,7 +79,7 @@ max_surge = 0
 
 [discovery.hiccup]
 required_for_eligibility = true
-health_binding = "readiness"
+health_binding = "liveness"
 
 [telemetry]
 protocol = "ratatouille/0.1"
@@ -81,4 +90,3 @@ filter = "app/*"
 capacity = "1MiB"
 max_record = "64KiB"
 overflow = "drop_oldest"
-

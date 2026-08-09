@@ -8,8 +8,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use gump_manifest::{
-    Coordination, Coverage, Driver, Lifetime, ManifestErrorKind, PortValue, SchemaVersion,
-    SuccessPolicy, parse_manifest_str,
+    Coordination, Coverage, Driver, HealthBinding, Lifetime, ManifestErrorKind, PortValue,
+    SchemaVersion, SuccessPolicy, parse_manifest_str,
 };
 use gump_types::Label;
 
@@ -71,7 +71,7 @@ fn valid_fixtures_parse_and_normalize() {
     let health = &kismet.runtime.ports[&Label::parse("health").unwrap()];
     assert_eq!(health.value, PortValue::Auto);
     let cluster = &kismet.runtime.ports[&Label::parse("cluster").unwrap()];
-    assert_eq!(cluster.value, PortValue::Fixed(9400));
+    assert_eq!(cluster.value, PortValue::Fixed(7600));
     assert_eq!(
         kismet
             .health
@@ -82,6 +82,29 @@ fn valid_fixtures_parse_and_normalize() {
             .unwrap()
             .interval_ms,
         5_000
+    );
+    assert_eq!(
+        kismet
+            .health
+            .as_ref()
+            .unwrap()
+            .liveness
+            .as_ref()
+            .unwrap()
+            .path
+            .as_deref(),
+        Some("/health")
+    );
+    assert_eq!(
+        kismet
+            .discovery
+            .as_ref()
+            .unwrap()
+            .hiccup
+            .as_ref()
+            .unwrap()
+            .health_binding,
+        Some(HealthBinding::Liveness)
     );
 }
 

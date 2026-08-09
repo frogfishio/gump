@@ -1,6 +1,7 @@
 //! Bounded JSON codecs for application Hiccup HTTP (HICCUP.md §2–3, §10).
 
 use core::fmt;
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -45,6 +46,9 @@ pub struct Declaration {
     pub listen: Option<Vec<String>>,
     pub data: Option<Value>,
     pub secret_data: Option<String>,
+    /// Capability-directory mode. Keys are opaque capability identifiers and
+    /// values are bounded public contact metadata interpreted only by apps.
+    pub capabilities: Option<BTreeMap<String, Value>>,
 }
 
 /// Gump-stamped sender visible to applications.
@@ -60,6 +64,11 @@ pub struct PublicFrom {
 pub struct Introduction {
     pub topic: String,
     pub from: PublicFrom,
+    /// New capability-directory representation. Directory entries currently
+    /// carry one capability and retain `topic` + `data` as a v1 compatibility
+    /// projection for consumers deployed before capability maps.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub capabilities: BTreeMap<String, Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<Value>,
     #[serde(rename = "secretData", skip_serializing_if = "Option::is_none")]
@@ -144,7 +153,7 @@ pub fn parse_declaration(bytes: &[u8]) -> Result<Declaration, CodecError> {
     let obj = value.as_object().ok_or(CodecError::NotObject)?;
     for key in obj.keys() {
         match key.as_str() {
-            "hiccup" | "topic" | "listen" | "data" | "secretData" => {}
+            "hiccup" | "topic" | "listen" | "data" | "secretData" | "capabilities" => {}
             "from" | "messages" | "more" | "id" | "attempt" | "ip" => {
                 return Err(CodecError::UnexpectedField("forged-identity-or-delivery"));
             }
@@ -196,11 +205,35 @@ pub fn parse_declaration(bytes: &[u8]) -> Result<Declaration, CodecError> {
         }
         Some(_) => return Err(CodecError::InvalidField("secretData")),
     };
+    let capabilities = match obj.get("capabilities") {
+        None => None,
+        Some(Value::Object(entries)) => {
+            if entries.len() > crate::limits::MAX_CAPABILITIES_PER_ATTEMPT {
+                return Err(CodecError::InvalidField("capabilities"));
+            }
+            let mut out = BTreeMap::new();
+            for (name, value) in entries {
+                if !value.is_object() {
+                    return Err(CodecError::InvalidField("capabilities"));
+                }
+                check_data_size(value)?;
+                out.insert(name.clone(), value.clone());
+            }
+            Some(out)
+        }
+        Some(_) => return Err(CodecError::InvalidField("capabilities")),
+    };
+    if capabilities.is_some()
+        && (topic.is_some() || listen.is_some() || data.is_some() || secret_data.is_some())
+    {
+        return Err(CodecError::InvalidField("capabilities"));
+    }
     Ok(Declaration {
         topic,
         listen,
         data,
         secret_data,
+        capabilities,
     })
 }
 
@@ -235,6 +268,25 @@ pub fn encode_declaration(decl: &Declaration) -> Result<Vec<u8>, CodecError> {
         }
         map.insert("secretData".into(), Value::String(s.clone()));
     }
+    if let Some(capabilities) = &decl.capabilities {
+        if capabilities.len() > crate::limits::MAX_CAPABILITIES_PER_ATTEMPT
+            || decl.topic.is_some()
+            || decl.listen.is_some()
+            || decl.data.is_some()
+            || decl.secret_data.is_some()
+        {
+            return Err(CodecError::InvalidField("capabilities"));
+        }
+        let mut entries = serde_json::Map::new();
+        for (name, value) in capabilities {
+            if !value.is_object() {
+                return Err(CodecError::InvalidField("capabilities"));
+            }
+            check_data_size(value)?;
+            entries.insert(name.clone(), value.clone());
+        }
+        map.insert("capabilities".into(), Value::Object(entries));
+    }
     let bytes = serde_json::to_vec(&Value::Object(map))
         .map_err(|e| CodecError::InvalidJson(e.to_string()))?;
     check_bounds(&bytes, MAX_DECLARATION_BYTES)?;
@@ -265,8 +317,45 @@ mod tests {
     fn minimal_declaration() {
         let d = parse_declaration(br#"{"hiccup":1}"#).unwrap();
         assert_eq!(d.topic, None);
+        assert_eq!(d.capabilities, None);
         assert!(media_type_matches(MEDIA_TYPE));
         assert!(!media_type_matches("application/json"));
+    }
+
+    #[test]
+    fn capability_map_is_bounded_and_cannot_mix_with_legacy_topics() {
+        let d = parse_declaration(
+            br#"{"hiccup":1,"capabilities":{"ratatouille.sink/1":{"port":8081,"path":"/sink"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            d.capabilities
+                .as_ref()
+                .and_then(|entries| entries.get("ratatouille.sink/1"))
+                .and_then(|value| value.get("port"))
+                .and_then(Value::as_u64),
+            Some(8081)
+        );
+        assert!(
+            parse_declaration(br#"{"hiccup":1,"topic":"legacy","capabilities":{"demo/1":{}}}"#)
+                .is_err()
+        );
+        assert!(
+            parse_declaration(br#"{"hiccup":1,"capabilities":{"demo/1":"not-object"}}"#).is_err()
+        );
+        let origin = parse_declaration(
+            br#"{"hiccup":1,"capabilities":{"http.origin/1":{"port":8080,"domains":["abc.com","cde.org"]}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            origin
+                .capabilities
+                .as_ref()
+                .and_then(|entries| entries.get("http.origin/1"))
+                .and_then(|value| value.get("port"))
+                .and_then(Value::as_u64),
+            Some(8080)
+        );
     }
 
     #[test]

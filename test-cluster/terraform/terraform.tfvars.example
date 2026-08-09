@@ -7,5 +7,4 @@ admin_cidrs          = ["203.0.113.10/32"]
 # instance_type        = "s-1vcpu-2gb"
 # ssh_private_key_path = "/absolute/path/to/private/key"
 # gump_cluster_port    = 7443
-# workload_port_range  = "20000-20999"
-
+# workload_port_range  = "1024-65535"

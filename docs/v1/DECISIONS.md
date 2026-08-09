@@ -252,8 +252,15 @@ and optional local publication; they cannot change release semantics.
   health probe to authenticated POST exchanges on the same endpoint.
 - `@self` discovers current attempts of the same stable workload without topic
   configuration. Named topics are namespace-scoped and policy-authorized.
+- The capability form lets one attempt advertise up to 32 opaque named
+  integration points and receive the complete bounded live capability
+  directory. There is no `seeks` or dependency declaration; applications
+  filter and select locally.
 - Gump stamps stable unit identity, attempt identity, and receiver-reachable
   private IP. Applications cannot claim them through their declaration.
+- Capability advertisements are identified, untrusted claims. Discovery is not
+  access, and Gump neither approves capability semantics nor authenticates the
+  application protocol used after introduction.
 - `data` is bounded public JSON. `secretData` is opaque application ciphertext;
   Gump never decrypts it or manages its group keys.
 - Hiccup is stored only in bounded keeper RAM, never Raft or S3. One/two/three

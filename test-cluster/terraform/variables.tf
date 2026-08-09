@@ -72,7 +72,7 @@ variable "gump_cluster_port" {
 }
 
 variable "workload_port_range" {
-  description = "Private-only TCP/UDP range reserved for live test fixtures"
+  description = "Private-only unprivileged TCP/UDP range available to arbitrary workloads"
   type        = string
-  default     = "20000-20999"
+  default     = "1024-65535"
 }

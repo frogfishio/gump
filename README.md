@@ -6,6 +6,7 @@ Gump is a zero-footprint workload placer and supervisor for one server or many. 
 - [Project seed](SEED.md)
 - [System design](docs/SYSTEM_DESIGN.md)
 - [Distributed cluster memory](docs/CLUSTER_MEMORY.md)
+- [Workload-scoped shared K/V](docs/SHARED_KV.md)
 - [Application manifest](docs/MANIFEST.md)
 - [CLI and lifecycle](docs/CLI_LIFECYCLE.md)
 - [Telemetry with Ratatouille](docs/TELEMETRY.md)

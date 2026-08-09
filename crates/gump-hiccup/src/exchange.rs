@@ -16,6 +16,8 @@ pub struct AttemptSession {
     pub rotation_offset: usize,
     pub listen: Vec<CanonicalTopic>,
     pub workload_id: WorkloadId,
+    /// Capability-map declarations receive the complete live directory.
+    pub directory_mode: bool,
 }
 
 impl AttemptSession {
@@ -26,6 +28,7 @@ impl AttemptSession {
             rotation_offset: 0,
             listen: Vec::new(),
             workload_id,
+            directory_mode: false,
         }
     }
 
@@ -36,6 +39,7 @@ impl AttemptSession {
             rotation_offset: 0,
             listen: Vec::new(),
             workload_id,
+            directory_mode: false,
         }
     }
 }
@@ -62,13 +66,21 @@ pub fn plan_outbound_for(
     if !session.active {
         return OutboundHealth::Get { offer: true };
     }
-    let (delivery, _) = board.deliver(
-        &session.listen,
-        listener_attempt,
-        session.workload_id,
-        session.rotation_offset,
-        authorize_topic,
-    );
+    let (delivery, _) = if session.directory_mode {
+        board.deliver_directory(
+            listener_attempt,
+            session.workload_id,
+            session.rotation_offset,
+        )
+    } else {
+        board.deliver(
+            &session.listen,
+            listener_attempt,
+            session.workload_id,
+            session.rotation_offset,
+            authorize_topic,
+        )
+    };
     let body = encode_delivery(&delivery).unwrap_or_else(|_| {
         serde_json::to_vec(&Delivery {
             hiccup: 1,
@@ -121,12 +133,14 @@ pub fn handle_successful_health(
         now,
     } = inbound;
     board.expire(now);
+    let was_active = session.active;
     match detect_health_response(content_type, body) {
         Detection::Inactive => {
             if session.active {
                 board.remove_attempt(stamp.attempt_id);
                 session.active = false;
                 session.listen.clear();
+                session.directory_mode = false;
             }
             InboundOutcome {
                 discovery_active: false,
@@ -138,6 +152,7 @@ pub fn handle_successful_health(
             board.remove_attempt(stamp.attempt_id);
             session.active = false;
             session.listen.clear();
+            session.directory_mode = false;
             InboundOutcome {
                 discovery_active: false,
                 degraded: true,
@@ -145,6 +160,42 @@ pub fn handle_successful_health(
             }
         }
         Detection::Active(decl) => {
+            if let Some(capabilities) = &decl.capabilities {
+                let ttl = presence_ttl_ms(health_interval_ms);
+                let expires = InstantMillis::from_millis(now.as_millis().saturating_add(ttl));
+                let mut stamp = stamp;
+                stamp.health_eligible = true;
+                if board
+                    .upsert_capabilities(stamp.clone(), capabilities, expires)
+                    .is_err()
+                {
+                    board.remove_attempt(stamp.attempt_id);
+                    session.active = false;
+                    session.directory_mode = false;
+                    return InboundOutcome {
+                        discovery_active: false,
+                        degraded: true,
+                        delivery: None,
+                    };
+                }
+                session.active = true;
+                session.directory_mode = true;
+                session.listen.clear();
+                session.workload_id = stamp.workload_id;
+                let (delivery, next) = board.deliver_directory(
+                    stamp.attempt_id,
+                    stamp.workload_id,
+                    session.rotation_offset,
+                );
+                if was_active {
+                    session.rotation_offset = next;
+                }
+                return InboundOutcome {
+                    discovery_active: true,
+                    degraded: false,
+                    delivery: Some(delivery),
+                };
+            }
             let Ok(resolved) = resolve_topics(
                 match &decl.topic {
                     None => None,
@@ -156,6 +207,7 @@ pub fn handle_successful_health(
             ) else {
                 board.remove_attempt(stamp.attempt_id);
                 session.active = false;
+                session.directory_mode = false;
                 return InboundOutcome {
                     discovery_active: false,
                     degraded: true,
@@ -165,6 +217,7 @@ pub fn handle_successful_health(
             if !authorize_publish(&resolved) {
                 board.remove_attempt(stamp.attempt_id);
                 session.active = false;
+                session.directory_mode = false;
                 return InboundOutcome {
                     discovery_active: false,
                     degraded: true,
@@ -177,6 +230,7 @@ pub fn handle_successful_health(
             stamp.health_eligible = true;
             board.upsert(&resolved, stamp.clone(), &decl, expires);
             session.active = true;
+            session.directory_mode = false;
             session.listen = resolved.listen.clone();
             session.workload_id = stamp.workload_id;
             let (delivery, next) = board.deliver(
@@ -186,7 +240,9 @@ pub fn handle_successful_health(
                 session.rotation_offset,
                 authorize_listen,
             );
-            session.rotation_offset = next;
+            if was_active {
+                session.rotation_offset = next;
+            }
             InboundOutcome {
                 discovery_active: true,
                 degraded: false,

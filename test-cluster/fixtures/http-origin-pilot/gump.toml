@@ -1,0 +1,67 @@
+schema = "gump/1"
+
+[app]
+id = "http-origin-pilot"
+namespace = "default"
+version = "0.1.0"
+description = "Live http.origin/1 capability and Kismet routing probe"
+
+[workload]
+lifetime = "continuous"
+coordination = "independent"
+success = "never"
+failure = "restart_unit"
+max_attempts = 20
+isolation = "continue_existing"
+isolation_grace = "5m"
+
+[package]
+root = "."
+include = ["origin.py"]
+exclude = []
+format = "tar+zstd"
+
+[runtime]
+driver = "script"
+command = ["./origin.py"]
+interpreter = ["/usr/bin/python3"]
+workdir = "."
+stop_signal = "TERM"
+stop_timeout = "5s"
+
+[runtime.ports.http]
+address = "0.0.0.0"
+value = 18081
+
+[health.liveness]
+type = "http"
+port = "http"
+path = "/health"
+interval = "2s"
+timeout = "500ms"
+initial_delay = "250ms"
+successes = 1
+failures = 3
+
+[discovery.hiccup]
+required_for_eligibility = true
+health_binding = "liveness"
+
+[resources]
+cpu_request = "25m"
+memory_request = "32MiB"
+
+[deploy]
+coverage = "all_nodes"
+priority = "normal"
+preemptible = false
+
+[telemetry]
+protocol = "ratatouille/0.1"
+format = "ndjson"
+filter = "app/*"
+
+[telemetry.relay]
+capacity = "256KiB"
+max_record = "16KiB"
+overflow = "drop_oldest"

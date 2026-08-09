@@ -21,6 +21,17 @@
         }
       ]
     },
+    "capabilityName": {
+      "type": "string",
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?(?:/[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?)*$",
+      "maxLength": 128
+    },
+    "capabilities": {
+      "type": "object",
+      "maxProperties": 32,
+      "propertyNames": { "$ref": "#/$defs/capabilityName" },
+      "additionalProperties": { "type": "object", "maxProperties": 256 }
+    },
     "from": {
       "type": "object",
       "additionalProperties": false,
@@ -43,6 +54,7 @@
       "properties": {
         "topic": { "$ref": "#/$defs/topic" },
         "from": { "$ref": "#/$defs/from" },
+        "capabilities": { "$ref": "#/$defs/capabilities" },
         "data": { "type": "object", "maxProperties": 256 },
         "secretData": { "type": "string", "maxLength": 32768 }
       }
@@ -61,6 +73,19 @@
             "required": ["listen"],
             "properties": { "listen": { "minItems": 1 } }
           }
+        },
+        {
+          "if": { "required": ["capabilities"] },
+          "then": {
+            "not": {
+              "anyOf": [
+                { "required": ["topic"] },
+                { "required": ["listen"] },
+                { "required": ["data"] },
+                { "required": ["secretData"] }
+              ]
+            }
+          }
         }
       ],
       "properties": {
@@ -77,6 +102,7 @@
           "uniqueItems": true,
           "items": { "$ref": "#/$defs/topic" }
         },
+        "capabilities": { "$ref": "#/$defs/capabilities" },
         "data": { "type": "object", "maxProperties": 256 },
         "secretData": { "type": "string", "maxLength": 32768 }
       }

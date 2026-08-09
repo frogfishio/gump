@@ -77,6 +77,11 @@ PY
   ssh_opts=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new)
   ssh_key="$(awk -v host="$host" '$1==host { for(i=1;i<=NF;i++) if($i ~ /^ansible_ssh_private_key_file=/){sub(/^ansible_ssh_private_key_file=/,"",$i); print $i} }' "$inventory")"
   if [[ -n "$ssh_key" ]]; then ssh_opts+=(-i "$ssh_key"); fi
+  # Re-forming is a legitimate test-cluster operation. Socket activation gives
+  # every bootstrap connection a new instance name, so an existing in-memory
+  # node must be stopped before supplying replacement cluster material.
+  ssh "${ssh_opts[@]}" "manager@$public_ip" \
+    "sudo systemctl stop 'gump-bootstrap@*.service' gump-bootstrap.socket; sudo systemctl reset-failed 'gump-bootstrap@*.service'"
   ssh "${ssh_opts[@]}" "manager@$public_ip" "sudo systemctl start gump-bootstrap.socket"
   printf '%s' "$params" | ssh "${ssh_opts[@]}" "manager@$public_ip" \
     "sudo python3 -c 'import socket,sys; s=socket.socket(socket.AF_UNIX); s.connect(\"/run/gump-bootstrap.sock\"); s.sendall(sys.stdin.buffer.read()); s.shutdown(socket.SHUT_WR)'"

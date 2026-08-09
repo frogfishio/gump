@@ -1,7 +1,7 @@
 ---
 # Non-secret host configuration shared by the three disposable nodes.
 gump_cluster_port: 7443
-gump_workload_port_range: "20000:20999"
+gump_workload_port_range: "1024:65535"
 gump_runtime_dir: /run/gump
 gump_server_state_root: /var/lib/gump
 

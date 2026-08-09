@@ -24,6 +24,7 @@ pub const MAX_PUBLIC_DATA_BYTES: usize = 8 * 1024;
 pub const MAX_SECRET_DATA_BYTES: usize = 32 * 1024;
 pub const MAX_JSON_DEPTH: usize = 16;
 pub const MAX_LISTEN_TOPICS: usize = 32;
+pub const MAX_CAPABILITIES_PER_ATTEMPT: usize = 32;
 pub const MAX_PUBLISHERS_PER_TOPIC: usize = 10_000;
 pub const MAX_INTRODUCTIONS_PER_POST: usize = 256;
 pub const MAX_KEEPER_BYTES: usize = 64 * 1024 * 1024;

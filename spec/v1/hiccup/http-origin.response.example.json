@@ -1,0 +1,9 @@
+{
+  "hiccup": 1,
+  "capabilities": {
+    "http.origin/1": {
+      "port": 8080,
+      "domains": ["abc.com", "cde.org", "def.net"]
+    }
+  }
+}

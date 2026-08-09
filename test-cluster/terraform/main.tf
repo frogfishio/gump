@@ -69,6 +69,21 @@ resource "digitalocean_firewall" "gump" {
     source_addresses = var.admin_cidrs
   }
 
+  # The cloud edge admits HTTP/S to the test-cluster addresses. The host
+  # firewall opens the corresponding forwarded listener only on gump01, so the
+  # selected ACME entry remains the sole effective public endpoint.
+  inbound_rule {
+    protocol         = "tcp"
+    port_range       = "80"
+    source_addresses = ["0.0.0.0/0"]
+  }
+
+  inbound_rule {
+    protocol         = "tcp"
+    port_range       = "443"
+    source_addresses = ["0.0.0.0/0"]
+  }
+
   inbound_rule {
     protocol    = "udp"
     port_range  = tostring(var.gump_cluster_port)

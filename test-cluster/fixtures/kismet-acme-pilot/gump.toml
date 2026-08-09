@@ -1,0 +1,107 @@
+schema = "gump/1"
+
+[app]
+id = "kismet-acme-pilot"
+namespace = "default"
+version = "0.1.0-gump-pilot.7-staging"
+description = "Single-entry Kismet real DNS and ACME pilot"
+
+[workload]
+lifetime = "continuous"
+coordination = "independent"
+success = "never"
+failure = "restart_unit"
+max_attempts = 20
+isolation = "continue_existing"
+isolation_grace = "5m"
+
+[package]
+root = "."
+include = ["bin/kismet", "bin/run-kismet.sh"]
+exclude = []
+format = "tar+zstd"
+
+[runtime]
+driver = "script"
+command = ["./bin/run-kismet.sh"]
+interpreter = ["/bin/sh"]
+workdir = "."
+stop_signal = "TERM"
+stop_timeout = "30s"
+
+# Fixed high ports are an explicit Pilot 7 adapter until the live server
+# composes manifest auto-allocation and injection.
+[runtime.ports.control]
+address = "127.0.0.1"
+value = 18082
+inject = "env:KISMET_LISTEN_PORT"
+
+[runtime.ports.public_http]
+address = "0.0.0.0"
+value = 18083
+inject = "env:KISMET_PUBLIC_HTTP_LISTEN_PORT"
+
+[runtime.ports.https]
+address = "0.0.0.0"
+value = 18443
+inject = "env:KISMET_TLS_LISTEN_PORT"
+
+[runtime.variables.KISMET_ACME_EMAIL]
+source = "env:KISMET_ACME_EMAIL"
+required = true
+classification = "internal"
+encoding = "utf8"
+max_bytes = "320B"
+inject = "env"
+
+[runtime.variables.KISMET_ACME_DIRECTORY_URL]
+source = "env:KISMET_ACME_DIRECTORY_URL"
+required = true
+classification = "internal"
+encoding = "utf8"
+max_bytes = "1KiB"
+inject = "env"
+
+[health.liveness]
+type = "http"
+port = "control"
+path = "/health"
+interval = "2s"
+timeout = "1s"
+initial_delay = "500ms"
+successes = 1
+failures = 5
+
+[health.readiness]
+type = "http"
+port = "control"
+path = "/ready"
+interval = "2s"
+timeout = "1s"
+initial_delay = "500ms"
+successes = 1
+failures = 30
+
+[discovery.hiccup]
+required_for_eligibility = true
+health_binding = "liveness"
+
+[resources]
+cpu_request = "50m"
+memory_request = "128MiB"
+
+[deploy]
+coverage = "fixed"
+units = 1
+priority = "normal"
+preemptible = false
+
+[telemetry]
+protocol = "ratatouille/0.1"
+format = "ndjson"
+filter = "app/*"
+
+[telemetry.relay]
+capacity = "1MiB"
+max_record = "64KiB"
+overflow = "drop_oldest"

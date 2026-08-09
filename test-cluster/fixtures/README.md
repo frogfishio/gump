@@ -26,5 +26,24 @@ the `fixtures` Keychain scope.
 node emits one stdout record so acceptance can prove node-local delivery into
 all three independent Ringtail collectors without learning their bearer tokens.
 
+`fixtures/kismet-pilot/gump.toml` now carries Pilot 6. It retains the accepted
+process/health and liveness-bound Hiccup candidate behavior, consumes the full
+capability directory, and is ready to discover `http.origin/1` applications.
+It still runs one local-mode Kismet process per Gump node, keeps HTTP on
+loopback, stores working data beneath the attempt root, and verifies the
+supplied ELF checksum through `/proc`. The fixed port and wrapper remain
+explicit workarounds for the not-yet-composed automatic port allocator/injector.
+
+`fixtures/http-origin-pilot/gump.toml` is a deliberately tiny all-node web
+application. Each attempt advertises `http.origin/1` with two test hostnames,
+reads its Hiccup token from Gump's inherited descriptor, and listens on its
+node-private address. Acceptance requires all three Kismet attempts to report
+all three healthy origins and route `origin.gump.test` without a publication
+file or seed address. The probe verifies that Kismet preserves the requested
+public `Host`, retains trusted `X-Forwarded-Host`, and connects directly to the
+node-private backend. Its replacement target additionally proves that old
+attempt observations are marked superseded while only current attempts remain
+routable.
+
 Fixture application values come from the narrow macrun `fixtures` scope. No
 plaintext `.env` or generated secret file belongs in this directory.

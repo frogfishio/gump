@@ -540,7 +540,51 @@ upgrade/rollback, and evidence collection without relying on local log files.
 Test protocol negotiation, Capsule compatibility, rolling replacement, CLI/API
 machine-output stability, unsupported-version behavior, and rollback boundaries.
 
-## 8. Recommended first board population
+## 8. Approved product extension
+
+This action is a deliberate product addition, not an undiscovered v1 completion
+gap. It may be designed and scheduled now, but it must not displace the open P0
+correctness path or weaken the production gate.
+
+### GUMP-N034 — Expose bounded workload-scoped shared K/V
+
+**Priority:** P1 after the developer-preview gate
+
+**Contract:** [`../SHARED_KV.md`](../SHARED_KV.md)
+
+**Depends on:** GUMP-N005, GUMP-N019, GUMP-N023
+
+Expose `gump.shared-kv/1` as an advertised Gump system capability. Give all
+authorized attempts of one stable signed workload identity a common,
+linearizable, cluster-memory-only pool through a narrow GET/PUT/CAS/DELETE/LIST/
+WATCH API. Keep it logically and operationally isolated from Gump's internal
+control records and from secret custody.
+
+**Acceptance evidence:**
+
+- five attempts of one workload on different nodes observe the same pool across
+  scale, movement, restart, and rolling release replacement;
+- another workload is denied even when it copies the first workload's public
+  name, request fields, or Hiccup advertisement;
+- access is derived from authoritative `(cluster_id, namespace, workload_id)`
+  and bound to the current authorized attempt;
+- concurrent CAS tests and leader replacement preserve linearizable results;
+- minority partitions fail closed and never present stale reads as current;
+- capability discovery reveals endpoints and protocol facts but grants no
+  access by itself;
+- per-value, key-count, pool-memory, watch, history, deadline, and request-rate
+  bounds are enforced with explicit errors;
+- saturation and adversarial watch fan-out do not prevent health, placement,
+  secret authorization, or lifecycle progress;
+- removing desired workload intent revokes access and purges the pool only
+  after its bounded grace period; a transient zero-instance rollout does not;
+- whole-cluster restart begins with empty pools and creates no S3 or filesystem
+  recovery path;
+- the API, capability metadata, documentation, and diagnostics all state
+  `not-for-secrets`, and no secret-custody value or reference can enter it; and
+- one-node status truthfully reports zero pool-memory failure tolerance.
+
+## 9. Recommended first board population
 
 Create and assign these cards immediately:
 
