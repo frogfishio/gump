@@ -1,4 +1,4 @@
-.PHONY: help init plan infra configure-base install-gump configure verify form unseal smoke fixture-finite deploy-finite accept-finite live-finite fixture-ringtail deploy-ringtail fixture-ringtail-relay-probe deploy-ringtail-relay-probe accept-ringtail live-ringtail fixture-kismet-pilot deploy-kismet-pilot accept-kismet-pilot live-kismet-pilot fixture-http-origin-pilot deploy-http-origin-pilot accept-http-origin-pilot live-http-origin-pilot replace-http-origin-pilot fixture-kismet-acme-staging deploy-kismet-acme-staging fixture-kismet-acme-production deploy-kismet-acme-production configure-kismet-acme-ingress accept-kismet-acme live-kismet-acme-staging live-kismet-acme-production remove-kismet-acme-ingress destroy
+.PHONY: help init plan infra configure-base install-gump configure verify form unseal smoke fixture-finite deploy-finite accept-finite live-finite fixture-ringtail deploy-ringtail fixture-ringtail-relay-probe deploy-ringtail-relay-probe accept-ringtail live-ringtail fixture-kismet-pilot deploy-kismet-pilot accept-kismet-pilot live-kismet-pilot fixture-http-origin-pilot deploy-http-origin-pilot accept-http-origin-pilot live-http-origin-pilot replace-http-origin-pilot fixture-kismet-acme-staging deploy-kismet-acme-staging bootstrap-kismet-acme-production fixture-kismet-acme-production deploy-kismet-acme-production configure-kismet-acme-ingress accept-kismet-acme live-kismet-acme-staging live-kismet-acme-production remove-kismet-acme-ingress destroy
 
 ROOT_DIR := $(abspath .)
 TERRAFORM_DIR := $(ROOT_DIR)/terraform
@@ -42,6 +42,7 @@ help:
 	  '  make live-http-origin-pilot  Prove Hiccup origin discovery and Kismet hostname routing.' \
 	  '  make replace-http-origin-pilot  Replace origins and prove immediate attempt supersession.' \
 	  '  make live-kismet-acme-staging  Run Pilot 8 against real DNS and Let’s Encrypt staging.' \
+	  '  make bootstrap-kismet-acme-production  Register Pilot 8 production ACME values directly into Macrun.' \
 	  '  make live-kismet-acme-production  Replace staging with a fresh publicly trusted generation.' \
 	  '  make remove-kismet-acme-ingress  Remove only the Pilot 8 host forwarding rules.' \
 	  '  make destroy    Destroy compute; requires CONFIRM_DESTROY=YES.'
@@ -148,6 +149,12 @@ deploy-kismet-acme-staging: fixture-kismet-acme-staging
 
 fixture-kismet-acme-production:
 	"$(MACRUN)" fixtures "$(MACRUN_BIN)" run "$(KISMET_MACRUN_PROJECT)" "$(KISMET_MACRUN_PRODUCTION_ENV)" -- env GUMP_BIN="$(GUMP_LOCAL_BIN)" "$(ROOT_DIR)/scripts/build-kismet-acme-fixture.sh"
+
+bootstrap-kismet-acme-production:
+	KISMET_MACRUN_PROJECT="$(KISMET_MACRUN_PROJECT)" \
+	KISMET_MACRUN_PRODUCTION_ENV="$(KISMET_MACRUN_PRODUCTION_ENV)" \
+	MACRUN_BIN="$(MACRUN_BIN)" \
+	"$(ROOT_DIR)/scripts/bootstrap-kismet-acme-production.sh"
 
 deploy-kismet-acme-production: fixture-kismet-acme-production
 	"$(ROOT_DIR)/scripts/deploy-kismet-acme-fixture.sh"

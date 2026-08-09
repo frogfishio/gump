@@ -3,7 +3,7 @@
 Date: 2026-08-09  
 Cluster: `019fe385-e1ae-74b0-8a24-42254095cdcc`  
 Public hostname: `gump.frogfish.io`  
-Status: passed against Let's Encrypt staging after Gump write-path repair
+Status: passed against Let's Encrypt staging and production after Gump write-path repair
 
 ## Passed
 
@@ -28,6 +28,12 @@ Status: passed against Let's Encrypt staging after Gump write-path repair
   root, and Kismet-created private files were owner-only.
 - Fresh Pilot 8 generations committed through both `gump02` and `gump03`,
   proving the repaired write path through every live node endpoint.
+- The supplied Linux Pilot 8 binary registered a separate production account
+  whose four values were streamed over SSH directly into
+  `kismet-gump-pilot8/production`; no macOS rebuild was required.
+- Production generation 4 obtained a publicly trusted Let's Encrypt
+  certificate and passed the same three-origin, runtime-checksum,
+  unknown-SNI, permissions, and account-non-persistence checks.
 
 ## Failure found and repaired
 
@@ -75,5 +81,5 @@ green. It retained the droplets, private/public IPs, DNS, S3 Capsules, cluster
 identity, and Macrun secrets; only the deliberately memory-only desired state
 was rebuilt.
 
-Sanitized final-generation acceptance evidence is under
-`test-cluster/evidence/kismet-acme-20260809T150408Z/`.
+Sanitized production acceptance evidence is under
+`test-cluster/evidence/kismet-acme-20260809T151418Z/`.
