@@ -228,9 +228,17 @@ fn probe_command(spec: &CheckSpec, timeout: Duration) -> Result<bool, String> {
         cmd.args(&argv[1..]);
     }
     cmd.stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        // Probe output is never application telemetry and may contain secrets.
+        // Discarding it also prevents a child from filling either pipe and
+        // deadlocking the probe before `try_wait` can observe completion.
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .env_clear();
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        cmd.process_group(0);
+    }
     if let Ok(path) = std::env::var("PATH") {
         cmd.env("PATH", path);
     }
@@ -239,17 +247,18 @@ fn probe_command(spec: &CheckSpec, timeout: Duration) -> Result<bool, String> {
     loop {
         match child.try_wait().map_err(|e| e.to_string())? {
             Some(status) => {
-                // Drain bounded output (discard; never log secrets).
-                if let Some(mut out) = child.stdout.take() {
-                    let mut buf = Vec::new();
-                    let _ = out
-                        .by_ref()
-                        .take(spec.max_output_bytes as u64)
-                        .read_to_end(&mut buf);
-                }
                 return Ok(status.success());
             }
             None if start.elapsed() >= timeout => {
+                #[cfg(unix)]
+                {
+                    let _ = Command::new("/bin/kill")
+                        .args(["-s", "KILL", &format!("-{}", child.id())])
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .status();
+                }
+                #[cfg(not(unix))]
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err("command check timed out".into());

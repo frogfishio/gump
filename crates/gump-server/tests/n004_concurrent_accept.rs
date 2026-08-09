@@ -30,6 +30,11 @@ fn concurrent_status_requests_and_cancel() {
         roles: RoleSet::default_init(),
         peer_uid: uid,
         controller_holder: 1,
+        object_store: Some(gump_connectors::RuntimeObjectStore::Memory(
+            gump_connectors::FakeObjectStore::new(),
+        )),
+        cluster_id: None,
+        signer_trust: gump_crypto::SignerTrustPolicy::new(),
     })
     .expect("compose");
     assert!(runtime.memory.enabled);

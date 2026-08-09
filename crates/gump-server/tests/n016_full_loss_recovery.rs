@@ -2,11 +2,17 @@
 
 use std::sync::{Arc, Mutex};
 
+use gump_capsule::{GumpCapsuleHeader, write_gump_capsule};
 use gump_cli::{LocalRequest, LocalResponse};
-use gump_connectors::FakeObjectStore;
-use gump_memory::MemoryCluster;
-use gump_server::deploy_txn::capsule_id_for_digest;
+use gump_connectors::{FakeObjectStore, ObjectStore, final_capsule_key};
+use gump_crypto::{
+    SegmentDigestRef, SignerEnrollment, SignerTrustPolicy, SigningKeyBytes,
+    build_release_signing_transcript, ed25519_fingerprint, sign_transcript, verifying_key,
+};
+use gump_memory::{MemoryCluster, RaftCommand};
+use gump_server::deploy_txn::parse_cluster_id;
 use gump_server::{LocalDaemon, PeerAllowlist, handle_request};
+use gump_types::CapsuleId;
 
 fn to_hex(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(bytes.len() * 2);
@@ -22,34 +28,113 @@ fn daemon_with_store() -> LocalDaemon {
     daemon.memory_cluster = Some(Arc::new(
         MemoryCluster::bootstrap_one_voter(1, 1).expect("raft"),
     ));
-    daemon.object_store = Some(Arc::new(Mutex::new(FakeObjectStore::new())));
+    daemon.object_store = Some(Arc::new(Mutex::new(
+        gump_connectors::RuntimeObjectStore::Memory(FakeObjectStore::new()),
+    )));
+    let mut trust = SignerTrustPolicy::new();
+    trust
+        .enroll(SignerEnrollment {
+            public_key: verifying_key(&SigningKeyBytes::from_bytes([0x61; 32])),
+            namespaces: std::collections::BTreeSet::from(["ns".into()]),
+            expires_at_ms: None,
+            capabilities: std::collections::BTreeSet::new(),
+        })
+        .unwrap();
+    daemon.signer_trust = Arc::new(trust);
     daemon
 }
 
-fn deploy_body(daemon: &LocalDaemon, body: &[u8], op: &str) -> String {
-    let digest = to_hex(blake3::hash(body).as_bytes());
-    let resp = handle_request(
-        daemon,
-        LocalRequest::Deploy {
-            operation_id: op.into(),
+fn signed_capsule(cluster: gump_types::ClusterId, capsule: CapsuleId, archive: &[u8]) -> Vec<u8> {
+    let signing = SigningKeyBytes::from_bytes([0x61; 32]);
+    let verifying = verifying_key(&signing);
+    let header = GumpCapsuleHeader {
+        capsule_id: *capsule.as_bytes(),
+        cluster_id: *cluster.as_bytes(),
+        release_signer: ed25519_fingerprint(&verifying.0)
+            .strip_prefix("blake3:")
+            .unwrap()
+            .into(),
+        created_unix_ms: 0,
+    };
+    let placeholder = [0u8; 96];
+    let segments = [
+        b"meta".as_slice(),
+        archive,
+        b"protected",
+        b"envelope",
+        &placeholder,
+    ];
+    let logical = [4, archive.len() as u64, 9, 8, 0];
+    let mut provisional = Vec::new();
+    let view = write_gump_capsule(&mut provisional, &header, segments, logical).unwrap();
+    let refs = [0usize, 1, 2, 3].map(|i| SegmentDigestRef {
+        segment_type: (i + 1) as u16,
+        stored_length: view.table.descriptors[i].stored_length,
+        digest: view.table.descriptors[i].digest,
+    });
+    let transcript =
+        build_release_signing_transcript(&header.encode_cbor().unwrap(), 1, &refs).unwrap();
+    let signature = sign_transcript(&signing, &transcript).unwrap();
+    let mut signature_segment = verifying.0.to_vec();
+    signature_segment.extend_from_slice(&signature);
+    let final_segments = [
+        b"meta".as_slice(),
+        archive,
+        b"protected",
+        b"envelope",
+        signature_segment.as_slice(),
+    ];
+    let mut out = Vec::new();
+    write_gump_capsule(&mut out, &header, final_segments, logical).unwrap();
+    out
+}
+
+fn deploy_body(daemon: &LocalDaemon, body: &[u8], op: &str) -> (String, CapsuleId) {
+    let cluster_id = parse_cluster_id(&daemon.cluster_id);
+    let mut id = *cluster_id.as_bytes();
+    id[14] ^= body.first().copied().unwrap_or(1);
+    id[15] ^= body.last().copied().unwrap_or(1);
+    id[6] = (id[6] & 0x0f) | 0x70;
+    id[8] = (id[8] & 0x3f) | 0x80;
+    let capsule = CapsuleId::from_bytes(id).unwrap();
+    let bytes = signed_capsule(cluster_id, capsule, body);
+    let digest = *blake3::hash(&bytes).as_bytes();
+    let store = daemon.object_store.as_ref().unwrap();
+    let mut store = store.lock().unwrap();
+    let upload = store
+        .begin_quarantine(cluster_id, capsule, bytes.len() as u64)
+        .unwrap();
+    store.write(upload, &bytes).unwrap();
+    let q = store.finish_quarantine(upload, digest).unwrap().key;
+    let final_key = final_capsule_key(cluster_id, capsule).unwrap();
+    store
+        .publish_if_absent(&q, &final_key, digest, bytes.len() as u64)
+        .unwrap();
+    drop(store);
+    daemon
+        .memory_cluster
+        .as_ref()
+        .unwrap()
+        .client_write(RaftCommand::PutDesired {
             namespace: "ns".into(),
-            app: "app".into(),
-            content_digest_hex: digest.clone(),
-            capsule_hex: Some(to_hex(body)),
-            wait: None,
-        },
-    );
-    assert!(
-        matches!(resp, LocalResponse::Deploy { .. }),
-        "deploy failed: {resp:?}"
-    );
-    digest
+            app: if body == b"n016-other" {
+                "other"
+            } else {
+                "app"
+            }
+            .into(),
+            expected_generation: 0,
+            payload: op.as_bytes().to_vec(),
+            content_digest: digest,
+        })
+        .unwrap();
+    (to_hex(&digest), capsule)
 }
 
 #[test]
 fn empty_cluster_after_restart_has_zero_desired() {
     let mut daemon = daemon_with_store();
-    deploy_body(
+    let _ = deploy_body(
         &daemon,
         b"n016-before-loss",
         "00000000-0000-4000-8000-0000000000a1",
@@ -95,7 +180,7 @@ fn empty_cluster_after_restart_has_zero_desired() {
 #[test]
 fn inventory_lists_inert_without_activating() {
     let daemon = daemon_with_store();
-    let digest = deploy_body(
+    let (digest, _) = deploy_body(
         &daemon,
         b"n016-inventory",
         "00000000-0000-4000-8000-0000000000a2",
@@ -130,9 +215,8 @@ fn inventory_lists_inert_without_activating() {
 fn reintroduce_plan_does_not_mutate_and_apply_requires_finite_mode() {
     let mut daemon = daemon_with_store();
     let body = b"n016-reintroduce";
-    deploy_body(&daemon, body, "00000000-0000-4000-8000-0000000000a3");
-    let digest = *blake3::hash(body).as_bytes();
-    let capsule = capsule_id_for_digest(&digest).to_hyphenated();
+    let (_, capsule) = deploy_body(&daemon, body, "00000000-0000-4000-8000-0000000000a3");
+    let capsule = capsule.to_hyphenated();
 
     // Lose memory.
     daemon.memory_cluster = Some(Arc::new(
@@ -228,18 +312,11 @@ fn reintroduce_plan_does_not_mutate_and_apply_requires_finite_mode() {
 
     // Only the selected Capsule is activated; a second stored Capsule stays inert.
     // Publish a second Capsule via a distinct workload id, then lose memory again.
-    let resp2 = handle_request(
+    let _ = deploy_body(
         &daemon,
-        LocalRequest::Deploy {
-            operation_id: "00000000-0000-4000-8000-0000000000a4".into(),
-            namespace: "ns".into(),
-            app: "other".into(),
-            content_digest_hex: to_hex(blake3::hash(b"n016-other").as_bytes()),
-            capsule_hex: Some(to_hex(b"n016-other")),
-            wait: None,
-        },
+        b"n016-other",
+        "00000000-0000-4000-8000-0000000000a4",
     );
-    assert!(matches!(resp2, LocalResponse::Deploy { .. }), "{resp2:?}");
     let store = daemon.object_store.clone();
     daemon.memory_cluster = Some(Arc::new(
         MemoryCluster::bootstrap_one_voter(1, 1).expect("raft"),

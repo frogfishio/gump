@@ -1,6 +1,6 @@
 //! One-node Hiccup wiring on the agent reconcile path (GUMP-N017 / D016).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use gump_hiccup::{
     AttemptSession, HealthInbound, OutboundHealth, PlacementStamp, PresenceBoard,
@@ -53,6 +53,15 @@ impl HiccupPlacement {
 pub struct HiccupPlane {
     pub board: PresenceBoard,
     sessions: BTreeMap<AttemptId, AttemptSession>,
+    grants: BTreeMap<AttemptId, HiccupGrant>,
+}
+
+/// Controller-derived topic grant. Applications cannot grant themselves named
+/// topic access through their health response.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct HiccupGrant {
+    pub named_publish: BTreeSet<String>,
+    pub named_listen: BTreeSet<String>,
 }
 
 impl HiccupPlane {
@@ -72,12 +81,24 @@ impl HiccupPlane {
 
     pub fn remove_attempt(&mut self, attempt: AttemptId) {
         self.sessions.remove(&attempt);
+        self.grants.remove(&attempt);
         self.board.remove_attempt(attempt);
+    }
+
+    pub fn set_grant(&mut self, attempt: AttemptId, grant: HiccupGrant) {
+        self.grants.insert(attempt, grant);
     }
 
     pub fn plan(&self, attempt: AttemptId) -> Option<OutboundHealth> {
         let session = self.sessions.get(&attempt)?;
-        Some(plan_outbound_for(session, attempt, &self.board, |_| true))
+        let self_topic = gump_hiccup::CanonicalTopic::self_for(session.workload_id);
+        let grant = self.grants.get(&attempt);
+        Some(plan_outbound_for(session, attempt, &self.board, |topic| {
+            topic == &self_topic
+                || grant
+                    .map(|g| g.named_listen.contains(topic.as_str()))
+                    .unwrap_or(false)
+        }))
     }
 
     pub fn on_health_ok(&mut self, ctx: HealthOkCtx<'_>) -> bool {
@@ -93,7 +114,11 @@ impl HiccupPlane {
         } = ctx;
         let _ = self.ensure_session(attempt_id, placement.workload_id);
         let stamp = placement.stamp(unit_id, attempt_id, fence);
-        let Self { board, sessions } = self;
+        let grant = self.grants.get(&attempt_id).cloned().unwrap_or_default();
+        let self_topic = gump_hiccup::CanonicalTopic::self_for(placement.workload_id);
+        let Self {
+            board, sessions, ..
+        } = self;
         let session = sessions
             .get_mut(&attempt_id)
             .expect("session inserted above");
@@ -107,8 +132,19 @@ impl HiccupPlane {
                 health_interval_ms,
                 now: InstantMillis::from_millis(now_ms),
             },
-            |_| true,
-            |_| true,
+            |topics| {
+                topics
+                    .publish
+                    .as_ref()
+                    .map(|topic| {
+                        topic == &self_topic || grant.named_publish.contains(topic.as_str())
+                    })
+                    .unwrap_or(true)
+                    && topics.listen.iter().all(|topic| {
+                        topic == &self_topic || grant.named_listen.contains(topic.as_str())
+                    })
+            },
+            |topic| topic == &self_topic || grant.named_listen.contains(topic.as_str()),
         );
         out.discovery_active
     }

@@ -1,0 +1,53 @@
+schema = "gump/1"
+
+[app]
+id = "finite-hello"
+namespace = "default"
+description = "Finite live-cluster acceptance fixture"
+
+[workload]
+lifetime = "finite"
+coordination = "independent"
+success = "all_exit_zero"
+failure = "fail_unit"
+
+[package]
+root = "."
+include = ["bin/hello.sh"]
+exclude = []
+format = "tar+zstd"
+
+[runtime]
+driver = "script"
+command = ["./bin/hello.sh"]
+interpreter = ["/bin/sh"]
+workdir = "."
+stop_signal = "TERM"
+stop_timeout = "5s"
+
+[runtime.variables.GREETING]
+source = "env:GUMP_FIXTURE_GREETING"
+required = true
+classification = "internal"
+encoding = "utf8"
+max_bytes = "4KiB"
+inject = "env"
+
+[resources]
+cpu_request = "10m"
+memory_request = "16MiB"
+
+[deploy]
+units = 1
+priority = "normal"
+preemptible = false
+
+[telemetry]
+protocol = "ratatouille/0.1"
+format = "ndjson"
+filter = "app/*"
+
+[telemetry.relay]
+capacity = "1MiB"
+max_record = "64KiB"
+overflow = "drop_oldest"

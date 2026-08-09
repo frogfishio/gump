@@ -12,12 +12,15 @@ path = "src/lib.rs"
 
 [dependencies]
 gump-types = { workspace = true }
+gump-transport = { workspace = true }
 openraft = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
+quinn = { workspace = true }
 tracing = { workspace = true }
 blake3 = { workspace = true }
+zeroize = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync"] }

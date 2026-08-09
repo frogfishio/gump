@@ -7,4 +7,4 @@ gump_runtime_dir: /run/gump
 # Supplied by `make configure`:
 gump_artifact_path: ""
 gump_artifact_sha256: ""
-
+ansible_python_interpreter: /usr/bin/python3

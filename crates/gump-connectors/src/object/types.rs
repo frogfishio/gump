@@ -183,4 +183,8 @@ pub trait ObjectStore {
     ) -> Result<ObjectEvidence, ObjectStoreError>;
 
     fn delete(&mut self, key: &ObjectKey) -> Result<(), ObjectStoreError>;
+
+    /// Bounded inventory of immutable final Capsules. Implementations must not
+    /// return quarantine objects or workload state.
+    fn list_final_capsules(&self, limit: usize) -> Result<Vec<ObjectEvidence>, ObjectStoreError>;
 }

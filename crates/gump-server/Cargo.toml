@@ -23,11 +23,16 @@ gump-agent = { workspace = true }
 gump-scheduler = { workspace = true }
 gump-transport = { workspace = true }
 gump-connectors = { workspace = true }
+gump-capsule = { workspace = true }
 gump-telemetry = { workspace = true }
+gump-driver = { workspace = true }
+gump-protocol = { workspace = true }
 blake3 = { workspace = true }
+prost = "0.14"
 serde = { workspace = true }
 serde_json = { workspace = true }
 libc = "0.2"
+getrandom = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -14,6 +14,7 @@ pub mod machine;
 pub mod peer;
 pub mod recovery_txn;
 pub mod roles;
+pub mod runtime;
 pub mod serve;
 
 use gump_types::{HardenError, ProcessHardenReport, prepare_service_for_custody};

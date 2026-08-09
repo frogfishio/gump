@@ -6,7 +6,13 @@
 
 use std::collections::BTreeMap;
 
-use gump_manifest::{Classification, Encoding, Inject, Manifest, Variable};
+use gump_manifest::{
+    AllowDeny, Check, CheckType, Classification, Coordination, Coverage, Driver, Encoding,
+    FailurePolicy, HealthBinding, Inject, IsolationPolicy, IsolationProfile, Lifetime, Manifest,
+    Overflow, PortValue, Priority, ProcVisibility, PublishProtocol, RolloutStrategy, StopSignal,
+    SuccessPolicy, Variable,
+};
+use gump_protocol::pb;
 use gump_protocol::pb::{
     AppIdentityV1, InjectionKind, ProtectedConfigV1, ProtectedValueV1, ReleaseMetadataV1,
     RuntimeVariableV1, ValueClassification, ValueEncoding,
@@ -88,9 +94,7 @@ pub fn package_release_config_with_env(
             description: None,
             version_annotation: None,
         }),
-        // Full normalized ManifestV1 / archive / build provenance land with later
-        // packaging slices; N007 requires runtime_variables contracts + IDs.
-        normalized_manifest: None,
+        normalized_manifest: Some(to_manifest_v1(manifest, runtime_variables.clone())?),
         archive: None,
         build: None,
         required_capabilities: Vec::new(),
@@ -124,6 +128,252 @@ pub fn package_release_config_with_env(
         public_metadata,
         protected_plaintext: Secret::new(protected_bytes),
     })
+}
+
+fn to_manifest_v1(
+    manifest: &Manifest,
+    variables: Vec<RuntimeVariableV1>,
+) -> Result<pb::ManifestV1, CliError> {
+    let app = AppIdentityV1 {
+        namespace: manifest.app.namespace.to_string(),
+        app_id: manifest.app.id.to_string(),
+        workload_id: Some(stable_workload_id(manifest).to_vec()),
+        description: manifest.app.description.clone(),
+        version_annotation: manifest.app.version.clone(),
+    };
+    let workload = pb::WorkloadSpecV1 {
+        lifetime: match manifest.workload.lifetime {
+            Lifetime::Finite => pb::WorkloadLifetime::Finite,
+            Lifetime::Continuous => pb::WorkloadLifetime::Continuous,
+        } as i32,
+        coordination: match manifest.workload.coordination {
+            Coordination::Independent => pb::CoordinationKind::Independent,
+            Coordination::Gang => pb::CoordinationKind::Gang,
+        } as i32,
+        success: match manifest.workload.success {
+            SuccessPolicy::Never => pb::SuccessKind::Never,
+            SuccessPolicy::AnyExitZero => pb::SuccessKind::AnyExitZero,
+            SuccessPolicy::AllExitZero => pb::SuccessKind::AllExitZero,
+        } as i32,
+        failure: match manifest.workload.failure.unwrap_or(FailurePolicy::FailUnit) {
+            FailurePolicy::FailUnit => pb::FailureKind::FailUnit,
+            FailurePolicy::RestartUnit => pb::FailureKind::RestartUnit,
+            FailurePolicy::FailGroup => pb::FailureKind::FailGroup,
+            FailurePolicy::RestartGroup => pb::FailureKind::RestartGroup,
+        } as i32,
+        max_attempts: manifest.workload.max_attempts,
+        stop_on_isolation: matches!(
+            manifest.workload.isolation,
+            Some(IsolationPolicy::StopOnIsolation)
+        ),
+        isolation_grace_ms: manifest.workload.isolation_grace_ms.unwrap_or(0),
+    };
+    let mut ports = manifest
+        .runtime
+        .ports
+        .iter()
+        .map(|(name, port)| pb::PortSpecV1 {
+            name: name.to_string(),
+            address: port.address.clone(),
+            fixed_port: match port.value {
+                PortValue::Fixed(p) => Some(u32::from(p)),
+                PortValue::Auto => None,
+            },
+            allocate_automatically: matches!(port.value, PortValue::Auto),
+            inject_env: port.inject.clone(),
+        })
+        .collect::<Vec<_>>();
+    ports.sort_by(|a, b| a.name.cmp(&b.name));
+    let runtime = pb::RuntimeSpecV1 {
+        driver: match manifest.runtime.driver {
+            Driver::Native => pb::DriverKind::Native,
+            Driver::Script => pb::DriverKind::Script,
+            Driver::Oci => pb::DriverKind::Oci,
+        } as i32,
+        command: manifest.runtime.command.clone(),
+        interpreter: manifest.runtime.interpreter.clone().unwrap_or_default(),
+        workdir: manifest.runtime.workdir.clone().unwrap_or_default(),
+        stop_signal: manifest
+            .runtime
+            .stop_signal
+            .map(stop_signal_name)
+            .unwrap_or("term")
+            .into(),
+        stop_timeout_ms: manifest.runtime.stop_timeout_ms.unwrap_or(10_000),
+        variables,
+        ports,
+        isolation: manifest
+            .runtime
+            .isolation
+            .as_ref()
+            .map(|i| pb::IsolationSpecV1 {
+                profile: match i.profile.unwrap_or(IsolationProfile::Observed) {
+                    IsolationProfile::None => "none",
+                    IsolationProfile::Observed => "observed",
+                    IsolationProfile::Sandboxed => "sandboxed",
+                    IsolationProfile::Strict => "strict",
+                }
+                .into(),
+                deny_core_dumps: matches!(i.core_dumps, Some(AllowDeny::Deny)),
+                deny_secret_swap: matches!(i.swap_secrets, Some(AllowDeny::Deny)),
+                restrict_proc: matches!(i.proc_visibility, Some(ProcVisibility::Restricted)),
+                deny_ptrace: matches!(i.ptrace, Some(AllowDeny::Deny)),
+            }),
+    };
+    let health = manifest.health.as_ref().map(|h| pb::HealthSpecV1 {
+        readiness: h.readiness.as_ref().map(check_v1),
+        liveness: h.liveness.as_ref().map(check_v1),
+        progress: h.progress.as_ref().map(check_v1),
+        completion: h.completion.as_ref().map(check_v1),
+    });
+    let resources = manifest.resources.as_ref().map(|r| {
+        let mut capabilities = r.capabilities.clone();
+        capabilities.sort();
+        pb::ResourceSpecV1 {
+            cpu_request_millis: r.cpu_request.as_deref().and_then(cpu_millis),
+            cpu_limit_millis: r.cpu_limit.as_deref().and_then(cpu_millis),
+            memory_request_bytes: r.memory_request,
+            memory_limit_bytes: r.memory_limit,
+            ephemeral_request_bytes: r.ephemeral_request,
+            ephemeral_limit_bytes: r.ephemeral_limit,
+            gpu_count: r.gpu_count,
+            gpu_vendor: r.gpu_vendor.clone(),
+            gpu_model: r.gpu_model.clone(),
+            gpu_memory_min_bytes: r.gpu_memory_min,
+            capabilities,
+        }
+    });
+    let deploy = manifest.deploy.as_ref().map(|d| pb::DeployDefaultsV1 {
+        units: d.units,
+        priority_request: match d.priority.unwrap_or(Priority::Normal) {
+            Priority::Low => "low",
+            Priority::Normal => "normal",
+            Priority::High => "high",
+            Priority::Critical => "critical",
+        }
+        .into(),
+        preemptible_request: d.preemptible.unwrap_or(false),
+        rollout: d.rollout.as_ref().map(|r| pb::RolloutSpecV1 {
+            strategy: match r.strategy.unwrap_or(RolloutStrategy::Replace) {
+                RolloutStrategy::Replace => "replace",
+                RolloutStrategy::Rolling => "rolling",
+            }
+            .into(),
+            max_unavailable: r.max_unavailable.unwrap_or(0),
+            max_surge: r.max_surge.unwrap_or(0),
+        }),
+        placement: d.placement.as_ref().map(|p| pb::PlacementSpecV1 {
+            spread: p.spread.clone(),
+            require: p.require.clone(),
+            prefer: p.prefer.clone(),
+        }),
+        coverage: match d.coverage.unwrap_or(Coverage::Fixed) {
+            Coverage::Fixed => pb::CoverageKind::Fixed,
+            Coverage::AllNodes => pb::CoverageKind::AllNodes,
+        } as i32,
+    });
+    let publication = manifest.publish.as_ref().map(|p| pb::PublicationSpecV1 {
+        provider: p.provider.to_string(),
+        required: p.required,
+        service: p.service.to_string(),
+        port_name: p.port.to_string(),
+        domain: p.domain.clone(),
+        protocol: match p.protocol.unwrap_or(PublishProtocol::Tcp) {
+            PublishProtocol::Tcp => "tcp",
+            PublishProtocol::Http => "http",
+            PublishProtocol::Https => "https",
+        }
+        .into(),
+    });
+    let telemetry = manifest.telemetry.as_ref().map(|t| pb::TelemetrySpecV1 {
+        producer_protocol: t.protocol.clone(),
+        filter: t.filter.clone().unwrap_or_default(),
+        relay_capacity_bytes: t.relay.as_ref().and_then(|r| r.capacity).unwrap_or(0),
+        max_record_bytes: t.relay.as_ref().and_then(|r| r.max_record).unwrap_or(0),
+        overflow: match t.relay.as_ref().and_then(|r| r.overflow) {
+            Some(Overflow::DropNewest) => "drop_newest",
+            _ => "drop_oldest",
+        }
+        .into(),
+    });
+    let hiccup = manifest
+        .discovery
+        .as_ref()
+        .and_then(|d| d.hiccup.as_ref())
+        .map(|h| pb::HiccupDiscoverySpecV1 {
+            required_for_eligibility: h.required_for_eligibility.unwrap_or(false),
+            health_binding: h.health_binding.map(|b| match b {
+                HealthBinding::Readiness => "readiness".into(),
+                HealthBinding::Liveness => "liveness".into(),
+            }),
+        });
+    Ok(pb::ManifestV1 {
+        schema: manifest.schema.as_str().into(),
+        app: Some(app),
+        workload: Some(workload),
+        runtime: Some(runtime),
+        health,
+        resources,
+        deploy,
+        publication,
+        telemetry,
+        hiccup,
+    })
+}
+
+fn stable_workload_id(manifest: &Manifest) -> [u8; 16] {
+    let mut input = Vec::new();
+    input.extend_from_slice(manifest.app.namespace.to_string().as_bytes());
+    input.push(0);
+    input.extend_from_slice(manifest.app.id.to_string().as_bytes());
+    let hash = blake3::hash(&input);
+    let mut id = [0u8; 16];
+    id.copy_from_slice(&hash.as_bytes()[..16]);
+    id[6] = (id[6] & 0x0f) | 0x70;
+    id[8] = (id[8] & 0x3f) | 0x80;
+    id
+}
+
+fn check_v1(c: &Check) -> pb::CheckSpecV1 {
+    pb::CheckSpecV1 {
+        kind: match c.check_type {
+            CheckType::Process => pb::CheckKind::Process,
+            CheckType::Tcp => pb::CheckKind::Tcp,
+            CheckType::Http => pb::CheckKind::Http,
+            CheckType::Command => pb::CheckKind::Command,
+            CheckType::Fd => pb::CheckKind::Fd,
+            CheckType::External => pb::CheckKind::External,
+        } as i32,
+        port_name: c.port.as_ref().map(ToString::to_string),
+        path: c.path.clone(),
+        command: c.command.clone().unwrap_or_default(),
+        interval_ms: c.interval_ms,
+        timeout_ms: c.timeout_ms,
+        initial_delay_ms: c.initial_delay_ms.unwrap_or(0),
+        successes: c.successes.unwrap_or(1),
+        failures: c.failures.unwrap_or(1),
+    }
+}
+
+fn stop_signal_name(signal: StopSignal) -> &'static str {
+    match signal {
+        StopSignal::Term => "term",
+        StopSignal::Int => "int",
+        StopSignal::Quit => "quit",
+        StopSignal::Hup => "hup",
+        StopSignal::Usr1 => "usr1",
+        StopSignal::Usr2 => "usr2",
+    }
+}
+
+fn cpu_millis(raw: &str) -> Option<u64> {
+    raw.strip_suffix('m')
+        .and_then(|n| n.parse().ok())
+        .or_else(|| {
+            raw.parse::<u64>()
+                .ok()
+                .map(|cores| cores.saturating_mul(1_000))
+        })
 }
 
 fn to_runtime_variable(name: &str, var: &Variable) -> Result<RuntimeVariableV1, CliError> {

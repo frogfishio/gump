@@ -228,6 +228,14 @@ fn finite_completion_cleans_and_explains() {
         thread::sleep(Duration::from_millis(15));
     }
     assert_eq!(exec.live_count(), 0);
+    assert_eq!(exec.completed_count(), 1);
+    for tick in 1..=10 {
+        assert!(exec.reconcile(&desired, tick).unwrap().is_empty());
+    }
+    assert_eq!(exec.completed_count(), 1);
+    assert_eq!(exec.completion_events(), vec![id]);
+    exec.acknowledge_completion(id);
+    assert!(exec.completion_events().is_empty());
     assert!(!exec.attempt_root_exists(id));
 }
 

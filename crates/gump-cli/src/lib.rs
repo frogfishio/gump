@@ -24,6 +24,7 @@ pub use local_api::{
     sample_telemetry, unauthorized_error, wait_body, write_frame,
 };
 pub use sealed::{
-    BuiltSealedCapsule, SealedTestOptions, build_sealed_capsule, run_sealed_test,
-    run_verified_sealed, verify_sealed_capsule,
+    BuiltSealedCapsule, SealedTestOptions, build_sealed_capsule, build_sealed_capsule_for_cluster,
+    build_sealed_capsule_for_cluster_os, run_sealed_test, run_verified_sealed,
+    verify_sealed_capsule,
 };

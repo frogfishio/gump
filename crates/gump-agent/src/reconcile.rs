@@ -3,9 +3,10 @@
 //! Reconcile accepted placements → materialize verified Capsules only →
 //! prepare/admit/start via driver ABI → checks/retry → observe → cleanup.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use gump_driver::{
@@ -27,6 +28,11 @@ use gump_hiccup::OutboundHealth;
 pub const DEFAULT_MAX_LIVE_ATTEMPTS: usize = 4_096;
 /// Per-reconcile wall-clock budget for health checks (must not block indefinitely).
 pub const DEFAULT_CHECK_BUDGET_MS: u64 = 50;
+
+pub type SecretPlanProvider =
+    Arc<dyn Fn(&AcceptedPlacement) -> Result<SecretPlan, String> + Send + Sync>;
+pub type PipeSinkFactory =
+    Arc<dyn Fn(AttemptId) -> Arc<dyn gump_driver::PipeChunkSink> + Send + Sync>;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AgentError {
@@ -141,9 +147,16 @@ pub struct EffectExecutor<D: Driver> {
     authority: AuthorityState,
     isolation: IsolationPolicy,
     live: BTreeMap<AttemptId, LiveAttempt>,
+    /// Successful finite attempts remain converged while their placement is
+    /// still desired. Without this tombstone, cleanup followed by the next
+    /// reconcile pass would launch the same finite execution again.
+    completed: BTreeSet<AttemptId>,
+    completion_events: BTreeSet<AttemptId>,
     max_live: usize,
     check_budget_ms: u64,
     hiccup: HiccupPlane,
+    secret_provider: Option<SecretPlanProvider>,
+    pipe_sink_factory: Option<PipeSinkFactory>,
 }
 
 impl<D: Driver> EffectExecutor<D> {
@@ -154,9 +167,13 @@ impl<D: Driver> EffectExecutor<D> {
             authority,
             isolation: IsolationPolicy::default(),
             live: BTreeMap::new(),
+            completed: BTreeSet::new(),
+            completion_events: BTreeSet::new(),
             max_live: DEFAULT_MAX_LIVE_ATTEMPTS,
             check_budget_ms: DEFAULT_CHECK_BUDGET_MS,
             hiccup: HiccupPlane::new(),
+            secret_provider: None,
+            pipe_sink_factory: None,
         }
     }
 
@@ -172,6 +189,20 @@ impl<D: Driver> EffectExecutor<D> {
 
     pub fn with_check_budget_ms(mut self, ms: u64) -> Self {
         self.check_budget_ms = ms.max(1);
+        self
+    }
+
+    /// Install the custody-backed provider used immediately before admission.
+    /// The default remains a plaintext-free deferred plan for workloads with no
+    /// declared runtime values.
+    pub fn with_secret_provider(mut self, provider: SecretPlanProvider) -> Self {
+        self.secret_provider = Some(provider);
+        self
+    }
+
+    /// Install a per-attempt bounded Ratatouille bridge factory.
+    pub fn with_pipe_sink_factory(mut self, factory: PipeSinkFactory) -> Self {
+        self.pipe_sink_factory = Some(factory);
         self
     }
 
@@ -197,6 +228,19 @@ impl<D: Driver> EffectExecutor<D> {
 
     pub fn live_count(&self) -> usize {
         self.live.len()
+    }
+
+    pub fn completed_count(&self) -> usize {
+        self.completed.len()
+    }
+
+    /// Pending finite-success events awaiting authoritative cluster recording.
+    pub fn completion_events(&self) -> Vec<AttemptId> {
+        self.completion_events.iter().copied().collect()
+    }
+
+    pub fn acknowledge_completion(&mut self, attempt_id: AttemptId) {
+        self.completion_events.remove(&attempt_id);
     }
 
     pub fn report(&self, id: AttemptId) -> Result<AttemptReport, AgentError> {
@@ -254,6 +298,9 @@ impl<D: Driver> EffectExecutor<D> {
 
         let desired_ids: BTreeMap<AttemptId, &AcceptedPlacement> =
             desired.iter().map(|p| (p.attempt_id, p)).collect();
+        self.completed.retain(|id| desired_ids.contains_key(id));
+        self.completion_events
+            .retain(|id| desired_ids.contains_key(id));
 
         let obsolete: Vec<AttemptId> = self
             .live
@@ -266,7 +313,7 @@ impl<D: Driver> EffectExecutor<D> {
         }
 
         for p in desired {
-            if self.live.contains_key(&p.attempt_id) {
+            if self.live.contains_key(&p.attempt_id) || self.completed.contains(&p.attempt_id) {
                 continue;
             }
             self.start_placement(p, now_ms, 1)?;
@@ -328,12 +375,16 @@ impl<D: Driver> EffectExecutor<D> {
             attempt_root: attempt_root.clone(),
         };
         let prepared = self.driver.prepare(&release, &p.runtime, &ctx)?;
+        let secrets = match &self.secret_provider {
+            Some(provider) => provider(p).map_err(AgentError::Driver)?,
+            None => SecretPlan::deferred(),
+        };
         let admission = self.driver.admit(
             prepared,
             ResourceGrant {
                 max_processes: Some(64),
             },
-            SecretPlan::deferred(),
+            secrets,
         )?;
         let running = self.driver.start(
             admission,
@@ -343,7 +394,10 @@ impl<D: Driver> EffectExecutor<D> {
             &IoEndpoints {
                 capture_stdout: true,
                 capture_stderr: true,
-                pipe_sink: None,
+                pipe_sink: self
+                    .pipe_sink_factory
+                    .as_ref()
+                    .map(|factory| factory(p.attempt_id)),
             },
         )?;
 
@@ -454,6 +508,8 @@ impl<D: Driver> EffectExecutor<D> {
                 a.terminal_reason = Some(TerminalReason::completed(exit));
             }
             if !isolated {
+                self.completed.insert(id);
+                self.completion_events.insert(id);
                 return self.cleanup_live(id);
             }
             return Ok(());

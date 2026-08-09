@@ -10,6 +10,11 @@ use std::time::Duration;
 use crate::peer::peer_cred_of;
 use crate::serve::{LocalDaemon, ServeError, serve_connection};
 
+/// The local control socket is deliberately small and bounded. A local peer
+/// must not be able to create an unbounded number of daemon threads.
+pub const MAX_ACTIVE_CONNECTIONS: usize = 64;
+pub const CONNECTION_IO_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Shared cancel flag for graceful shutdown of the accept loop.
 pub type CancelFlag = Arc<AtomicBool>;
 
@@ -56,6 +61,11 @@ pub fn run_accept_loop(
         match listener.accept() {
             Ok((stream, _)) => {
                 stats.accepted.fetch_add(1, Ordering::SeqCst);
+                if stats.active.load(Ordering::SeqCst) >= MAX_ACTIVE_CONNECTIONS {
+                    stats.errors.fetch_add(1, Ordering::SeqCst);
+                    drop(stream);
+                    continue;
+                }
                 stats.active.fetch_add(1, Ordering::SeqCst);
                 let daemon = Arc::clone(&daemon);
                 let active = Arc::clone(&stats.active);
@@ -91,6 +101,12 @@ pub fn run_accept_loop(
 fn serve_unix_stream(daemon: &LocalDaemon, mut stream: UnixStream) -> Result<(), ServeError> {
     stream
         .set_nonblocking(false)
+        .map_err(|e| ServeError::Frame(crate::framing::FrameError::Io(e.to_string())))?;
+    stream
+        .set_read_timeout(Some(CONNECTION_IO_TIMEOUT))
+        .map_err(|e| ServeError::Frame(crate::framing::FrameError::Io(e.to_string())))?;
+    stream
+        .set_write_timeout(Some(CONNECTION_IO_TIMEOUT))
         .map_err(|e| ServeError::Frame(crate::framing::FrameError::Io(e.to_string())))?;
     let peer = peer_cred_of(&stream).map_err(ServeError::from)?;
     serve_connection(daemon, peer, &mut stream)?;

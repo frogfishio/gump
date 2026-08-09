@@ -1,14 +1,19 @@
 //! Local CLI verbs shared with the composed `gump` binary (GUMP-N004 / N006).
 
 use std::env;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
 use crate::local_api::{LocalClient, LocalRequest, LocalResponse, MachineOutputV1};
 use crate::{LocalRunOptions, LocalRunReport, SealedTestOptions, run_local, run_sealed_test};
+use crate::{build_sealed_capsule_for_cluster_os, local_parity_plan};
+use gump_crypto::{ClusterX25519Public, SigningKeyBytes};
+use gump_types::{CapsuleId, ClusterId};
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug)]
 enum Command {
     Run {
         manifest: PathBuf,
@@ -26,6 +31,16 @@ enum Command {
         deadline_ms: Option<u64>,
         /// `machine` (default JSON) or `human` (stable text; never prints secrets).
         format: OutputFormat,
+    },
+    CapsuleBuild {
+        workspace: PathBuf,
+        manifest: PathBuf,
+        output: PathBuf,
+        capsule_id: CapsuleId,
+        cluster_id: ClusterId,
+        cluster_public_key: [u8; 32],
+        cluster_key_id: String,
+        signing_key: SigningKeyBytes,
     },
     Help,
 }
@@ -61,6 +76,7 @@ pub fn try_dispatch_cli(args: &[String]) -> Option<Result<ExitCode, String>> {
             | "inventory"
             | "inspect"
             | "reintroduce"
+            | "capsule"
     ) {
         return None;
     }
@@ -120,6 +136,45 @@ pub fn dispatch_cli(args: &[String]) -> Result<ExitCode, String> {
             }
             Ok(ExitCode::SUCCESS)
         }
+        Command::CapsuleBuild {
+            workspace,
+            manifest,
+            output,
+            capsule_id,
+            cluster_id,
+            cluster_public_key,
+            cluster_key_id,
+            signing_key,
+        } => {
+            let plan = local_parity_plan(&workspace, &manifest).map_err(|e| e.to_string())?;
+            let built = build_sealed_capsule_for_cluster_os(
+                &plan,
+                capsule_id,
+                cluster_id,
+                &signing_key,
+                &ClusterX25519Public(cluster_public_key),
+                &cluster_key_id,
+            )
+            .map_err(|e| e.to_string())?;
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&output)
+                .map_err(|e| format!("create Capsule {}: {e}", output.display()))?;
+            file.write_all(&built.bytes)
+                .map_err(|e| format!("write Capsule {}: {e}", output.display()))?;
+            file.sync_all()
+                .map_err(|e| format!("sync Capsule {}: {e}", output.display()))?;
+            println!(
+                "{{\"schema\":\"gump.capsule-build/1\",\"capsule_id\":\"{}\",\"cluster_id\":\"{}\",\"content_digest_hex\":\"{}\",\"size_bytes\":{},\"output\":{}}}",
+                capsule_id,
+                cluster_id,
+                hex_encode(blake3::hash(&built.bytes).as_bytes()),
+                built.bytes.len(),
+                serde_json::to_string(&output.display().to_string()).map_err(|e| e.to_string())?
+            );
+            Ok(ExitCode::SUCCESS)
+        }
     }
 }
 
@@ -151,15 +206,7 @@ fn parse_args(args: &[String]) -> Result<Command, String> {
         }
         "recovery" => {
             let action = iter.next().cloned().unwrap_or_else(|| "status".into());
-            parse_api_simple(
-                iter,
-                LocalRequest::Recovery {
-                    action,
-                    provider: None,
-                    key_id: None,
-                    recovery_secret_hex: None,
-                },
-            )
+            parse_recovery(iter, action)
         }
         "cluster" => {
             let action = iter.next().cloned().unwrap_or_else(|| "members".into());
@@ -169,10 +216,189 @@ fn parse_args(args: &[String]) -> Result<Command, String> {
         "inventory" => parse_api_simple(iter, LocalRequest::Inventory),
         "inspect" => parse_inspect(iter),
         "reintroduce" => parse_reintroduce(iter),
+        "capsule" => {
+            let action = iter.next().ok_or("capsule needs action (build)")?;
+            if action != "build" {
+                return Err(format!("unknown capsule action {action:?}"));
+            }
+            parse_capsule_build(iter)
+        }
         other => Err(format!(
             "unknown command {other:?}; try gump run|test|status|explain|observe|deploy|inventory|inspect|reintroduce|telemetry|server"
         )),
     }
+}
+
+fn parse_capsule_build<'a>(mut iter: impl Iterator<Item = &'a String>) -> Result<Command, String> {
+    let workspace = env::current_dir().map_err(|e| e.to_string())?;
+    let mut workspace_arg = workspace;
+    let mut manifest = PathBuf::from("gump.toml");
+    let mut output = None;
+    let mut capsule_id = None;
+    let mut cluster_id = None;
+    let mut cluster_public_key = None;
+    let mut cluster_key_id = None;
+    let mut signing_key_fd = None;
+    while let Some(a) = iter.next() {
+        match a.as_str() {
+            "--workspace" => {
+                workspace_arg = PathBuf::from(iter.next().ok_or("--workspace needs a path")?)
+            }
+            "--manifest" => manifest = PathBuf::from(iter.next().ok_or("--manifest needs a path")?),
+            "--output" => output = Some(PathBuf::from(iter.next().ok_or("--output needs a path")?)),
+            "--capsule-id" => {
+                capsule_id = Some(
+                    iter.next()
+                        .ok_or("--capsule-id needs a UUIDv7")?
+                        .parse::<CapsuleId>()
+                        .map_err(|_| "--capsule-id must be a UUIDv7")?,
+                )
+            }
+            "--cluster-id" => {
+                cluster_id = Some(
+                    iter.next()
+                        .ok_or("--cluster-id needs a UUIDv7")?
+                        .parse::<ClusterId>()
+                        .map_err(|_| "--cluster-id must be a UUIDv7")?,
+                )
+            }
+            "--cluster-public-key" => {
+                cluster_public_key = Some(parse_lower_hex32(
+                    iter.next().ok_or("--cluster-public-key needs 64 hex")?,
+                    "--cluster-public-key",
+                )?)
+            }
+            "--cluster-key-id" => {
+                cluster_key_id = Some(iter.next().ok_or("--cluster-key-id needs a value")?.clone())
+            }
+            "--signing-key-fd" => {
+                let fd = parse_u64(iter.next().ok_or("--signing-key-fd needs a descriptor")?)?;
+                if !(3..=u16::MAX as u64).contains(&fd) {
+                    return Err("--signing-key-fd must be an inherited descriptor >= 3".into());
+                }
+                signing_key_fd = Some(fd as u16);
+            }
+            other => return Err(format!("unknown capsule build option {other:?}")),
+        }
+    }
+    let signing_hex =
+        read_secret_fd(signing_key_fd.ok_or("capsule build requires --signing-key-fd")?)?;
+    let signing_key =
+        SigningKeyBytes::from_bytes(parse_lower_hex32(&signing_hex, "--signing-key-fd")?);
+    Ok(Command::CapsuleBuild {
+        workspace: workspace_arg,
+        manifest,
+        output: output.ok_or("capsule build requires --output")?,
+        capsule_id: capsule_id.unwrap_or_else(CapsuleId::new),
+        cluster_id: cluster_id.ok_or("capsule build requires --cluster-id")?,
+        cluster_public_key: cluster_public_key
+            .ok_or("capsule build requires --cluster-public-key")?,
+        cluster_key_id: cluster_key_id.ok_or("capsule build requires --cluster-key-id")?,
+        signing_key,
+    })
+}
+
+fn parse_lower_hex32(value: &str, label: &str) -> Result<[u8; 32], String> {
+    if value.len() != 64
+        || !value
+            .as_bytes()
+            .iter()
+            .all(|b| b.is_ascii_digit() || matches!(b, b'a'..=b'f'))
+    {
+        return Err(format!("{label} must be 32 bytes of lowercase hex"));
+    }
+    let mut out = [0u8; 32];
+    for (index, slot) in out.iter_mut().enumerate() {
+        *slot = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16)
+            .map_err(|_| format!("{label} contains invalid hex"))?;
+    }
+    Ok(out)
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
+fn parse_recovery<'a>(
+    mut iter: impl Iterator<Item = &'a String>,
+    action: String,
+) -> Result<Command, String> {
+    let mut socket = PathBuf::from("/tmp/gump.sock");
+    let mut deadline_ms = None;
+    let mut format = OutputFormat::Machine;
+    let mut provider = None;
+    let mut key_id = None;
+    let mut secret_fd = None;
+    while let Some(a) = iter.next() {
+        match a.as_str() {
+            "--socket" => socket = PathBuf::from(iter.next().ok_or("--socket needs a path")?),
+            "--deadline-ms" => {
+                deadline_ms = Some(parse_u64(iter.next().ok_or("--deadline-ms needs N")?)?)
+            }
+            "--format" => format = parse_format(iter.next().ok_or("--format needs a value")?)?,
+            "--provider" => provider = Some(iter.next().ok_or("--provider needs a value")?.clone()),
+            "--key-id" => key_id = Some(iter.next().ok_or("--key-id needs a value")?.clone()),
+            "--secret-fd" => {
+                let fd = parse_u64(iter.next().ok_or("--secret-fd needs a descriptor")?)?;
+                if !(3..=u16::MAX as u64).contains(&fd) {
+                    return Err("--secret-fd must be an inherited descriptor >= 3".into());
+                }
+                secret_fd = Some(fd as u16);
+            }
+            other => return Err(format!("unknown recovery option {other:?}")),
+        }
+    }
+    let recovery_secret_hex = secret_fd.map(read_secret_fd).transpose()?;
+    if action == "unseal" && recovery_secret_hex.is_none() && provider.as_deref() != Some("hsm") {
+        return Err("recovery unseal requires --secret-fd for the software provider".into());
+    }
+    Ok(Command::Api {
+        socket,
+        request: LocalRequest::Recovery {
+            action,
+            provider,
+            key_id,
+            recovery_secret_hex,
+        },
+        deadline_ms,
+        format,
+    })
+}
+
+fn read_secret_fd(fd: u16) -> Result<String, String> {
+    // Do not re-open through /dev/fd: socket descriptors cannot be reopened,
+    // and hardened Linux processes may deliberately restrict procfs.
+    let mut bytes = gump_types::inherited_fd::read_bounded(i32::from(fd), 66)
+        .map_err(|e| format!("read --secret-fd: {e}"))?;
+    while bytes.last().is_some_and(u8::is_ascii_whitespace) {
+        bytes.pop();
+    }
+    let out = if bytes.len() == 32 {
+        let mut encoded = String::with_capacity(64);
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        for &b in &bytes {
+            encoded.push(HEX[(b >> 4) as usize] as char);
+            encoded.push(HEX[(b & 0x0f) as usize] as char);
+        }
+        encoded
+    } else if bytes.len() == 64
+        && bytes
+            .iter()
+            .all(|b| b.is_ascii_digit() || matches!(b, b'a'..=b'f'))
+    {
+        String::from_utf8(bytes.clone()).map_err(|_| "secret fd is not valid hex".to_string())?
+    } else {
+        bytes.fill(0);
+        return Err("secret fd must contain exactly 32 raw bytes or 64 lowercase hex bytes".into());
+    };
+    bytes.fill(0);
+    Ok(out)
 }
 
 fn parse_telemetry<'a>(mut iter: impl Iterator<Item = &'a String>) -> Result<Command, String> {
@@ -323,6 +549,7 @@ fn parse_deploy<'a>(mut iter: impl Iterator<Item = &'a String>) -> Result<Comman
     let mut app = "app".to_string();
     let mut content_digest_hex = String::new();
     let mut capsule_hex = None;
+    let mut capsule_path = None;
     let mut wait = None;
     let mut deadline_ms = None;
     let mut format = OutputFormat::Machine;
@@ -346,6 +573,9 @@ fn parse_deploy<'a>(mut iter: impl Iterator<Item = &'a String>) -> Result<Comman
             "--capsule-hex" => {
                 capsule_hex = Some(iter.next().ok_or("--capsule-hex needs hex")?.clone());
             }
+            "--capsule" => {
+                capsule_path = Some(iter.next().ok_or("--capsule needs a path")?.clone());
+            }
             "--wait" => {
                 wait = Some(iter.next().ok_or("--wait needs a condition")?.clone());
             }
@@ -362,6 +592,9 @@ fn parse_deploy<'a>(mut iter: impl Iterator<Item = &'a String>) -> Result<Comman
     if operation_id.is_empty() || content_digest_hex.is_empty() {
         return Err("deploy requires --operation-id and --digest".into());
     }
+    if capsule_hex.is_some() == capsule_path.is_some() {
+        return Err("deploy requires exactly one of --capsule PATH or --capsule-hex HEX".into());
+    }
     Ok(Command::Api {
         socket,
         request: LocalRequest::Deploy {
@@ -370,6 +603,7 @@ fn parse_deploy<'a>(mut iter: impl Iterator<Item = &'a String>) -> Result<Comman
             app,
             content_digest_hex,
             capsule_hex,
+            capsule_path,
             wait,
         },
         deadline_ms,
@@ -674,11 +908,14 @@ gump — Capsule placer/supervisor (CLI + server roles)
 Usage:
   gump run [--manifest PATH] [--workspace DIR]
   gump test --sealed [--manifest PATH] [--workspace DIR]
-  gump server --init [--socket PATH] [--role ROLE[,ROLE...]]
+  gump capsule build --output PATH --cluster-id UUID --cluster-public-key HEX
+              --cluster-key-id ID --signing-key-fd N [--manifest PATH] [--workspace DIR]
+  gump cluster-material --nodes N [--cluster-id UUID]
+  gump server (--init | --join IP:PORT) --params-fd N [--state-root PATH] [--socket PATH] [--role ROLE[,ROLE...]]
   gump status [--socket PATH] [--deadline-ms N] [--format machine|human]
   gump explain [--subject NAME] [--socket PATH] [--format machine|human]
   gump observe [--socket PATH] [--subject NAME] [--deadline-ms N] [--format machine|human]
-  gump deploy --operation-id ID --digest HEX [--capsule-hex HEX] [--wait CONDITION]
+  gump deploy --operation-id ID --digest HEX --capsule PATH [--wait CONDITION]
               [--namespace NS] [--app APP] [--socket PATH] [--format machine|human]
   gump lifecycle cancel|interrupt|wait --subject NAME [--socket PATH] [--format machine|human]
   gump inventory [--socket PATH] [--format machine|human]
@@ -686,6 +923,7 @@ Usage:
   gump reintroduce <capsule-uuid> (--new-execution | --resume-from REF) [--plan]
               [--operation-id ID] [--namespace NS] [--app APP] [--socket PATH] [--format machine|human]
   gump recovery [status|reseal] [--socket PATH]
+  gump recovery unseal --secret-fd N [--provider software] [--key-id ID] [--socket PATH]
   gump cluster [members|status] [--socket PATH]
   gump telemetry [--filter TOPIC|prefix*] [--max-events N] [--socket PATH] [--format machine|human]
 
@@ -745,5 +983,23 @@ fn _response_kind(r: &LocalResponse) -> &'static str {
         LocalResponse::Inspect { .. } => "inspect",
         LocalResponse::Reintroduce { .. } => "reintroduce",
         LocalResponse::Error(_) => "error",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write as _;
+    use std::os::fd::AsRawFd as _;
+    use std::os::unix::net::UnixStream;
+
+    use super::read_secret_fd;
+
+    #[test]
+    fn inherited_secret_fd_is_consumed_directly() {
+        let (reader, mut writer) = UnixStream::pair().unwrap();
+        writer.write_all(&[0x5a; 32]).unwrap();
+        drop(writer);
+        let encoded = read_secret_fd(u16::try_from(reader.as_raw_fd()).unwrap()).unwrap();
+        assert_eq!(encoded, "5a".repeat(32));
     }
 }

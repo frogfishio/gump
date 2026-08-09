@@ -8,7 +8,7 @@
 
 use std::collections::VecDeque;
 use std::io::Read;
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -211,6 +211,8 @@ pub fn signal_tree(child: &mut Child, signal: Signal) -> Result<(), DriverError>
             .arg("-s")
             .arg(name)
             .arg(format!("-{pgid}"))
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .map_err(|e| {
                 DriverError::new(
@@ -230,6 +232,8 @@ pub fn signal_tree(child: &mut Child, signal: Signal) -> Result<(), DriverError>
                         .arg("-s")
                         .arg(name)
                         .arg(child.id().to_string())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
                         .status();
                 }
             }

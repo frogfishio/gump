@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 
 pub mod authority;
+pub mod cluster_net;
 pub mod cluster_node;
 pub mod cluster_state;
 pub mod membership;
@@ -19,11 +20,12 @@ pub use authority::{
     AgentFenceError, AgentFenceMemory, ControllerAuthority, ControllerError, EffectCommand,
     EffectReject, FenceToken,
 };
+pub use cluster_net::{ClusterJoinConfig, ClusterNetworkConfig};
 pub use cluster_node::{ClusterStatusSnapshot, MemoryCluster};
 pub use cluster_state::{
     ApplyOutcome, ClusterState, DESIRED_MAX_ENTRIES, DESIRED_MAX_PAYLOAD_BYTES,
-    DESIRED_MAX_TOTAL_BYTES, IDEMPOTENCY_MAX_ENTRIES, IDEMPOTENCY_TTL_MS, RaftCommand,
-    RaftResponse,
+    DESIRED_MAX_TOTAL_BYTES, DesiredSnapshotEntry, FINITE_COMPLETION_MAX_ENTRIES,
+    IDEMPOTENCY_MAX_ENTRIES, IDEMPOTENCY_TTL_MS, RaftCommand, RaftResponse,
 };
 pub use membership::{
     ClusterIncarnation, JointConfig, JointError, MemberId, MemberPhase, MemberRecord,

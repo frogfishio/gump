@@ -9,12 +9,14 @@ use gump_capsule::{
     GumpCapsuleHeader, SegmentType, StreamingCapsuleWriter, verify_release_signature,
 };
 use gump_crypto::{
-    DEK_LEN, Dek, NONCE_LEN, SegmentDigestRef, build_protected_aad,
-    build_release_signing_transcript, generate_signing_key, generate_x25519_keypair, hpke_info,
-    open_dek, open_protected, seal_dek, seal_protected, sign_transcript, signer_fingerprint,
-    verifying_key,
+    ClusterX25519Public, ClusterX25519Secret, DEK_LEN, Dek, HPKE_SUITE_ID, NONCE_LEN,
+    SegmentDigestRef, SigningKeyBytes, build_protected_aad, build_release_signing_transcript,
+    generate_signing_key, generate_x25519_keypair, hpke_info, open_dek, open_protected, seal_dek,
+    seal_protected, sign_transcript, signer_fingerprint, verifying_key,
 };
+use gump_protocol::pb::KeyEnvelopeV1;
 use gump_types::{CapsuleId, ClusterId, prepare_for_custody};
+use prost::Message;
 use rand_core::{CryptoRng, TryCryptoRng, TryRng};
 
 use crate::error::{CliError, CliErrorKind};
@@ -74,10 +76,87 @@ pub fn build_sealed_capsule<R: CryptoRng>(
 ) -> Result<BuiltSealedCapsule, CliError> {
     // SECURITY §8: harden before any DEK / protected plaintext enters memory.
     let _harden = prepare_for_custody();
-
     let signing = generate_signing_key(rng);
-    let verifying = verifying_key(&signing);
-    let fp = signer_fingerprint(&signing);
+    let (cluster_sk, cluster_pk) = generate_x25519_keypair(rng);
+    build_sealed_capsule_inner(
+        plan,
+        capsule_id,
+        cluster_id,
+        &signing,
+        &cluster_pk,
+        Some(&cluster_sk),
+        "local-ephemeral",
+        rng,
+    )
+}
+
+/// Production builder: seal for the cluster's stable public unseal key and
+/// sign with an explicitly managed release signer. Neither secret is invented
+/// by packaging, and the cluster private key is never present here.
+#[allow(clippy::too_many_arguments)]
+pub fn build_sealed_capsule_for_cluster<R: CryptoRng>(
+    plan: &LocalParityPlan,
+    capsule_id: CapsuleId,
+    cluster_id: ClusterId,
+    signing: &SigningKeyBytes,
+    cluster_public: &ClusterX25519Public,
+    cluster_key_id: &str,
+    rng: &mut R,
+) -> Result<BuiltSealedCapsule, CliError> {
+    let _harden = prepare_for_custody();
+    if cluster_key_id.is_empty() || cluster_key_id.len() > 256 {
+        return Err(CliError::new(
+            CliErrorKind::Policy,
+            "cluster_key_id length out of range",
+        ));
+    }
+    build_sealed_capsule_inner(
+        plan,
+        capsule_id,
+        cluster_id,
+        signing,
+        cluster_public,
+        None,
+        cluster_key_id,
+        rng,
+    )
+}
+
+/// Production builder using the operating system CSPRNG.
+#[allow(clippy::too_many_arguments)]
+pub fn build_sealed_capsule_for_cluster_os(
+    plan: &LocalParityPlan,
+    capsule_id: CapsuleId,
+    cluster_id: ClusterId,
+    signing: &SigningKeyBytes,
+    cluster_public: &ClusterX25519Public,
+    cluster_key_id: &str,
+) -> Result<BuiltSealedCapsule, CliError> {
+    let mut rng = SysRng;
+    build_sealed_capsule_for_cluster(
+        plan,
+        capsule_id,
+        cluster_id,
+        signing,
+        cluster_public,
+        cluster_key_id,
+        &mut rng,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_sealed_capsule_inner<R: CryptoRng>(
+    plan: &LocalParityPlan,
+    capsule_id: CapsuleId,
+    cluster_id: ClusterId,
+    signing: &SigningKeyBytes,
+    cluster_pk: &ClusterX25519Public,
+    local_cluster_secret: Option<&ClusterX25519Secret>,
+    cluster_key_id: &str,
+    rng: &mut R,
+) -> Result<BuiltSealedCapsule, CliError> {
+    let verifying = verifying_key(signing);
+    let fp = signer_fingerprint(signing);
     let release_signer = fp
         .strip_prefix("blake3:")
         .unwrap_or(fp.as_str())
@@ -109,36 +188,45 @@ pub fn build_sealed_capsule<R: CryptoRng>(
     let protected = seal_protected(dek.expose(), &nonce, &aad, plaintext)
         .map_err(|e| CliError::new(CliErrorKind::Crypto, e.to_string()))?;
 
-    let (cluster_sk, cluster_pk) = generate_x25519_keypair(rng);
     let info = hpke_info(capsule_id.as_bytes(), cluster_id.as_bytes());
-    let sealed_dek = seal_dek(rng, &cluster_pk, &info, &aad, dek.expose())
+    let sealed_dek = seal_dek(rng, cluster_pk, &info, &aad, dek.expose())
         .map_err(|e| CliError::new(CliErrorKind::Crypto, e.to_string()))?;
 
-    // Prove local unseal before trusting the archive for execution.
-    let opened_dek = open_dek(
-        &cluster_sk,
-        &sealed_dek.encapsulated_key,
-        &info,
-        &aad,
-        &sealed_dek.wrapped_dek,
-    )
-    .map_err(|e| CliError::new(CliErrorKind::Crypto, e.to_string()))?;
-    let opened_pt = open_protected(opened_dek.expose(), &nonce, &aad, &protected)
+    if let Some(cluster_sk) = local_cluster_secret {
+        // Local test builder proves its ephemeral seal before execution.
+        let opened_dek = open_dek(
+            cluster_sk,
+            &sealed_dek.encapsulated_key,
+            &info,
+            &aad,
+            &sealed_dek.wrapped_dek,
+        )
         .map_err(|e| CliError::new(CliErrorKind::Crypto, e.to_string()))?;
-    if opened_pt.expose().as_slice() != packaged.protected_plaintext.expose() {
-        return Err(CliError::new(
-            CliErrorKind::Crypto,
-            "protected plaintext mismatch after local unseal",
-        ));
+        let opened_pt = open_protected(opened_dek.expose(), &nonce, &aad, &protected)
+            .map_err(|e| CliError::new(CliErrorKind::Crypto, e.to_string()))?;
+        if opened_pt.expose().as_slice() != packaged.protected_plaintext.expose() {
+            return Err(CliError::new(
+                CliErrorKind::Crypto,
+                "protected plaintext mismatch after local unseal",
+            ));
+        }
     }
 
     let aad_digest = *blake3::hash(&aad).as_bytes();
-    let mut key_envelope = Vec::new();
-    key_envelope.extend_from_slice(&sealed_dek.encapsulated_key);
-    key_envelope.extend_from_slice(&(sealed_dek.wrapped_dek.len() as u32).to_be_bytes());
-    key_envelope.extend_from_slice(&sealed_dek.wrapped_dek);
-    key_envelope.extend_from_slice(&nonce);
-    key_envelope.extend_from_slice(&aad_digest);
+    let envelope = KeyEnvelopeV1 {
+        schema: "gump.key-envelope/1".into(),
+        suite: HPKE_SUITE_ID.into(),
+        cluster_id: cluster_id.as_bytes().to_vec(),
+        cluster_key_id: cluster_key_id.into(),
+        hpke_encapsulated_key: sealed_dek.encapsulated_key.to_vec(),
+        wrapped_dek: sealed_dek.wrapped_dek.clone(),
+        protected_nonce: nonce.to_vec(),
+        aad_digest: aad_digest.to_vec(),
+    };
+    let mut key_envelope = Vec::with_capacity(envelope.encoded_len());
+    envelope
+        .encode(&mut key_envelope)
+        .map_err(|e| CliError::new(CliErrorKind::Capsule, e.to_string()))?;
 
     let header = GumpCapsuleHeader {
         capsule_id: *capsule_id.as_bytes(),
@@ -209,7 +297,7 @@ pub fn build_sealed_capsule<R: CryptoRng>(
     ];
     let transcript = build_release_signing_transcript(&header_cbor, 1, &segs)
         .map_err(|e| CliError::new(CliErrorKind::Crypto, e.to_string()))?;
-    let signature = sign_transcript(&signing, &transcript)
+    let signature = sign_transcript(signing, &transcript)
         .map_err(|e| CliError::new(CliErrorKind::Crypto, e.to_string()))?;
     let mut sig_seg = Vec::with_capacity(96);
     sig_seg.extend_from_slice(&verifying.0);

@@ -134,6 +134,7 @@ fn s3_config_rejects_partial_static_creds() {
         bucket: "gump".into(),
         access_key_id: Some("only-ak".into()),
         secret_access_key: None,
+        session_token: None,
         force_path_style: true,
         require_conditional_copy: false,
     };

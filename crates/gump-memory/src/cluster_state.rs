@@ -8,7 +8,7 @@
 //! keyed to the committed record-machine clock. External crates mutate state
 //! only through [`ClusterState::apply`] — there is no public `records_mut`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -27,6 +27,10 @@ pub const DESIRED_MAX_PAYLOAD_BYTES: usize = 256 * 1024;
 pub const DESIRED_MAX_ENTRIES: usize = 8_192;
 /// Bound on total retained desired bytes (namespace+app+payload) across the map.
 pub const DESIRED_MAX_TOTAL_BYTES: usize = 64 * 1024 * 1024;
+/// Authoritative finite-unit completion ceiling. Entries are removed when a
+/// newer desired generation replaces the execution; they are never evicted
+/// merely to make room.
+pub const FINITE_COMPLETION_MAX_ENTRIES: usize = 100_000;
 
 /// Serializable OpenRaft application request (replaces placeholder ClientRequest).
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -43,6 +47,14 @@ pub enum RaftCommand {
         expected_generation: u64,
         payload: Vec<u8>,
         content_digest: [u8; 32],
+    },
+    /// Mark one unit of a finite execution converged. The generation compare
+    /// prevents a delayed agent observation from completing newer work.
+    CompleteFinite {
+        namespace: String,
+        app: String,
+        generation: u64,
+        unit_id: [u8; 16],
     },
     /// Replay-safe envelope: same `operation_id` + digest returns the prior response.
     Idempotent {
@@ -91,6 +103,18 @@ struct DesiredEntry {
     payload: Vec<u8>,
 }
 
+/// Read-only committed desired-state record exported to the controller loop.
+/// The payload remains opaque to memory; only the deployment/controller layer
+/// interprets its versioned schema.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DesiredSnapshotEntry {
+    pub namespace: String,
+    pub app: String,
+    pub generation: u64,
+    pub content_digest: [u8; 32],
+    pub payload: Vec<u8>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 struct IdempotencyEntry {
     request_digest: [u8; 32],
@@ -107,6 +131,9 @@ pub struct ClusterState {
     controller: ControllerAuthority,
     /// `(namespace, app)` → accepted desired declaration (opaque validated bytes).
     desired: BTreeMap<(String, String), DesiredEntry>,
+    /// Successful finite units retained for the life of their desired
+    /// generation. This is authoritative live memory, not bounded history.
+    finite_completions: BTreeSet<(String, String, u64, [u8; 16])>,
     /// Operation receipts retained with the mutation that produced them.
     idempotency: BTreeMap<[u8; 16], IdempotencyEntry>,
     /// Receipt ceiling (D014). Not snapshotted — restored to production defaults.
@@ -130,6 +157,8 @@ struct ClusterStateWire {
     records: TypedRecordMachine,
     controller: ControllerAuthority,
     desired: BTreeMap<(String, String), DesiredEntry>,
+    #[serde(default)]
+    finite_completions: BTreeSet<(String, String, u64, [u8; 16])>,
     idempotency: BTreeMap<[u8; 16], IdempotencyEntry>,
 }
 
@@ -140,6 +169,7 @@ impl<'de> Deserialize<'de> for ClusterState {
             records: wire.records,
             controller: wire.controller,
             desired: wire.desired,
+            finite_completions: wire.finite_completions,
             idempotency: wire.idempotency,
             idempotency_max_entries: IDEMPOTENCY_MAX_ENTRIES,
             idempotency_ttl_ms: IDEMPOTENCY_TTL_MS,
@@ -159,6 +189,7 @@ impl Default for ClusterState {
             records: TypedRecordMachine::default(),
             controller: ControllerAuthority::default(),
             desired: BTreeMap::new(),
+            finite_completions: BTreeSet::new(),
             idempotency: BTreeMap::new(),
             idempotency_max_entries: IDEMPOTENCY_MAX_ENTRIES,
             idempotency_ttl_ms: IDEMPOTENCY_TTL_MS,
@@ -227,6 +258,34 @@ impl ClusterState {
     /// Number of retained desired declarations (test/ops introspection).
     pub fn desired_len(&self) -> usize {
         self.desired.len()
+    }
+
+    pub fn desired_snapshot(&self) -> Vec<DesiredSnapshotEntry> {
+        self.desired
+            .iter()
+            .map(|((namespace, app), entry)| DesiredSnapshotEntry {
+                namespace: namespace.clone(),
+                app: app.clone(),
+                generation: entry.generation,
+                content_digest: entry.content_digest,
+                payload: entry.payload.clone(),
+            })
+            .collect()
+    }
+
+    pub fn finite_completed(
+        &self,
+        namespace: &str,
+        app: &str,
+        generation: u64,
+        unit_id: &[u8; 16],
+    ) -> bool {
+        self.finite_completions.contains(&(
+            namespace.to_string(),
+            app.to_string(),
+            generation,
+            *unit_id,
+        ))
     }
 
     pub fn apply(&mut self, cmd: RaftCommand) -> RaftResponse {
@@ -424,6 +483,8 @@ impl ClusterState {
                     ));
                 }
 
+                self.finite_completions
+                    .retain(|(ns, app, _, _)| ns != &key.0 || app != &key.1);
                 self.desired.insert(
                     key,
                     DesiredEntry {
@@ -440,6 +501,55 @@ impl ClusterState {
                     expired_lease_ids: Vec::new(),
                     controller: None,
                     desired_generation: Some(next_gen),
+                })
+            }
+            RaftCommand::CompleteFinite {
+                namespace,
+                app,
+                generation,
+                unit_id,
+            } => {
+                if let Err(msg) = validate_desired_identity(&namespace, &app) {
+                    return RaftResponse::Rejected(msg);
+                }
+                let Some(desired) = self.desired.get(&(namespace.clone(), app.clone())) else {
+                    return RaftResponse::Rejected(
+                        "finite completion has no desired execution".into(),
+                    );
+                };
+                if desired.generation != generation {
+                    return RaftResponse::Rejected(format!(
+                        "finite completion generation conflict: current={} observed={generation}",
+                        desired.generation
+                    ));
+                }
+                let key = (namespace, app, generation, unit_id);
+                if self.finite_completions.contains(&key) {
+                    return RaftResponse::Applied(ApplyOutcome {
+                        revision: self.records.revision(),
+                        txn_succeeded: None,
+                        lease_id: None,
+                        expired_lease_ids: Vec::new(),
+                        controller: None,
+                        desired_generation: Some(generation),
+                    });
+                }
+                if self.finite_completions.len() >= FINITE_COMPLETION_MAX_ENTRIES {
+                    return RaftResponse::Rejected(format!(
+                        "finite completion map full: {} entries (max {})",
+                        self.finite_completions.len(),
+                        FINITE_COMPLETION_MAX_ENTRIES
+                    ));
+                }
+                self.finite_completions.insert(key);
+                let revision = self.records.bump_revision();
+                RaftResponse::Applied(ApplyOutcome {
+                    revision,
+                    txn_succeeded: None,
+                    lease_id: None,
+                    expired_lease_ids: Vec::new(),
+                    controller: None,
+                    desired_generation: Some(generation),
                 })
             }
             RaftCommand::Idempotent { .. } => {

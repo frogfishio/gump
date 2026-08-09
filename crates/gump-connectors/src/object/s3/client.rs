@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use rusty_s3::actions::{
-    CompleteMultipartUpload, CreateMultipartUpload, S3Action as _, UploadPart,
+    CompleteMultipartUpload, CreateMultipartUpload, ListObjectsV2, S3Action as _, UploadPart,
 };
 use rusty_s3::{Bucket, Credentials, UrlStyle};
 use ureq::Agent;
@@ -45,6 +45,8 @@ pub struct S3Config {
     /// When set with [`Self::secret_access_key`], used instead of the env chain.
     pub access_key_id: Option<String>,
     pub secret_access_key: Option<Secret<String>>,
+    /// Optional AWS STS/session token paired with the static key material.
+    pub session_token: Option<Secret<String>>,
     /// Path-style addressing (required for most MinIO / local endpoints).
     pub force_path_style: bool,
     /// When true (default), reject endpoints that ignore `If-None-Match` on
@@ -61,6 +63,7 @@ impl S3Config {
             bucket: bucket.into(),
             access_key_id: None,
             secret_access_key: None,
+            session_token: None,
             force_path_style: true,
             require_conditional_copy: true,
         }
@@ -80,6 +83,7 @@ impl S3Config {
             bucket: bucket.into(),
             access_key_id: Some(access_key_id.into()),
             secret_access_key: Some(Secret::new(secret_access_key.into())),
+            session_token: None,
             force_path_style: true,
             require_conditional_copy: true,
         }
@@ -614,6 +618,50 @@ impl ObjectStore for S3ObjectStore {
         let url = action.sign(SIGN_TTL);
         with_retry(|| map_ureq(self.agent.delete(url.as_str()).call().map_err(UreqErr)).map(|_| ()))
     }
+
+    fn list_final_capsules(&self, limit: usize) -> Result<Vec<ObjectEvidence>, ObjectStoreError> {
+        let limit = limit.min(10_000);
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut continuation: Option<String> = None;
+        let mut out = Vec::new();
+        loop {
+            let mut action = ListObjectsV2::new(&self.bucket, Some(&self.credentials));
+            action.with_prefix("clusters/");
+            action.with_max_keys((limit - out.len()).min(1_000));
+            if let Some(token) = continuation.as_deref() {
+                action.with_continuation_token(token.to_string());
+            }
+            let url = action.sign(SIGN_TTL);
+            let body = with_retry(|| {
+                map_ureq(self.agent.get(url.as_str()).call().map_err(UreqErr)).and_then(|r| {
+                    r.into_string().map_err(|e| {
+                        ObjectStoreError::new(ObjectStoreErrorKind::FaultInjected, e.to_string())
+                    })
+                })
+            })?;
+            let page = ListObjectsV2::parse_response(&body).map_err(|e| {
+                ObjectStoreError::new(
+                    ObjectStoreErrorKind::PreconditionFailed,
+                    format!("invalid ListObjectsV2 response: {e}"),
+                )
+            })?;
+            for item in page.contents {
+                let key = ObjectKey::new(item.key)?;
+                if crate::object::keys::is_final_capsule_key(&key) {
+                    out.push(self.head(&key)?);
+                    if out.len() >= limit {
+                        return Ok(out);
+                    }
+                }
+            }
+            continuation = page.next_continuation_token;
+            if continuation.is_none() {
+                return Ok(out);
+            }
+        }
+    }
 }
 
 impl Drop for S3ObjectStore {
@@ -1001,7 +1049,12 @@ fn process_seems_alive(pid: u32) -> bool {
 
 fn resolve_credentials(config: &S3Config) -> Result<Credentials, ObjectStoreError> {
     match (&config.access_key_id, &config.secret_access_key) {
-        (Some(ak), Some(sk)) => Ok(Credentials::new(ak.clone(), sk.expose().clone())),
+        (Some(ak), Some(sk)) => Ok(match &config.session_token {
+            Some(token) => {
+                Credentials::new_with_token(ak.clone(), sk.expose().clone(), token.expose().clone())
+            }
+            None => Credentials::new(ak.clone(), sk.expose().clone()),
+        }),
         (None, None) => {
             let ak = std::env::var("AWS_ACCESS_KEY_ID").map_err(|_| {
                 ObjectStoreError::new(
@@ -1015,7 +1068,10 @@ fn resolve_credentials(config: &S3Config) -> Result<Credentials, ObjectStoreErro
                     "no credentials: set AWS_SECRET_ACCESS_KEY",
                 )
             })?;
-            Ok(Credentials::new(ak, sk))
+            Ok(match std::env::var("AWS_SESSION_TOKEN") {
+                Ok(token) => Credentials::new_with_token(ak, sk, token),
+                Err(_) => Credentials::new(ak, sk),
+            })
         }
         _ => Err(ObjectStoreError::new(
             ObjectStoreErrorKind::InvalidArgument,
@@ -1139,6 +1195,17 @@ mod stl13_tests {
             rendered.contains("Secret(***)") || rendered.contains("***"),
             "expected redacted secret marker, got {rendered}"
         );
+    }
+
+    #[test]
+    fn session_token_is_used_and_redacted() {
+        let mut cfg = sample_config("super-secret-key-value");
+        cfg.session_token = Some(Secret::new("temporary-session-token".to_string()));
+        let rendered = format!("{cfg:?}");
+        assert!(!rendered.contains("temporary-session-token"));
+        let store = S3ObjectStore::new(cfg).unwrap();
+        assert_eq!(store.credentials.token(), Some("temporary-session-token"));
+        assert!(!format!("{store:?}").contains("temporary-session-token"));
     }
 
     #[test]

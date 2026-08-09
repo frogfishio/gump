@@ -113,6 +113,13 @@ impl ClusterCustody {
         self.live.is_none()
     }
 
+    /// Public half of the active cluster unseal key. Safe to distribute to
+    /// packagers; absent while sealed because no live software/HSM authority
+    /// has been introduced in this process.
+    pub fn cluster_public(&self) -> Option<[u8; 32]> {
+        self.live.as_ref().map(|p| p.cluster_public().0)
+    }
+
     pub fn status(&self) -> CustodyStatus {
         match &self.live {
             None => CustodyStatus {

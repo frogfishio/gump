@@ -16,17 +16,16 @@ boundary.
 
 ## Current status
 
-The live infrastructure and hardened-host scaffold are present. Cluster
-formation and workload acceptance targets intentionally fail with a clear
-message until the matching `gump server --init`, `--join`, deploy, and status
-interfaces land. The harness must never emulate a missing Gump feature with
-another platform.
+The harness forms a real three-voter, RAM-only OpenRaft cluster over private
+QUIC/mTLS. Ephemeral certificate/key material, S3 credentials, join tokens, and
+recovery authority travel through inherited descriptors and activated Unix
+sockets; no parameter or secret file is created.
 
 ## Prerequisites
 
 - Terraform 1.5 or newer
 - Ansible
-- a Linux x86-64 Gump release binary
+- the repository's Linux x86-64 raw asset, produced by `make dist`
 - an uploaded DigitalOcean SSH key
 - macrun with an `infra` scope containing `DIGITALOCEAN_TOKEN`
 - later, a `cluster` scope for S3/recovery inputs and fixture scopes for
@@ -50,37 +49,56 @@ macrun set gump-test-cluster cluster GUMP_S3_ENDPOINT
 macrun set gump-test-cluster cluster GUMP_S3_BUCKET
 macrun set gump-test-cluster cluster GUMP_S3_ACCESS_KEY
 macrun set gump-test-cluster cluster GUMP_S3_SECRET_KEY
+macrun set gump-test-cluster cluster GUMP_S3_SESSION_TOKEN
 macrun set gump-test-cluster cluster GUMP_S3_REGION
+macrun set gump-test-cluster cluster GUMP_CLUSTER_ID
+macrun set gump-test-cluster cluster GUMP_RECOVERY_SECRET_HEX
+macrun set gump-test-cluster cluster GUMP_RELEASE_SIGNER_PUBLIC_KEY_HEX
+macrun set gump-test-cluster cluster GUMP_RELEASE_SIGNER_NAMESPACES
 ```
 
 These commands prompt for values; values do not appear in the shell arguments.
-Recovery/unseal key names will be added only when that public Gump interface is
-frozen.
+`GUMP_CLUSTER_ID` is a stable UUID. Generate it once for the test cluster and
+retain it alongside the recovery authority. Reusing both is what makes capsules
+recoverable after complete loss; new mTLS certificates and join tokens may be
+generated for every formation.
 
 ## Workflow
 
 ```sh
+cd ..
+make dist
+cd test-cluster
 make init
 make plan
 make infra
 make configure-base
-make install-gump GUMP_ARTIFACT=/absolute/path/to/linux/gump
+make install-gump
 make verify
 ```
+
+Building and deployment are separate boundaries. The repository-level build
+places raw assets under `dist/bin/<target>/`; this harness only validates and
+installs `dist/bin/x86_64-unknown-linux-gnu/gump`. An explicit
+`GUMP_ARTIFACT=/absolute/path` may be supplied to test another prebuilt asset.
 
 `make infra` waits for cloud-init and verifies the non-root operator account on
 all three nodes. This matters because DigitalOcean can report a droplet created
 before its initialization script has completed.
-
-When the cluster CLI contract lands:
 
 ```sh
 make form
 make smoke
 ```
 
+If cluster formation succeeds but unseal delivery is interrupted, `make
+unseal` retries only the memory-only unseal operation and does not regenerate
+membership or transport identity.
+
 `make plan`, `make infra`, and `make destroy` launch Terraform through macrun
 2.x using the one adapter in `scripts/macrun-exec.sh`.
+`make form` uses the macOS raw asset for local cluster-material generation and
+the already-installed Linux asset on each node; neither operation compiles.
 
 ## Safety
 

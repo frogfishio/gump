@@ -1,0 +1,12 @@
+[Unit]
+Description=One-shot in-memory Gump bootstrap parameter ingress
+
+[Socket]
+ListenStream={{ gump_bootstrap_socket }}
+SocketMode=0600
+SocketUser=gump
+SocketGroup=gump
+Accept=yes
+
+[Install]
+WantedBy=sockets.target

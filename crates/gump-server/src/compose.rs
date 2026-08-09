@@ -2,11 +2,13 @@
 //!
 //! Memory/controller roles start a live one-voter [`gump_memory::MemoryCluster`].
 
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use gump_agent::harden_agent_startup;
-use gump_connectors::FakeObjectStore;
-use gump_memory::MemoryCluster;
+use gump_connectors::RuntimeObjectStore;
+use gump_crypto::SignerTrustPolicy;
+use gump_memory::{ClusterNetworkConfig, MemoryCluster};
 use gump_telemetry::DEFAULT_RING_MAX_BYTES;
 use gump_transport::{NodeRole, TransportLimits};
 use gump_types::{ClusterId, ProcessHardenReport};
@@ -14,6 +16,7 @@ use gump_types::{ClusterId, ProcessHardenReport};
 use crate::custody::ClusterCustody;
 use crate::peer::PeerAllowlist;
 use crate::roles::RoleSet;
+use crate::runtime::RuntimeCoordinator;
 use crate::serve::LocalDaemon;
 
 /// Thin facet markers so composition stays explicit and one-way into `LocalDaemon`.
@@ -74,21 +77,31 @@ pub struct ProductRuntime {
     pub telemetry: TelemetryFacet,
     pub custody: CustodyFacet,
     pub local_api: LocalDaemon,
+    /// Live controller/scheduler/agent loop when all required local facets exist.
+    pub execution: Option<Arc<Mutex<RuntimeCoordinator>>>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct InitOptions {
+    pub cluster_id: Option<ClusterId>,
     pub roles: RoleSet,
     pub peer_uid: u32,
     pub controller_holder: u64,
+    /// Explicitly configured Capsule store. Connector/controller nodes refuse
+    /// to start without one; tests may opt into the memory implementation.
+    pub object_store: Option<RuntimeObjectStore>,
+    pub signer_trust: SignerTrustPolicy,
 }
 
 impl Default for InitOptions {
     fn default() -> Self {
         Self {
+            cluster_id: None,
             roles: RoleSet::default_init(),
             peer_uid: 0,
             controller_holder: 1,
+            object_store: None,
+            signer_trust: SignerTrustPolicy::new(),
         }
     }
 }
@@ -96,7 +109,19 @@ impl Default for InitOptions {
 impl ProductRuntime {
     /// Build facets from `--init` role selection; starts one-voter Raft when memory is on (N005).
     pub fn init(opts: InitOptions) -> Result<Self, String> {
-        let cluster_id = ClusterId::new();
+        Self::init_with_runtime(opts, std::env::temp_dir().join("gump-state"), None)
+    }
+
+    pub fn init_with_state_root(opts: InitOptions, state_root: PathBuf) -> Result<Self, String> {
+        Self::init_with_runtime(opts, state_root, None)
+    }
+
+    pub fn init_with_runtime(
+        opts: InitOptions,
+        state_root: PathBuf,
+        cluster_network: Option<ClusterNetworkConfig>,
+    ) -> Result<Self, String> {
+        let cluster_id = opts.cluster_id.unwrap_or_default();
         let roles = opts.roles;
 
         let memory_on = roles.contains(NodeRole::Memory) || roles.contains(NodeRole::Controller);
@@ -115,11 +140,15 @@ impl ProductRuntime {
         };
 
         let mut local_api = LocalDaemon::new(PeerAllowlist::same_uid(opts.peer_uid));
+        local_api.signer_trust = Arc::new(opts.signer_trust);
         local_api.cluster_id = cluster_id.to_hyphenated();
         local_api.memory_voters = if memory_on { 1 } else { 0 };
+        let object_store_kind = opts.object_store.as_ref().map(RuntimeObjectStore::kind);
         if connectors_on {
-            // One-server FakeObjectStore until S3 config is operator-wired (D02 / N010).
-            local_api.object_store = Some(Arc::new(Mutex::new(FakeObjectStore::new())));
+            let store = opts.object_store.ok_or_else(|| {
+                "connector/controller role requires an explicit Capsule object store".to_string()
+            })?;
+            local_api.object_store = Some(Arc::new(Mutex::new(store)));
         }
         if custody_on {
             local_api.custody = Some(Arc::new(Mutex::new(ClusterCustody::new_sealed(
@@ -133,10 +162,13 @@ impl ProductRuntime {
         let mut memory_voters = if memory_on { 1 } else { 0 };
         if memory_on {
             // Node id 1 — single voter; controller fence committed via Raft (not direct SM).
-            let cluster = Arc::new(MemoryCluster::bootstrap_one_voter(
-                1,
-                opts.controller_holder,
-            )?);
+            let cluster = Arc::new(match cluster_network {
+                Some(network) => {
+                    let node_id = memory_node_id(network.material.identity.node_id);
+                    MemoryCluster::bootstrap_networked(node_id, opts.controller_holder, network)?
+                }
+                None => MemoryCluster::bootstrap_one_voter(1, opts.controller_holder)?,
+            });
             let snap = cluster.status_snapshot()?;
             memory_voters = snap.voter_count;
             local_api.memory_voters = snap.voter_count;
@@ -144,6 +176,32 @@ impl ProductRuntime {
             local_api.controller_holder = snap.controller_holder;
             local_api.memory_cluster = Some(cluster);
         }
+
+        let execution = if scheduler_on && agent_on {
+            let store = local_api
+                .object_store
+                .as_ref()
+                .ok_or_else(|| "execution requires a Capsule object store".to_string())?;
+            let custody = local_api
+                .custody
+                .as_ref()
+                .ok_or_else(|| "execution requires custody".to_string())?;
+            Some(Arc::new(Mutex::new(RuntimeCoordinator::new(
+                cluster_id,
+                local_api
+                    .memory_cluster
+                    .as_ref()
+                    .expect("execution has memory cluster")
+                    .node_id(),
+                state_root,
+                Arc::clone(store),
+                Arc::clone(custody),
+                local_api.telemetry.clone(),
+            )?)))
+        } else {
+            None
+        };
+        local_api.execution = execution.clone();
 
         Ok(Self {
             cluster_id,
@@ -158,7 +216,7 @@ impl ProductRuntime {
             },
             connectors: ConnectorsFacet {
                 enabled: connectors_on,
-                object_store: std::any::type_name::<FakeObjectStore>(),
+                object_store: object_store_kind.unwrap_or("disabled"),
             },
             scheduler: SchedulerFacet {
                 enabled: scheduler_on,
@@ -181,6 +239,7 @@ impl ProductRuntime {
                     .unwrap_or(true),
             },
             local_api,
+            execution,
         })
     }
 
@@ -205,6 +264,14 @@ impl ProductRuntime {
     }
 }
 
+fn memory_node_id(node_id: gump_types::NodeId) -> u64 {
+    u64::from_be_bytes(
+        node_id.as_bytes()[8..16]
+            .try_into()
+            .expect("NodeId suffix is 8 bytes"),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -213,6 +280,9 @@ mod tests {
     fn init_default_roles_wires_memory_agent_controller() {
         let rt = ProductRuntime::init(InitOptions {
             peer_uid: 501,
+            object_store: Some(RuntimeObjectStore::Memory(
+                gump_connectors::FakeObjectStore::new(),
+            )),
             ..InitOptions::default()
         })
         .expect("init");
@@ -223,7 +293,7 @@ mod tests {
         assert!(rt.local_api.controller_holder.is_some());
         assert!(rt.local_api.memory_cluster.is_some());
         assert_eq!(rt.local_api.allowlist, PeerAllowlist::same_uid(501));
-        assert!(rt.connectors.object_store.contains("FakeObjectStore"));
+        assert_eq!(rt.connectors.object_store, "memory-test");
         assert!(rt.local_api.object_store.is_some());
         assert_eq!(rt.scheduler.crate_name, "gump-scheduler");
         let snap = rt
@@ -251,9 +321,12 @@ mod tests {
     fn agent_only_skips_controller_bootstrap() {
         let roles = RoleSet::from_csv("agent").unwrap();
         let rt = ProductRuntime::init(InitOptions {
+            cluster_id: None,
             roles,
             peer_uid: 1,
             controller_holder: 1,
+            object_store: None,
+            signer_trust: SignerTrustPolicy::new(),
         })
         .unwrap();
         assert!(rt.agent.enabled);

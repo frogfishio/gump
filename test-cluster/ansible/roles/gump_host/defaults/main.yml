@@ -2,5 +2,16 @@
 gump_artifact_path: ""
 gump_artifact_sha256: ""
 gump_runtime_dir: /run/gump
-gump_server_command: /usr/local/bin/gump server
-
+gump_server_state_root: /run/gump/state
+gump_server_socket: /run/gump/gump.sock
+gump_bootstrap_socket: /run/gump-bootstrap.sock
+gump_server_command: >-
+  /usr/local/bin/gump server
+  {% if inventory_hostname in groups['gump_seed'] %}
+  --init
+  {% else %}
+  --join {{ hostvars[groups['gump_seed'][0]].cluster_private_ip }}:{{ gump_cluster_port }}
+  {% endif %}
+  --params-fd 3
+  --state-root {{ gump_server_state_root }}
+  --socket {{ gump_server_socket }}

@@ -1,6 +1,6 @@
 //! Local daemon request handling over an authenticated Unix connection.
 
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -10,14 +10,15 @@ use gump_cli::{
     intent_accepted_stages, protocol_mismatch_error, read_frame, unauthorized_error, wait_body,
     write_frame,
 };
-use gump_connectors::{FakeObjectStore, OrphanCapsule, parse_final_capsule_key};
+use gump_connectors::{ObjectStore, OrphanCapsule, RuntimeObjectStore, parse_final_capsule_key};
+use gump_crypto::SignerTrustPolicy;
 use gump_memory::{ControllerAuthority, LeaseTable};
 use gump_telemetry::{RingConfig, TelemetryEventView, TelemetryPlane};
 
 use crate::custody::ClusterCustody;
 use crate::deploy_txn::{
-    DeployTxnOutcome, DeployTxnRequest, capsule_id_for_digest, decode_capsule_hex,
-    parse_cluster_id, parse_operation_id, run_deploy_txn,
+    DeployTxnOutcome, DeployTxnRequest, capsule_identity_reader, decode_capsule_hex,
+    parse_cluster_id, parse_operation_id, run_verified_deploy_reader,
 };
 use crate::framing::FrameError;
 use crate::machine::{ErrorBody, StatusBody};
@@ -25,6 +26,7 @@ use crate::peer::{PeerAllowlist, PeerAuthError, PeerCred};
 use crate::recovery_txn::{
     ReintroduceOutcome, ReintroduceRequest, digest_hex, run_reintroduce, verify_stored_capsule,
 };
+use crate::runtime::RuntimeCoordinator;
 
 #[derive(Clone, Debug)]
 pub struct LocalDaemon {
@@ -39,12 +41,18 @@ pub struct LocalDaemon {
     pub memory_cluster: Option<Arc<gump_memory::MemoryCluster>>,
     /// In-memory unseal custody (GUMP-N008). Absent when custody role is off.
     pub custody: Option<Arc<Mutex<ClusterCustody>>>,
-    /// Capsule object store for deploy publish (GUMP-N010). Fake for one-server.
-    pub object_store: Option<Arc<Mutex<FakeObjectStore>>>,
+    /// Capsule object store for deploy publish (GUMP-N010). Production is S3;
+    /// memory mode must be selected explicitly for local tests.
+    pub object_store: Option<Arc<Mutex<RuntimeObjectStore>>>,
+    /// Explicit release-signer enrollment. Embedded Capsule keys never enroll
+    /// themselves.
+    pub signer_trust: Arc<SignerTrustPolicy>,
     /// Inert Capsules left after publish-without-intent (PROTOCOL.md §13).
     pub deploy_orphans: Arc<Mutex<Vec<OrphanCapsule>>>,
     /// Memory-only recent-window telemetry plane (GUMP-N014). Absent when facet off.
     pub telemetry: Option<Arc<Mutex<TelemetryPlane>>>,
+    /// Shared execution loop/status; absent on non-controller/agent nodes.
+    pub execution: Option<Arc<Mutex<RuntimeCoordinator>>>,
 }
 
 impl LocalDaemon {
@@ -59,8 +67,10 @@ impl LocalDaemon {
             memory_cluster: None,
             custody: None,
             object_store: None,
+            signer_trust: Arc::new(SignerTrustPolicy::new()),
             deploy_orphans: Arc::new(Mutex::new(Vec::new())),
             telemetry: None,
+            execution: None,
         }
     }
 
@@ -208,24 +218,14 @@ pub fn handle_request(daemon: &LocalDaemon, req: LocalRequest) -> LocalResponse 
         LocalRequest::Explain { subject } => {
             handle_explain(daemon, subject, controller_epoch, memory_voters, leader)
         }
-        LocalRequest::Observe { subject } => LocalResponse::Observe {
-            subject: subject.clone(),
-            state: if memory_voters >= 1 {
-                "ready".into()
-            } else {
-                "degraded".into()
-            },
-            detail: format!(
-                "cluster={} voters={} leader={:?}",
-                daemon.cluster_id, memory_voters, leader
-            ),
-        },
+        LocalRequest::Observe { subject } => handle_observe(daemon, subject, memory_voters, leader),
         LocalRequest::Deploy {
             operation_id,
             namespace,
             app,
             content_digest_hex,
             capsule_hex,
+            capsule_path,
             wait,
         } => handle_deploy(
             daemon,
@@ -234,6 +234,7 @@ pub fn handle_request(daemon: &LocalDaemon, req: LocalRequest) -> LocalResponse 
             app,
             content_digest_hex,
             capsule_hex,
+            capsule_path,
             wait,
         ),
         LocalRequest::Lifecycle { action, subject } => {
@@ -315,6 +316,53 @@ pub fn handle_request(daemon: &LocalDaemon, req: LocalRequest) -> LocalResponse 
                 namespace,
                 app,
             },
+        ),
+    }
+}
+
+fn handle_observe(
+    daemon: &LocalDaemon,
+    subject: String,
+    memory_voters: u32,
+    leader: Option<u64>,
+) -> LocalResponse {
+    let Some(execution) = &daemon.execution else {
+        return LocalResponse::Observe {
+            subject,
+            state: "disabled".into(),
+            detail: "this node has no composed execution loop".into(),
+        };
+    };
+    let Ok(execution) = execution.lock() else {
+        return LocalResponse::Observe {
+            subject,
+            state: "degraded".into(),
+            detail: "execution status lock poisoned".into(),
+        };
+    };
+    let status = execution.status();
+    let state = if status.last_error.is_some() {
+        "degraded"
+    } else if status.placements > 0 {
+        "running"
+    } else if status.completed > 0 {
+        "completed"
+    } else if status.desired > 0 {
+        "pending"
+    } else {
+        "idle"
+    };
+    LocalResponse::Observe {
+        subject,
+        state: state.into(),
+        detail: format!(
+            "cluster={} voters={} leader={leader:?} desired={} local_placements={} completed_units={} last_error={}",
+            daemon.cluster_id,
+            memory_voters,
+            status.desired,
+            status.placements,
+            status.completed,
+            status.last_error.as_deref().unwrap_or("none")
         ),
     }
 }
@@ -410,6 +458,8 @@ fn handle_recovery(
                 sealed: st.sealed,
                 requires_authority: st.requires_authority,
                 detail: recovery_detail(&st),
+                cluster_public_key_hex: guard.cluster_public().map(|k| hex_lower(&k)),
+                key_id: st.key_id.clone(),
             }
         }
         "reseal" => {
@@ -419,6 +469,8 @@ fn handle_recovery(
                 sealed: st.sealed,
                 requires_authority: st.requires_authority,
                 detail: recovery_detail(&st),
+                cluster_public_key_hex: None,
+                key_id: None,
             }
         }
         "unseal" => match activate_custody(
@@ -432,6 +484,8 @@ fn handle_recovery(
                 sealed: st.sealed,
                 requires_authority: st.requires_authority,
                 detail: recovery_detail(&st),
+                cluster_public_key_hex: guard.cluster_public().map(|k| hex_lower(&k)),
+                key_id: st.key_id.clone(),
             },
             Err(e) => LocalResponse::Error(ErrorBody {
                 code: "FAILED_PRECONDITION".into(),
@@ -457,6 +511,16 @@ fn recovery_detail(st: &crate::custody::CustodyStatus) -> String {
             st.key_id.as_deref().unwrap_or("unknown")
         )
     }
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len().saturating_mul(2));
+    for &b in bytes {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0x0f) as usize] as char);
+    }
+    out
 }
 
 fn activate_custody(
@@ -539,6 +603,7 @@ fn handle_explain(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_deploy(
     daemon: &LocalDaemon,
     operation_id: String,
@@ -546,6 +611,7 @@ fn handle_deploy(
     app: String,
     content_digest_hex: String,
     capsule_hex: Option<String>,
+    capsule_path: Option<String>,
     wait: Option<String>,
 ) -> LocalResponse {
     if let Some(custody) = &daemon.custody {
@@ -603,15 +669,79 @@ fn handle_deploy(
         }
     };
 
+    let mut source: Box<dyn ReadSeek> = match (capsule_bytes, capsule_path) {
+        (Some(bytes), None) => Box::new(std::io::Cursor::new(bytes)),
+        (None, Some(path)) => match open_capsule_file(&path) {
+            Ok(file) => Box::new(file),
+            Err(msg) => {
+                return LocalResponse::Error(ErrorBody {
+                    code: "INVALID_ARGUMENT".into(),
+                    reason: "deploy.capsule_open".into(),
+                    safe_message: msg,
+                });
+            }
+        },
+        _ => {
+            return LocalResponse::Error(ErrorBody {
+                code: "INVALID_ARGUMENT".into(),
+                reason: "deploy.capsule_required".into(),
+                safe_message: "deploy requires exactly one sealed Capsule source".into(),
+            });
+        }
+    };
+    let content_length = match source.seek(SeekFrom::End(0)) {
+        Ok(n) if n > 0 => n,
+        Ok(_) => {
+            return LocalResponse::Error(ErrorBody {
+                code: "INVALID_ARGUMENT".into(),
+                reason: "deploy.empty_capsule".into(),
+                safe_message: "Capsule file is empty".into(),
+            });
+        }
+        Err(e) => {
+            return LocalResponse::Error(ErrorBody {
+                code: "INVALID_ARGUMENT".into(),
+                reason: "deploy.capsule_seek".into(),
+                safe_message: format!("cannot inspect Capsule length: {e}"),
+            });
+        }
+    };
+    let _ = source.seek(SeekFrom::Start(0));
+    let (capsule_cluster, capsule_id) = match capsule_identity_reader(&mut source) {
+        Ok(ids) => ids,
+        Err(msg) => {
+            return LocalResponse::Error(ErrorBody {
+                code: "INVALID_ARGUMENT".into(),
+                reason: "deploy.bad_capsule".into(),
+                safe_message: msg,
+            });
+        }
+    };
+    if let Err(e) = source.seek(SeekFrom::Start(0)) {
+        return LocalResponse::Error(ErrorBody {
+            code: "INVALID_ARGUMENT".into(),
+            reason: "deploy.capsule_seek".into(),
+            safe_message: format!("cannot rewind verified Capsule: {e}"),
+        });
+    }
+    let daemon_cluster = parse_cluster_id(&daemon.cluster_id);
+    if capsule_cluster != daemon_cluster {
+        return LocalResponse::Error(ErrorBody {
+            code: "FAILED_PRECONDITION".into(),
+            reason: "deploy.cluster_mismatch".into(),
+            safe_message: "Capsule was sealed for a different cluster".into(),
+        });
+    }
+
     let req = DeployTxnRequest {
         operation_id: op_bytes,
         operation_id_display: operation_id.clone(),
         namespace,
         app,
         content_digest: digest,
-        capsule_bytes,
-        cluster_id: parse_cluster_id(&daemon.cluster_id),
-        capsule_id: capsule_id_for_digest(&digest),
+        capsule_bytes: None,
+        cluster_id: daemon_cluster,
+        capsule_id,
     };
 
     let mut store_guard = match store.lock() {
@@ -643,7 +773,20 @@ fn handle_deploy(
     };
     let wait_info = wait_body(wait.as_deref());
 
-    match run_deploy_txn(&mut store_guard, cluster, &mut orphans_guard, req) {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    match run_verified_deploy_reader(
+        &mut *store_guard,
+        &daemon.signer_trust,
+        cluster,
+        &mut orphans_guard,
+        req,
+        now_ms,
+        content_length,
+        &mut source,
+    ) {
         DeployTxnOutcome::Success {
             desired_generation,
             replayed,
@@ -700,6 +843,25 @@ fn handle_deploy(
     }
 }
 
+trait ReadSeek: Read + Seek {}
+impl<T: Read + Seek> ReadSeek for T {}
+
+fn open_capsule_file(path: &str) -> Result<std::fs::File, String> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+        .map_err(|e| format!("open Capsule: {e}"))?;
+    let metadata = file
+        .metadata()
+        .map_err(|e| format!("inspect Capsule: {e}"))?;
+    if !metadata.is_file() {
+        return Err("Capsule source must be a regular file".into());
+    }
+    Ok(file)
+}
+
 fn handle_inventory(daemon: &LocalDaemon) -> LocalResponse {
     let Some(store) = &daemon.object_store else {
         return LocalResponse::Error(ErrorBody {
@@ -724,7 +886,17 @@ fn handle_inventory(daemon: &LocalDaemon) -> LocalResponse {
         .and_then(|c| c.desired_len().ok())
         .unwrap_or(0) as u64;
     let mut capsules = Vec::new();
-    for ev in store_guard.list_final_capsules() {
+    let evidence = match ObjectStore::list_final_capsules(&*store_guard, 10_000) {
+        Ok(items) => items,
+        Err(e) => {
+            return LocalResponse::Error(ErrorBody {
+                code: "UNAVAILABLE".into(),
+                reason: "inventory.object_store".into(),
+                safe_message: format!("object-store inventory failed: {e}"),
+            });
+        }
+    };
+    for ev in evidence {
         let Some((_, capsule)) = parse_final_capsule_key(&ev.key) else {
             continue;
         };
@@ -768,7 +940,7 @@ fn handle_inspect(daemon: &LocalDaemon, capsule_id: String) -> LocalResponse {
             });
         }
     };
-    match verify_stored_capsule(&store_guard, &daemon.cluster_id, &capsule_id) {
+    match verify_stored_capsule(&*store_guard, &daemon.cluster_id, &capsule_id) {
         Ok(c) => {
             let live_referenced = daemon
                 .memory_cluster
@@ -846,8 +1018,14 @@ fn handle_reintroduce(daemon: &LocalDaemon, args: ReintroduceArgs) -> LocalRespo
         format!("{memory_voters} memory voters; majority required for new commits")
     };
 
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
     match run_reintroduce(
-        &store_guard,
+        &*store_guard,
+        &daemon.signer_trust,
+        now_ms,
         cluster,
         &ReintroduceRequest {
             cluster_id: &daemon.cluster_id,
@@ -947,7 +1125,9 @@ mod n008_tests {
             MemoryCluster::bootstrap_one_voter(1, 1).expect("raft"),
         ));
         d.custody = Some(Arc::new(Mutex::new(ClusterCustody::new_sealed(cluster_id))));
-        d.object_store = Some(Arc::new(Mutex::new(FakeObjectStore::new())));
+        d.object_store = Some(Arc::new(Mutex::new(RuntimeObjectStore::Memory(
+            gump_connectors::FakeObjectStore::new(),
+        ))));
         d
     }
 
@@ -960,7 +1140,7 @@ mod n008_tests {
     }
 
     #[test]
-    fn deploy_fails_while_sealed_then_succeeds_after_unseal() {
+    fn deploy_fails_while_sealed_then_rejects_unverified_bytes_after_unseal() {
         let daemon = daemon_with_custody();
         let body = b"n008-capsule";
         let digest = to_hex(blake3::hash(body).as_bytes());
@@ -973,6 +1153,7 @@ mod n008_tests {
                 app: "app".into(),
                 content_digest_hex: digest.clone(),
                 capsule_hex: Some(capsule_hex.clone()),
+                capsule_path: None,
                 wait: None,
             },
         );
@@ -1013,10 +1194,14 @@ mod n008_tests {
                 app: "app".into(),
                 content_digest_hex: digest,
                 capsule_hex: Some(capsule_hex),
+                capsule_path: None,
                 wait: None,
             },
         );
-        assert!(matches!(deployed, LocalResponse::Deploy { .. }));
+        assert!(matches!(
+            deployed,
+            LocalResponse::Error(ErrorBody { ref reason, .. }) if reason == "deploy.bad_capsule"
+        ));
 
         let resealed = handle_request(
             &daemon,

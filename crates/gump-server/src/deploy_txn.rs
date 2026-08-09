@@ -6,12 +6,27 @@
 
 #![allow(clippy::result_large_err)]
 
+use std::io::Cursor;
+
+use gump_capsule::StreamingCapsuleReader;
 use gump_connectors::{
-    DeployPhase, FakeObjectStore, ObjectLocator, ObjectStore, ObjectStoreErrorKind, OrphanCapsule,
+    DeployPhase, ObjectLocator, ObjectStore, ObjectStoreErrorKind, OrphanCapsule, StreamedIngress,
     final_capsule_key,
 };
+use gump_crypto::SignerTrustPolicy;
 use gump_memory::{MemoryCluster, RaftCommand, RaftResponse};
 use gump_types::{CapsuleId, ClusterId};
+use serde::{Deserialize, Serialize};
+
+/// Versioned pointer committed into RAM desired state. Executable declarations
+/// and secrets are never copied here; the controller opens the verified,
+/// immutable Capsule identified by this record.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DesiredCapsuleBindingV1 {
+    pub schema: String,
+    pub operation_id: String,
+    pub capsule_id: String,
+}
 
 /// Inputs for one deploy attempt on the local daemon.
 #[derive(Clone, Debug)]
@@ -116,12 +131,32 @@ pub fn decode_capsule_hex(
     Ok(Some(bytes))
 }
 
+/// Read framing identity before assigning an object key. This does not grant
+/// trust; the product deploy path verifies the signature and enrollment while
+/// the object is quarantined.
+pub fn capsule_identity_reader(
+    reader: &mut dyn std::io::Read,
+) -> Result<(ClusterId, CapsuleId), String> {
+    let meta = StreamingCapsuleReader::new(reader)
+        .verify()
+        .map_err(|e| format!("invalid Capsule framing: {e}"))?;
+    let cluster = ClusterId::from_bytes(meta.header.cluster_id)
+        .map_err(|_| "Capsule cluster_id is not UUIDv7".to_string())?;
+    let capsule = CapsuleId::from_bytes(meta.header.capsule_id)
+        .map_err(|_| "Capsule capsule_id is not UUIDv7".to_string())?;
+    Ok((cluster, capsule))
+}
+
+pub fn capsule_identity(bytes: &[u8]) -> Result<(ClusterId, CapsuleId), String> {
+    capsule_identity_reader(&mut Cursor::new(bytes))
+}
+
 fn object_uri(key: &str) -> String {
     format!("fake-object://{key}")
 }
 
-fn publish_capsule(
-    store: &mut FakeObjectStore,
+fn publish_capsule<S: ObjectStore>(
+    store: &mut S,
     req: &DeployTxnRequest,
 ) -> Result<ObjectLocator, DeployTxnOutcome> {
     let final_key = final_capsule_key(req.cluster_id, req.capsule_id).map_err(|e| {
@@ -215,8 +250,8 @@ fn publish_capsule(
 ///
 /// Execution/placement beyond intent acceptance is GUMP-N011/N012. Orphans are
 /// appended when publish succeeds but intent accept fails.
-pub fn run_deploy_txn(
-    store: &mut FakeObjectStore,
+pub fn run_deploy_txn<S: ObjectStore>(
+    store: &mut S,
     cluster: &MemoryCluster,
     orphans: &mut Vec<OrphanCapsule>,
     req: DeployTxnRequest,
@@ -227,7 +262,20 @@ pub fn run_deploy_txn(
         Err(outcome) => return outcome,
     };
 
-    let payload = req.operation_id_display.as_bytes().to_vec();
+    let payload = match serde_json::to_vec(&DesiredCapsuleBindingV1 {
+        schema: "gump.desired-capsule/1".into(),
+        operation_id: req.operation_id_display.clone(),
+        capsule_id: req.capsule_id.to_hyphenated(),
+    }) {
+        Ok(payload) => payload,
+        Err(e) => {
+            return DeployTxnOutcome::Failed {
+                phase: DeployPhase::LocalValidation,
+                reason: format!("encode desired Capsule binding: {e}"),
+                orphan: None,
+            };
+        }
+    };
     let cmd = RaftCommand::Idempotent {
         operation_id: req.operation_id,
         request_digest,
@@ -296,9 +344,80 @@ pub fn run_deploy_txn(
     }
 }
 
+/// Product deploy path: quarantine, stream-verify the complete Capsule,
+/// authorize its signer, immutably publish, then commit intent.
+pub fn run_verified_deploy_txn<S: ObjectStore>(
+    store: &mut S,
+    trust: &SignerTrustPolicy,
+    cluster: &MemoryCluster,
+    orphans: &mut Vec<OrphanCapsule>,
+    mut req: DeployTxnRequest,
+    now_ms: u64,
+) -> DeployTxnOutcome {
+    let Some(bytes) = req.capsule_bytes.take() else {
+        return DeployTxnOutcome::Failed {
+            phase: DeployPhase::LocalValidation,
+            reason: "verified deploy requires the exact sealed Capsule body".into(),
+            orphan: None,
+        };
+    };
+    let mut reader = Cursor::new(bytes.as_slice());
+    run_verified_deploy_reader(
+        store,
+        trust,
+        cluster,
+        orphans,
+        req,
+        now_ms,
+        bytes.len() as u64,
+        &mut reader,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn run_verified_deploy_reader<S: ObjectStore>(
+    store: &mut S,
+    trust: &SignerTrustPolicy,
+    cluster: &MemoryCluster,
+    orphans: &mut Vec<OrphanCapsule>,
+    req: DeployTxnRequest,
+    now_ms: u64,
+    content_length: u64,
+    reader: &mut dyn std::io::Read,
+) -> DeployTxnOutcome {
+    let receipt = match StreamedIngress::default().accept_known_length(
+        store,
+        trust,
+        req.cluster_id,
+        req.capsule_id,
+        &req.namespace,
+        now_ms,
+        content_length,
+        reader,
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            return DeployTxnOutcome::Failed {
+                phase: DeployPhase::Authz,
+                reason: e.to_string(),
+                orphan: None,
+            };
+        }
+    };
+    if receipt.stats.digest != req.content_digest {
+        return DeployTxnOutcome::Failed {
+            phase: DeployPhase::LocalValidation,
+            reason: "verified Capsule digest differs from declared content digest".into(),
+            orphan: None,
+        };
+    }
+    run_deploy_txn(store, cluster, orphans, req)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gump_connectors::FakeObjectStore;
     use std::sync::Arc;
 
     fn digest(bytes: &[u8]) -> [u8; 32] {

@@ -29,6 +29,11 @@ fn init_status_reports_one_voter_via_live_raft() {
         roles: RoleSet::default_init(),
         peer_uid: uid,
         controller_holder: 9,
+        object_store: Some(gump_connectors::RuntimeObjectStore::Memory(
+            gump_connectors::FakeObjectStore::new(),
+        )),
+        cluster_id: None,
+        signer_trust: gump_crypto::SignerTrustPolicy::new(),
     })
     .expect("init");
 

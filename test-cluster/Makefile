@@ -1,11 +1,12 @@
-.PHONY: help init plan infra configure-base install-gump configure verify form smoke destroy
+.PHONY: help init plan infra configure-base install-gump configure verify form unseal smoke fixture-finite deploy-finite accept-finite live-finite destroy
 
 ROOT_DIR := $(abspath .)
 TERRAFORM_DIR := $(ROOT_DIR)/terraform
 ANSIBLE_DIR := $(ROOT_DIR)/ansible
 INVENTORY := $(ANSIBLE_DIR)/inventory/terraform.ini
 MACRUN := $(ROOT_DIR)/scripts/macrun-exec.sh
-GUMP_ARTIFACT ?=
+GUMP_ARTIFACT ?= $(abspath ../dist/bin/x86_64-unknown-linux-gnu/gump)
+GUMP_LOCAL_BIN ?= $(abspath ../dist/bin/aarch64-apple-darwin/gump)
 GUMP_ARTIFACT_SHA256 ?=
 
 help:
@@ -16,11 +17,16 @@ help:
 	  '  make plan       Plan infrastructure through macrun infra scope.' \
 	  '  make infra      Apply infrastructure and wait until all hosts are ready.' \
 	  '  make configure-base  Harden hosts without requiring a Gump artifact.' \
-	  '  make install-gump    Install GUMP_ARTIFACT after the server contract lands.' \
+	  '  make install-gump    Install the Linux x86-64 raw asset (override GUMP_ARTIFACT).' \
 	  '  make configure       Run configure-base and install-gump together.' \
 	  '  make verify     Verify the substrate and installed artifact.' \
 	  '  make form       Form Gump cluster (enabled when CLI contract lands).' \
+	  '  make unseal     Retry memory-only cluster unseal without reforming.' \
 	  '  make smoke      Run current live acceptance ladder.' \
+	  '  make fixture-finite  Build a signed Capsule for the live finite fixture.' \
+	  '  make deploy-finite   Build and deploy the finite fixture through the live cluster.' \
+	  '  make accept-finite   Prove completion converged once across all three nodes.' \
+	  '  make live-finite     Deploy then run the finite-workload acceptance check.' \
 	  '  make destroy    Destroy compute; requires CONFIRM_DESTROY=YES.'
 
 init:
@@ -38,7 +44,7 @@ configure-base:
 	cd "$(ANSIBLE_DIR)" && ansible-playbook site.yml --tags base
 
 install-gump:
-	@test -n "$(GUMP_ARTIFACT)" || { echo 'GUMP_ARTIFACT=/absolute/path/to/linux/gump is required' >&2; exit 2; }
+	@test -x "$(GUMP_ARTIFACT)" || { echo 'Missing Linux asset: run make dist at the repository root or override GUMP_ARTIFACT' >&2; exit 2; }
 	cd "$(ANSIBLE_DIR)" && ansible-inventory --graph
 	cd "$(ANSIBLE_DIR)" && ansible gump -m ping
 	cd "$(ANSIBLE_DIR)" && ansible-playbook site.yml \
@@ -52,10 +58,25 @@ verify:
 	"$(ROOT_DIR)/scripts/verify-substrate.sh"
 
 form:
-	"$(MACRUN)" cluster "$(ROOT_DIR)/scripts/form.sh"
+	@test -x "$(GUMP_LOCAL_BIN)" || { echo 'Missing local asset: run make dist at the repository root or override GUMP_LOCAL_BIN' >&2; exit 2; }
+	"$(MACRUN)" cluster env GUMP_BIN="$(GUMP_LOCAL_BIN)" "$(ROOT_DIR)/scripts/form.sh"
+
+unseal:
+	"$(MACRUN)" cluster "$(ROOT_DIR)/scripts/unseal.sh"
 
 smoke:
 	"$(ROOT_DIR)/scripts/smoke.sh"
+
+fixture-finite:
+	"$(MACRUN)" fixtures env GUMP_BIN="$(GUMP_LOCAL_BIN)" "$(ROOT_DIR)/scripts/build-finite-fixture.sh"
+
+deploy-finite: fixture-finite
+	"$(ROOT_DIR)/scripts/deploy-finite-fixture.sh"
+
+accept-finite:
+	"$(ROOT_DIR)/scripts/accept-finite.sh"
+
+live-finite: deploy-finite accept-finite
 
 destroy:
 	@test "$(CONFIRM_DESTROY)" = YES || { echo 'Refusing: rerun with CONFIRM_DESTROY=YES' >&2; exit 2; }

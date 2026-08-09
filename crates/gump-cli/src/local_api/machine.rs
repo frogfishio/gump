@@ -80,6 +80,11 @@ pub enum LocalRequest {
         /// (GUMP-N010). Omit only when the final object already exists.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         capsule_hex: Option<String>,
+        /// Local pathname to an exact sealed Capsule. The daemon opens it once
+        /// with symlink refusal and streams that FD; intended for real-size
+        /// Capsules over the local Unix API.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        capsule_path: Option<String>,
         /// Wait condition (`intent_accepted` default). See GUMP-N015 / D05.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         wait: Option<String>,
@@ -188,6 +193,10 @@ pub enum LocalResponse {
         sealed: bool,
         requires_authority: bool,
         detail: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cluster_public_key_hex: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key_id: Option<String>,
     },
     ClusterAdmin {
         action: String,
@@ -408,6 +417,8 @@ pub fn sample_recovery() -> LocalResponse {
         sealed: true,
         requires_authority: true,
         detail: "cluster sealed; unseal authority required for new work".into(),
+        cluster_public_key_hex: None,
+        key_id: None,
     }
 }
 

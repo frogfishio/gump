@@ -91,7 +91,13 @@ fn interrupt_does_not_imply_rollback() {
 
 #[test]
 fn explain_reads_committed_view_and_discloses_compaction() {
-    let rt = ProductRuntime::init(InitOptions::default()).unwrap();
+    let rt = ProductRuntime::init(InitOptions {
+        object_store: Some(gump_connectors::RuntimeObjectStore::Memory(
+            FakeObjectStore::new(),
+        )),
+        ..InitOptions::default()
+    })
+    .unwrap();
     let resp = handle_request(
         &rt.local_api,
         LocalRequest::Explain {
@@ -114,13 +120,15 @@ fn explain_reads_committed_view_and_discloses_compaction() {
 }
 
 #[test]
-fn live_deploy_receipt_includes_one_node_durability_and_stages() {
+fn live_deploy_rejects_bytes_that_are_not_a_verified_capsule() {
     let mut daemon = LocalDaemon::new(PeerAllowlist::same_uid(1));
     daemon.cluster_id = "00000000-0000-4000-8000-000000000099".into();
     daemon.memory_cluster = Some(Arc::new(
         MemoryCluster::bootstrap_one_voter(1, 1).expect("raft"),
     ));
-    daemon.object_store = Some(Arc::new(Mutex::new(FakeObjectStore::new())));
+    daemon.object_store = Some(Arc::new(Mutex::new(
+        gump_connectors::RuntimeObjectStore::Memory(FakeObjectStore::new()),
+    )));
 
     let body = b"n015-capsule";
     let digest = to_hex(blake3::hash(body).as_bytes());
@@ -132,35 +140,12 @@ fn live_deploy_receipt_includes_one_node_durability_and_stages() {
             app: "app".into(),
             content_digest_hex: digest.clone(),
             capsule_hex: Some(to_hex(body)),
+            capsule_path: None,
             wait: None,
         },
     );
-    match resp {
-        LocalResponse::Deploy {
-            phase,
-            content_digest_hex,
-            durability_note,
-            stages,
-            interrupted_implies_rollback,
-            wait,
-            ..
-        } => {
-            assert_eq!(phase, "intent_accepted");
-            assert_eq!(content_digest_hex, digest);
-            assert!(durability_note.contains("zero failure tolerance"));
-            assert!(!interrupted_implies_rollback);
-            assert_eq!(wait.condition, DEFAULT_DEPLOY_WAIT);
-            assert!(
-                stages
-                    .iter()
-                    .any(|s| s.name == "persistence" && s.status == "completed")
-            );
-            assert!(
-                stages
-                    .iter()
-                    .any(|s| s.name == "scheduling" && s.status == "pending")
-            );
-        }
-        other => panic!("expected deploy ok, got {other:?}"),
-    }
+    assert!(matches!(
+        resp,
+        LocalResponse::Error(ref e) if e.reason == "deploy.bad_capsule"
+    ));
 }

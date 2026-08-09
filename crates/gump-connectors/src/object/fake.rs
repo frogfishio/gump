@@ -371,4 +371,11 @@ impl ObjectStore for FakeObjectStore {
         let _ = fs::remove_file(&obj.path);
         Ok(())
     }
+
+    fn list_final_capsules(&self, limit: usize) -> Result<Vec<ObjectEvidence>, ObjectStoreError> {
+        Ok(FakeObjectStore::list_final_capsules(self)
+            .into_iter()
+            .take(limit)
+            .collect())
+    }
 }

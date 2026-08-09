@@ -44,3 +44,16 @@ cluster state directly. Dependency direction is enforced by
 `cargo test -p gump-gates`. Traceability ledger checks:
 `cargo run -p gump-gates --bin check-traceability` (structural) and
 `--strict` / `--prove-missing` for release / W04 demonstration.
+
+## Distribution assets
+
+Build every currently supported raw executable with:
+
+```sh
+make dist
+```
+
+Build output is isolated from deployment under `dist/bin/<rust-target>/gump`.
+The initial target set is `aarch64-apple-darwin` and
+`x86_64-unknown-linux-gnu`; deployment tooling consumes these files but never
+compiles them.

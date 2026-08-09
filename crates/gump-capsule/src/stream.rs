@@ -47,6 +47,9 @@ pub struct GumpCapsuleMeta {
     pub signature_segment: Vec<u8>,
     /// Peak intermediate buffer used while verifying (chunk size bound).
     pub peak_buffer_bytes: usize,
+    /// Absolute file offset of the first byte of the inner GUMPDEP1 table.
+    /// Segment file offsets are `inner_file_offset + descriptor.offset`.
+    pub inner_file_offset: u64,
 }
 
 /// Write a Gump Capsule to `writer` without requiring callers to use
@@ -222,6 +225,9 @@ impl<R: Read> StreamingCapsuleReader<R> {
         let (bstr_prefix, inner_len) = read_cbor_bstr_prefix(&mut self.inner)?;
         crc.update(&bstr_prefix);
         peak = peak.max(bstr_prefix.len());
+        let inner_file_offset = 24u64
+            .saturating_add(header_len as u64)
+            .saturating_add(bstr_prefix.len() as u64);
 
         if inner_len < u64::from(TABLE_BYTE_LEN) {
             return Err(CapsuleDialectError::new(
@@ -307,6 +313,7 @@ impl<R: Read> StreamingCapsuleReader<R> {
             table,
             signature_segment,
             peak_buffer_bytes: peak,
+            inner_file_offset,
         })
     }
 }

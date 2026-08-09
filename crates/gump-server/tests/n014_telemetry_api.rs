@@ -113,7 +113,13 @@ fn recent_window_filter_gaps_and_safe_identity() {
 fn compose_enables_telemetry_plane_for_agent_roles() {
     use gump_server::{InitOptions, ProductRuntime};
 
-    let rt = ProductRuntime::init(InitOptions::default()).unwrap();
+    let rt = ProductRuntime::init(InitOptions {
+        object_store: Some(gump_connectors::RuntimeObjectStore::Memory(
+            gump_connectors::FakeObjectStore::new(),
+        )),
+        ..InitOptions::default()
+    })
+    .unwrap();
     assert!(rt.telemetry.enabled);
     assert!(rt.local_api.telemetry.is_some());
     let resp = handle_request(

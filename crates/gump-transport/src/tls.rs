@@ -81,6 +81,43 @@ pub fn mint_identity(
 }
 
 impl IdentityMaterial {
+    pub fn certificate_der(&self) -> &[u8] {
+        self.cert_der.as_ref()
+    }
+
+    pub fn private_key_der(&self) -> &[u8] {
+        self.key_der.secret_der()
+    }
+
+    pub fn ca_certificate_der(&self) -> &[u8] {
+        self.ca_cert_der.as_ref()
+    }
+
+    /// Rehydrate ephemeral identity material supplied through a protected
+    /// startup channel. Callers retain no filesystem dependency.
+    pub fn from_der(
+        cert_der: Vec<u8>,
+        key_pkcs8_der: Vec<u8>,
+        ca_cert_der: Vec<u8>,
+    ) -> Result<(Self, CaBundle), TlsBuildError> {
+        let cert_der = CertificateDer::from(cert_der);
+        let identity = identity_from_cert(&cert_der)?;
+        let ca_cert_der = CertificateDer::from(ca_cert_der);
+        let material = Self {
+            identity,
+            cert_der,
+            key_der: PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_pkcs8_der)),
+            ca_cert_der: ca_cert_der.clone(),
+        };
+        // Build both configs now so malformed/untrusted key material fails at startup.
+        let trust = CaBundle {
+            cert_der: ca_cert_der,
+        };
+        let _ = material.server_config(&trust)?;
+        let _ = material.client_config(&trust)?;
+        Ok((material, trust))
+    }
+
     pub fn server_config(&self, trust: &CaBundle) -> Result<ServerConfig, TlsBuildError> {
         let mut roots = RootCertStore::empty();
         roots
@@ -136,6 +173,21 @@ pub fn mint_identity_pair(
     a: TransportIdentity,
     b: TransportIdentity,
 ) -> Result<(IdentityMaterial, IdentityMaterial, CaBundle), TlsBuildError> {
+    let mut set = mint_identity_set(vec![a, b])?;
+    let b = set.0.pop().expect("two identities");
+    let a = set.0.pop().expect("two identities");
+    Ok((a, b, set.1))
+}
+
+/// Issue any finite set of ephemeral node identities under one in-memory CA.
+pub fn mint_identity_set(
+    identities: Vec<TransportIdentity>,
+) -> Result<(Vec<IdentityMaterial>, CaBundle), TlsBuildError> {
+    if identities.is_empty() {
+        return Err(TlsBuildError::Rcgen(
+            "identity set must not be empty".into(),
+        ));
+    }
     let ca_key = KeyPair::generate().map_err(|e| TlsBuildError::Rcgen(e.to_string()))?;
     let mut ca_params = CertificateParams::new(Vec::<String>::new())
         .map_err(|e| TlsBuildError::Rcgen(e.to_string()))?;
@@ -169,7 +221,11 @@ pub fn mint_identity_pair(
         })
     };
 
-    Ok((mint_one(a)?, mint_one(b)?, ca))
+    let materials = identities
+        .into_iter()
+        .map(mint_one)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((materials, ca))
 }
 
 /// Extract peer identity from the leaf certificate's DNS SANs.

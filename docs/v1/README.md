@@ -8,6 +8,9 @@ not a delivery schedule and it does not reduce the maximal system design to a
 temporary architecture. An implementation may deliver vertical slices in any
 safe order, but every slice must converge on the contracts fixed here.
 
+Server bootstrap and in-memory secret handoff are documented in
+[`SERVER_PARAMS.md`](SERVER_PARAMS.md).
+
 ## 1. Authority
 
 The documents have this precedence when they disagree:

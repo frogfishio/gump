@@ -67,6 +67,38 @@ fn put_desired_rejects_invalid_labels_and_map_budget() {
 }
 
 #[test]
+fn finite_completion_is_generation_fenced_and_replacement_clears_it() {
+    let mut state = ClusterState::new();
+    assert!(matches!(
+        state.apply(put_desired("default", "job", 0, b"one")),
+        RaftResponse::Applied(_)
+    ));
+    let unit_id = [4; 16];
+    assert!(matches!(
+        state.apply(RaftCommand::CompleteFinite {
+            namespace: "default".into(),
+            app: "job".into(),
+            generation: 1,
+            unit_id,
+        }),
+        RaftResponse::Applied(_)
+    ));
+    assert!(state.finite_completed("default", "job", 1, &unit_id));
+    assert!(matches!(
+        state.apply(put_desired("default", "job", 1, b"two")),
+        RaftResponse::Applied(_)
+    ));
+    assert!(!state.finite_completed("default", "job", 1, &unit_id));
+    let stale = state.apply(RaftCommand::CompleteFinite {
+        namespace: "default".into(),
+        app: "job".into(),
+        generation: 1,
+        unit_id,
+    });
+    assert!(matches!(stale, RaftResponse::Rejected(_)));
+}
+
+#[test]
 fn capacity_evicts_oldest_by_time_not_lex_min_id() {
     let mut state = ClusterState::with_idempotency_limits(2, IDEMPOTENCY_TTL_MS);
     let high_lex = op_id([0xff, 0xff, 0xff, 0xff]);

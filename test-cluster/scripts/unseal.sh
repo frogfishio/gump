@@ -3,7 +3,11 @@ set -euo pipefail
 
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 inventory="$root_dir/ansible/inventory/terraform.ini"
-cluster_id=""
+
+if [[ ! "${GUMP_RECOVERY_SECRET_HEX:-}" =~ ^[0-9a-f]{64}$ ]]; then
+  echo "GUMP_RECOVERY_SECRET_HEX must be 32 bytes of lowercase hex." >&2
+  exit 2
+fi
 
 for ordinal in 1 2 3; do
   host="gump0${ordinal}"
@@ -11,22 +15,8 @@ for ordinal in 1 2 3; do
   ssh_key="$(awk -v host="$host" '$1==host { for(i=1;i<=NF;i++) if($i ~ /^ansible_ssh_private_key_file=/){sub(/^ansible_ssh_private_key_file=/,"",$i); print $i} }' "$inventory")"
   ssh_opts=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new)
   if [[ -n "$ssh_key" ]]; then ssh_opts+=(-i "$ssh_key"); fi
-  status="$(ssh "${ssh_opts[@]}" "manager@$public_ip" "sudo -u gump /usr/local/bin/gump status --socket /run/gump/gump.sock --format machine")"
-  parsed="$(STATUS="$status" python3 - <<'PY'
-import json, os
-d = json.loads(os.environ["STATUS"])
-b = d["body"]
-assert b["kind"] == "status", b
-assert b["memory_voters"] == 3, b
-print(b["cluster_id"])
-PY
-  )"
-  if [[ -z "$cluster_id" ]]; then
-    cluster_id="$parsed"
-  elif [[ "$cluster_id" != "$parsed" ]]; then
-    echo "Cluster identity differs on $host." >&2
-    exit 1
-  fi
+  printf '%s' "$GUMP_RECOVERY_SECRET_HEX" | ssh "${ssh_opts[@]}" "manager@$public_ip" \
+    "sudo -u gump /bin/sh -c 'exec /usr/local/bin/gump recovery unseal --socket /run/gump/gump.sock --secret-fd 3 --provider software --key-id test-cluster 3<&0'"
 done
 
-echo "Smoke passed: three nodes report cluster $cluster_id with three memory voters."
+echo "All Gump nodes unsealed."

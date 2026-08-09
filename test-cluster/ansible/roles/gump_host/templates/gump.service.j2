@@ -11,17 +11,17 @@ UMask=0077
 RuntimeDirectory=gump
 RuntimeDirectoryMode=0700
 Environment=GUMP_RUNTIME_DIR={{ gump_runtime_dir }}
-ExecStart={{ gump_server_command }}
+ExecStart=/bin/sh -c 'exec 3<&0; exec {{ gump_server_command }}'
+StandardInput=socket
 LimitCORE=0
 LimitMEMLOCK=infinity
 LimitNOFILE=65536
 Restart=no
-StandardOutput=null
-StandardError=null
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
 
-# Formation is deliberately external until Gump has stable --init/--join and
-# secure --params-fd contracts. No secret may be added to this unit.
-
+# Parameters arrive once through the activated Unix socket and inherited FD.
+# No secret is embedded in this unit or written to a parameter file.

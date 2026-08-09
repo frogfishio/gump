@@ -1005,12 +1005,15 @@ name = "gump-memory"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "gump-transport",
  "gump-types",
  "openraft",
+ "quinn",
  "serde",
  "serde_json",
  "tokio",
  "tracing",
+ "zeroize",
 ]
 
 [[package]]
@@ -1035,16 +1038,21 @@ name = "gump-server"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "getrandom 0.3.4",
  "gump-agent",
+ "gump-capsule",
  "gump-cli",
  "gump-connectors",
  "gump-crypto",
+ "gump-driver",
  "gump-memory",
+ "gump-protocol",
  "gump-scheduler",
  "gump-telemetry",
  "gump-transport",
  "gump-types",
  "libc",
+ "prost",
  "rand_core 0.10.1",
  "serde",
  "serde_json",

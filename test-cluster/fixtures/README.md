@@ -1,6 +1,11 @@
 # Live test fixtures
 
-Fixtures will be added as their corresponding product paths land:
+The first live fixture is `finite-hello`: a signed, cluster-sealed script
+workload carrying one encrypted runtime value. Build it against the currently
+running cluster with `make fixture-finite`; generated Capsules go to ignored
+`evidence/` storage.
+
+Additional fixtures will be added as their corresponding product paths land:
 
 - finite native execution;
 - continuous native execution;
@@ -13,4 +18,3 @@ Fixtures will be added as their corresponding product paths land:
 
 Fixture application values come from the narrow macrun `fixtures` scope. No
 plaintext `.env` or generated secret file belongs in this directory.
-

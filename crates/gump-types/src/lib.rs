@@ -15,6 +15,7 @@ mod cancel;
 mod clock;
 mod error;
 mod id;
+pub mod inherited_fd;
 pub mod policy;
 pub mod process;
 mod secret;
