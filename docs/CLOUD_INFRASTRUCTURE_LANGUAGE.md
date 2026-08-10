@@ -836,3 +836,6 @@ The baseline direction is nevertheless clear: create a real programming
 language for cloud infrastructure, spanning construction through continuous
 operation, with infrastructure-native effects and Gump as a composable runtime
 rather than reducing infrastructure as code to configuration files.
+
+The developer-facing product boundary and integration path are summarized in
+[`CAPTAIN_GUMP_HANDOFF.md`](CAPTAIN_GUMP_HANDOFF.md).

@@ -123,6 +123,8 @@ language spanning provider resources, host configuration, Gump formation, and
 continuous lifecycle. It treats the autoscaler as an early program rather than
 a special language feature; see
 [`CLOUD_INFRASTRUCTURE_LANGUAGE.md`](CLOUD_INFRASTRUCTURE_LANGUAGE.md).
+The intended independent-product boundary and first end-to-end integration are
+captured in [`CAPTAIN_GUMP_HANDOFF.md`](CAPTAIN_GUMP_HANDOFF.md).
 
 An extension cannot create desired state, participate in controller election, bypass placement fencing, inspect unrelated runtime configuration, weaken Capsule verification, or store hidden Gump control state. Inputs and outputs are bounded and versioned; authority is explicit; timeouts and failure behavior are isolated. A missing optional extension affects only declarations that request it.
 
