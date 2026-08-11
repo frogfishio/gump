@@ -3,7 +3,12 @@ name: CI
 on:
   push:
     branches: [main, master]
+    tags: ["v*"]
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -84,3 +89,43 @@ jobs:
           GUMP_S3_REGION: us-east-1
           GUMP_S3_REQUIRED: "1"
         run: cargo test -p gump-connectors --test d02_s3_publish -- --nocapture
+
+  dist:
+    name: dist-${{ matrix.target }}
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            target: aarch64-apple-darwin
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build native distribution asset
+        run: make dist-native TARGET="${{ matrix.target }}"
+
+      - name: Smoke-test and verify asset
+        run: |
+          "dist/bin/${{ matrix.target }}/gump" --help
+          file "dist/bin/${{ matrix.target }}/gump"
+          cd "dist/bin/${{ matrix.target }}"
+          shasum -a 256 -c SHA256SUMS
+
+      - name: Upload distribution asset
+        uses: actions/upload-artifact@v4
+        with:
+          name: gump-${{ matrix.target }}
+          path: dist/bin/${{ matrix.target }}/
+          if-no-files-found: error
+          retention-days: 14

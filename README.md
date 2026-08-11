@@ -55,6 +55,10 @@ make dist
 ```
 
 Build output is isolated from deployment under `dist/bin/<rust-target>/gump`.
-The initial target set is `aarch64-apple-darwin` and
-`x86_64-unknown-linux-gnu`; deployment tooling consumes these files but never
-compiles them.
+The initial target set is `aarch64-apple-darwin`,
+`x86_64-unknown-linux-gnu`, and `aarch64-unknown-linux-gnu`; deployment tooling
+consumes these files but never compiles them. GitHub Actions builds each target
+on a native runner and retains the executable plus `SHA256SUMS` as separate
+workflow artifacts. CI uses `make dist-native TARGET=<rust-target>`; local
+cross-building remains an optional developer convenience and is not part of
+deployment.
