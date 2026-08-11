@@ -8,10 +8,12 @@
 //! - `GUMP_S3_ACCESS_KEY` / `GUMP_S3_SECRET_KEY` (default `gump` / `gumpsecret`)
 //! - `GUMP_S3_REGION` (default `us-east-1`)
 //! - `GUMP_S3_REQUIRED=1` — fail instead of skip when the endpoint is missing/unreachable
-//!   (used by the CI `d02-minio` job / STL-25)
+//!   (used by the CI `s3-minio` job / STL-25)
 //!
 //! When unset, tests skip (CI stays green without MinIO).
-//! CI: `.github/workflows/ci.yml` job `d02-minio` starts MinIO and sets the env above.
+//! CI: `.github/workflows/ci.yml` uses MinIO as a negative compatibility fixture:
+//! MinIO must be rejected when it ignores destination `If-None-Match` on
+//! `CopyObject`. The full suite is for endpoints that pass that capability probe.
 
 use std::io::Read;
 use std::time::Duration;
@@ -120,6 +122,35 @@ fn open_store() -> Option<S3ObjectStore> {
             None
         }
     }
+}
+
+/// STL-19 negative-provider evidence. This is deliberately separate from the
+/// publish tests: an endpoint that ignores the destination precondition must
+/// never be made usable merely to exercise the rest of the connector.
+#[test]
+fn s3_rejects_endpoint_without_conditional_copy() {
+    let Some(cfg) = live_config() else {
+        if s3_required() {
+            panic!("GUMP_S3_REQUIRED set but GUMP_S3_ENDPOINT is missing");
+        }
+        eprintln!("skip: GUMP_S3_ENDPOINT not set");
+        return;
+    };
+    if !ensure_bucket(&cfg) {
+        if s3_required() {
+            panic!("GUMP_S3_REQUIRED set but endpoint unreachable / CreateBucket failed");
+        }
+        eprintln!("skip: GUMP_S3_ENDPOINT unreachable");
+        return;
+    }
+
+    let err = S3ObjectStore::new(cfg)
+        .expect_err("fixture unexpectedly supports conditional CopyObject; run the full D02 suite");
+    assert_eq!(err.kind(), ObjectStoreErrorKind::InvalidArgument);
+    assert!(
+        err.message().contains("If-None-Match"),
+        "unexpected capability error: {err}"
+    );
 }
 
 fn scrub_key(store: &mut S3ObjectStore, key: &gump_connectors::ObjectKey) {

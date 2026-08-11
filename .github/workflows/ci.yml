@@ -47,9 +47,11 @@ jobs:
         # Self-test only — not a completion signal (must keep failing while ledger open).
         run: cargo run -p gump-gates --bin check-traceability -- --prove-missing
 
-  # Optional live S3 path (STL-07 / STL-19 / D02). Default `check` stays green without MinIO.
+  # STL-19 fail-closed compatibility path. MinIO currently ignores the
+  # destination If-None-Match precondition on CopyObject, so it is a negative
+  # provider fixture—not evidence that immutable D02 publication succeeded.
   s3-minio:
-    name: d02-minio
+    name: s3-minio-rejected-safely
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -80,7 +82,7 @@ jobs:
           docker logs gump-minio || true
           exit 1
 
-      - name: D02 quarantine→promote against MinIO
+      - name: Prove incompatible conditional copy is rejected
         env:
           GUMP_S3_ENDPOINT: http://127.0.0.1:9000
           GUMP_S3_BUCKET: gump
@@ -88,7 +90,9 @@ jobs:
           GUMP_S3_SECRET_KEY: gumpsecret
           GUMP_S3_REGION: us-east-1
           GUMP_S3_REQUIRED: "1"
-        run: cargo test -p gump-connectors --test d02_s3_publish -- --nocapture
+        run: >-
+          cargo test -p gump-connectors --test d02_s3_publish
+          s3_rejects_endpoint_without_conditional_copy -- --exact --nocapture
 
   dist:
     name: dist-${{ matrix.target }}
