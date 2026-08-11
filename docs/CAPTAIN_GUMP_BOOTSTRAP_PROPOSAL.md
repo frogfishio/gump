@@ -11,7 +11,7 @@ Gump does not invoke Captain during zero-to-one bootstrap.
 
 ```text
 operator -> local Captain -> machine
-operator -> Gump CLI -> armed Gump endpoint
+operator -> Gump CLI -> uninitialized Gump endpoint
 ```
 
 Conceptually:
@@ -20,8 +20,9 @@ Conceptually:
 captain provision <target> --install gump
 ```
 
-Captain owns the process through a pinned, reachable bootstrap endpoint. Gump
-owns the session claim, cluster initialization and everything thereafter.
+Captain owns the process through a pinned, reachable bootstrap endpoint and a
+versioned handoff. Gump owns the session claim, cluster initialization and
+everything thereafter.
 
 ```text
 Captain produces a verified bootstrap handoff
@@ -29,73 +30,103 @@ Captain produces a verified bootstrap handoff
 -> Gump reports a healthy one-node cluster
 ```
 
-Captain alone no longer claims to have created a cluster.
+Captain alone does not claim to have created a cluster.
 
-## 2. Bootstrap state machine
+## 2. Vault-shaped bootstrap
+
+Gump follows the useful part of HashiCorp Vault's initialization model: the
+ordinary server process starts in an explicitly uninitialized state and
+exposes a very small initialization surface on its normal network listener.
+Initialization is performed through that surface; no second daemon, local
+control protocol or side-loader arms the server.
+
+Gump differs from Vault because it does not have durable storage from which to
+recover its initialized state or a pre-installed durable TLS private key. Gump
+therefore creates one ephemeral bootstrap identity and activation bundle for
+the current process incarnation.
+
+The state machine is:
 
 ```text
 Absent
 -> Installed
--> Bootstrap service dormant
--> Armed(secret, expiry)
--> Endpoint identity pinned
+-> Bootstrap service explicitly started
+-> Activation generated in memory
+-> Bootstrap endpoint reachable and identity pinned
+-> Handoff emitted
 -> Claimed(session, transcript)
 -> Cluster initialization committed
 -> Management mTLS verified
--> Consumed and closed
+-> Activation consumed and bootstrap closed
 ```
 
-Captain owns `Absent` through `Endpoint identity pinned`. Gump owns
-`Claimed` onward.
+Captain owns `Absent` through `Handoff emitted`. Gump owns `Claimed` onward.
 
-The credential state is:
+## 3. Package and service boundary
+
+The Gump package remains inert. It installs the executable, documentation and
+may carry inactive, versioned host-contract templates beneath a package data
+directory. It does not create accounts or runtime directories, install active
+host policy, enable services or start Gump.
+
+Captain consumes that contract to:
+
+1. Establish the selected SSH trust policy.
+2. Detect the operating system and architecture.
+3. Install an exact, signed Gump APT/RPM package.
+4. Create the unprivileged `gump` account and transient runtime locations.
+5. Install the inactive bootstrap/service definition.
+6. Verify that `/run` is memory-backed and apply mode `0700` to
+   `/run/gump`.
+7. Apply any explicitly authorized host firewall policy.
+8. Explicitly start Gump in bootstrap mode through the service manager.
+
+Captain does not run or supervise the Gump process. On Linux, systemd does.
+The bootstrap service runs as the unprivileged `gump` account and uses
+`Restart=no`.
+
+## 4. Activation bundle
+
+When explicitly started in bootstrap mode without cluster material, Gump:
+
+1. Generates an ephemeral TLS keypair in process memory.
+2. Generates a random, bounded, expiring activation secret.
+3. Binds the restricted bootstrap network endpoint.
+4. Atomically creates this protected activation bundle:
 
 ```text
-available -> claimed(session, transcript) -> consumed
-                                      \----> expired
+/run/gump/bootstrap.json
 ```
 
-A dropped connection may resume only the same claimed session and exact
-initialization transcript. Another session or different initialization must
-fail. Expiry does not make the credential available again; Captain must
-deliberately rotate and re-arm it.
+Example:
 
-Captain may inspect or explicitly rotate an unconsumed credential while Gump
-is still uninitialized. It must never automatically reopen bootstrap after
-successful initialization. "Closed" applies to the current cluster
-incarnation: after total in-memory cluster loss, starting a new incarnation or
-recovery still requires an explicit operator action and new bootstrap
-authority. A process restart never arms bootstrap by itself.
+```json
+{
+  "schema": "gump.bootstrap-activation/1",
+  "incarnation": "<unique process incarnation>",
+  "endpoint": "https://203.0.113.10:7443",
+  "bootstrapProtocol": "gump.bootstrap/1",
+  "packageVersion": "0.1.0",
+  "endpointIdentity": "SHA256:...",
+  "activationCode": "<random secret>",
+  "expiresAt": "..."
+}
+```
 
-## 3. Captain's zero-to-one work
+The bundle is mode `0600`, owned by `gump`, bounded in size and written only
+under the verified memory-backed runtime directory. It is never written to a
+durable filesystem, journal, process argument, environment variable or
+telemetry. The endpoint private key never leaves the Gump process.
 
-Captain:
+Captain retrieves the bundle through the already authenticated SSH channel,
+stores `activationCode` in Macrun or another explicit local secret provider,
+and removes the secret bytes from its working memory as soon as the secret
+provider accepts them. Captain retains only an opaque `secretRef` in the
+handoff.
 
-1. Provisions a machine or connects to an existing one.
-2. Establishes the selected SSH trust policy and records its evidence.
-3. Detects the operating system and architecture.
-4. Installs an exact, signed Gump APT/RPM package.
-5. Realizes Gump's versioned host contract: unprivileged account, transient
-   runtime locations, inactive service assets and required host policy.
-6. Starts the Gump bootstrap process as the unprivileged `gump` account.
-7. Generates a random, bounded, expiring bootstrap secret.
-8. Stores the operator's copy through Macrun or another explicit secret
-   provider.
-9. Streams the remote copy into `gump bootstrap arm --secret-fd N`; secret
-   bytes never enter command arguments, remote environment variables or files.
-10. Pins the bootstrap endpoint identity and emits the handoff object.
+Gump removes `bootstrap.json` when the activation is claimed or expires.
 
-The package remains inert. It installs the executable, documentation and may
-include inactive host-contract templates beneath a package data directory. It
-does not create accounts or runtime directories, install active policy, enable
-services or start Gump. Captain consumes the packaged templates rather than
-reimplementing their contents.
-
-Bootstrap arming and status operations use a local, access-controlled socket
-and bounded, versioned machine output. The Gump bootstrap process itself is not
-a privileged network service.
-
-## 4. SSH and endpoint identity
+## 5. SSH and endpoint identity
 
 A provider address or instance identifier is not proof of an SSH host key.
 The handoff records one explicit trust mode:
@@ -106,12 +137,13 @@ The handoff records one explicit trust mode:
 
 Ordinary trust-on-first-use must not be described as provider verification.
 
-When armed, Gump generates or loads its bootstrap endpoint key. Captain obtains
-the endpoint public-key fingerprint through the accepted SSH channel, connects
-to the endpoint, verifies that fingerprint and records it in the handoff. The
-Gump CLI pins the same fingerprint before transmitting the bearer secret.
+Captain obtains the ephemeral endpoint fingerprint from the activation bundle
+through the accepted SSH channel. It then connects to the advertised endpoint,
+pins that fingerprint and verifies reachability before emitting the handoff.
+The Gump CLI pins the same fingerprint before transmitting the activation
+secret.
 
-## 5. Versioned handoff
+## 6. Versioned handoff
 
 Captain emits bounded structured output, never prose requiring parsing. The
 handoff contains no secret bytes:
@@ -120,6 +152,7 @@ handoff contains no secret bytes:
 {
   "schema": "gump.bootstrap-handoff/1",
   "handoffId": "<unique operation id>",
+  "incarnation": "<Gump process incarnation>",
   "endpoint": "https://203.0.113.10:7443",
   "bootstrapProtocol": "gump.bootstrap/1",
   "packageVersion": "0.1.0",
@@ -132,15 +165,22 @@ handoff contains no secret bytes:
 }
 ```
 
-`secretRef` is meaningful only to the local authorized operator environment.
-It must not be resolved, transmitted, logged or embedded in telemetry by
-Captain. File permissions and the selected local secret provider protect the
-handoff-to-secret association.
+`secretRef` is meaningful only to the authorized local operator environment.
+Captain must not resolve it again except for an explicit handoff operation, or
+log, transmit or embed it in telemetry.
 
-## 6. Gump's handoff work
+## 7. Claim, retry and initialization
 
-The Gump CLI consumes the handoff, resolves the secret locally and pins the
-endpoint identity. It then:
+The credential state is:
+
+```text
+available -> claimed(session, transcript) -> consumed
+                                      \----> expired
+```
+
+The Gump CLI consumes the handoff, resolves the activation secret locally and
+pins the endpoint identity. Through the restricted `gump.bootstrap/1` network
+API it then:
 
 - atomically claims or resumes the bootstrap session;
 - initializes a new cluster or enrols into an existing one;
@@ -148,12 +188,34 @@ endpoint identity. It then:
 - delivers recovery, object-store and cluster parameters in memory;
 - commits one initialization transcript exactly once;
 - verifies the node through the real management surface;
-- consumes the bootstrap credential and closes bootstrap mode.
+- consumes the activation and closes the bootstrap surface.
 
-Afterward, normal Gump commands use mTLS. Routine management does not pass
-through Captain or SSH.
+A dropped connection may resume only the same claimed session and exact
+initialization transcript. Another session or different initialization must
+fail. Expiry does not make the activation available again.
 
-## 7. Stage 2: Captain inside Gump
+After successful initialization, normal Gump commands use management mTLS.
+Routine management does not pass through Captain or SSH.
+
+## 8. Restart and rotation
+
+Vault remembers initialization in durable storage; Gump deliberately cannot.
+The bootstrap service therefore never starts or restarts automatically.
+
+- If Gump exits before initialization, the activation becomes invalid.
+  Captain may explicitly start bootstrap again and collect a new bundle.
+- Captain may deliberately replace an unclaimed activation by explicitly
+  restarting the bootstrap service.
+- If an initialized one-node Gump process exits, its in-memory cluster is lost.
+  Systemd must not silently start a fresh claimable cluster.
+- Recovery or a new cluster incarnation requires an explicit operator action
+  and new activation authority.
+
+"Bootstrap closed" therefore applies permanently to the current process and
+cluster incarnation. No durable secret or state marker is introduced merely to
+make the service appear self-starting.
+
+## 9. Stage 2: Captain inside Gump
 
 The operator may subsequently deploy a Capsule containing the Captain runtime,
 a compiled Captain pack and protected provider credentials. That Captain is
@@ -172,17 +234,27 @@ authoritative for provider and host effects; Gump remains authoritative for
 cluster initialization, enrolment, membership, capabilities, placement and
 fencing.
 
-## 8. Implementation order
+## 10. Implementation order
 
-1. Freeze `gump.bootstrap-handoff/1`, `gump.bootstrap/1`, and bounded
-   `bootstrap arm/status` machine output.
-2. Build Captain's SSH trust modes and verified endpoint handoff.
-3. Add Captain consumption of Gump's signed APT and DNF repositories. The
-   repository publication machinery already exists and awaits the first Gump
-   release.
-4. Add the Gump bootstrap wrapper and a fake end-to-end acceptance test.
+1. Freeze `gump.bootstrap-activation/1`, `gump.bootstrap-handoff/1` and
+   `gump.bootstrap/1`.
+2. Implement Gump's uninitialized state, activation generation, protected
+   tmpfs bundle and restricted bootstrap network API.
+3. Build Captain's SSH trust modes, package installation, bundle collection,
+   endpoint verification and handoff output.
+4. Add a fake end-to-end acceptance test across Captain and Gump.
 5. Run the complete handoff against one disposable DigitalOcean Droplet.
-6. Repeat with Gump's first published package.
+6. Repeat with Gump's first published APT/RPM package.
+
+Gump's signed APT/DNF publication machinery already exists and awaits the
+first release.
 
 This agreement refines the zero-to-one flow in `CAPTAIN_GUMP_HANDOFF.md`; its
 broader product separation continues to stand.
+
+## References
+
+- [Vault operator initialization](https://developer.hashicorp.com/vault/docs/commands/operator/init)
+- [Vault `/sys/init` API](https://developer.hashicorp.com/vault/api-docs/system/init)
+- [Vault `/sys/unseal` API](https://developer.hashicorp.com/vault/api-docs/system/unseal)
+- [Vault seal and unseal concepts](https://developer.hashicorp.com/vault/docs/concepts/seal)
