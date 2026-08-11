@@ -147,11 +147,7 @@ mod cred {
         if rc != 0 {
             return Err(io::Error::last_os_error());
         }
-        Ok(PeerCred::new(
-            cred.uid as u32,
-            cred.gid as u32,
-            Some(cred.pid as u32),
-        ))
+        Ok(PeerCred::new(cred.uid, cred.gid, Some(cred.pid as u32)))
     }
 
     #[cfg(not(any(
