@@ -18,12 +18,25 @@ command -v rpmsign >/dev/null 2>&1 || {
     exit 1
 }
 
+umask 077
+passphrase_file=$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/gump-rpm-passphrase.XXXXXX")
+cleanup() {
+    rm -f -- "$passphrase_file"
+}
+trap cleanup EXIT HUP INT TERM
+printf '%s' "$GUMP_PACKAGE_SIGNING_PASSPHRASE" > "$passphrase_file"
+
+# RPM streams the package payload to GPG on stdin. Keep the passphrase on a
+# separate, owner-only temporary file so arbitrary passphrase bytes do
+# not enter RPM's macro parser or the process arguments.
+export GPG_TTY=/dev/null
+
 find "$rpm_dir" -type f -name '*.rpm' | while IFS= read -r package; do
     rpmsign --addsign \
         --define "_signature gpg" \
         --define "_gpg_name $signing_key" \
         --define "_gpg_path $GNUPGHOME" \
-        --define "_gpg_sign_cmd_extra_args --batch --pinentry-mode loopback --passphrase $GUMP_PACKAGE_SIGNING_PASSPHRASE" \
+        --define "_gpg_sign_cmd_extra_args --batch --pinentry-mode loopback --passphrase-file $passphrase_file" \
         "$package"
     rpm --checksig "$package" | grep -Eq 'digests signatures OK|digests signatures.*OK'
 done
