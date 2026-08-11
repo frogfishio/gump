@@ -9,6 +9,12 @@ on:
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
+    inputs:
+      release_dry_run:
+        description: Build and sign every release channel without publishing
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -324,7 +330,7 @@ jobs:
 
   prepare-release:
     name: prepare-signed-release
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/') || inputs.release_dry_run
     needs: [check, s3-minio, dist, deb, rpm]
     runs-on: ubuntu-22.04
     env:
@@ -401,9 +407,13 @@ jobs:
         run: |
           chmod 0755 packaging/homebrew/render-formula.sh
           version=$(tr -d '[:space:]' < VERSION)
+          release_tag="$GITHUB_REF_NAME"
+          if ! echo "$GITHUB_REF" | grep -q '^refs/tags/'; then
+            release_tag="v$version"
+          fi
           checksum=$(sha256sum release-assets/gump-aarch64-apple-darwin.tar.gz | awk '{print $1}')
           packaging/homebrew/render-formula.sh \
-            "$version" "$GITHUB_REF_NAME" "$checksum" tap/Formula/gump.rb
+            "$version" "$release_tag" "$checksum" tap/Formula/gump.rb
 
       - name: Upload release assets
         uses: actions/upload-artifact@v7

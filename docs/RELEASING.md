@@ -31,6 +31,11 @@ It also uses GitHub's `pages`, OIDC, and artifact-attestation permissions.
 
 ## Release
 
+Before the first release, or after changing the publication machinery, run the
+`CI` workflow manually with **release_dry_run** enabled. It builds and signs all
+release assets, generates the APT/RPM repositories and Homebrew formula, and
+retains them as workflow artifacts without publishing any channel.
+
 Run all ordinary CI on `main`, update `VERSION`, and then create and push the
 matching tag:
 
