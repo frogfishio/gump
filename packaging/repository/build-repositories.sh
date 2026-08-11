@@ -40,6 +40,16 @@ done
     echo "repository output already exists: $output" >&2
     exit 1
 }
+
+umask 077
+signing_dir=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/gump-repository-signing.XXXXXX")
+passphrase_file=$signing_dir/passphrase
+cleanup() {
+    rm -rf -- "$signing_dir"
+}
+trap cleanup EXIT HUP INT TERM
+printf '%s' "$GUMP_PACKAGE_SIGNING_PASSPHRASE" > "$passphrase_file"
+
 install -d "$output/apt/pool/main/g/gump"
 install -d "$output/rpm/x86_64" "$output/rpm/aarch64"
 
@@ -76,11 +86,11 @@ done
         -o APT::FTPArchive::Release::Description='Gump package repository' \
         release dists/stable > dists/stable/Release
     gpg --batch --yes --pinentry-mode loopback \
-        --passphrase "$GUMP_PACKAGE_SIGNING_PASSPHRASE" \
+        --passphrase-file "$passphrase_file" \
         --local-user "$signing_key" --digest-algo SHA256 \
         --clearsign --output dists/stable/InRelease dists/stable/Release
     gpg --batch --yes --pinentry-mode loopback \
-        --passphrase "$GUMP_PACKAGE_SIGNING_PASSPHRASE" \
+        --passphrase-file "$passphrase_file" \
         --local-user "$signing_key" --digest-algo SHA256 \
         --armor --detach-sign --output dists/stable/Release.gpg dists/stable/Release
 )
@@ -91,7 +101,7 @@ gpg --batch --yes --armor --export "$signing_key" > "$output/gump-signing-key.as
 for architecture in x86_64 aarch64; do
     createrepo_c "$output/rpm/$architecture"
     gpg --batch --yes --pinentry-mode loopback \
-        --passphrase "$GUMP_PACKAGE_SIGNING_PASSPHRASE" \
+        --passphrase-file "$passphrase_file" \
         --local-user "$signing_key" --digest-algo SHA256 \
         --armor --detach-sign \
         --output "$output/rpm/$architecture/repodata/repomd.xml.asc" \

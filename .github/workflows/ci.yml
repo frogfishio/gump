@@ -378,7 +378,8 @@ jobs:
             aarch64-unknown-linux-gnu
           do
             source="incoming/gump-$target"
-            test -x "$source/gump"
+            test -f "$source/gump"
+            chmod 0755 "$source/gump"
             archive="release-assets/gump-$target.tar.gz"
             tar -C "$source" -czf "$archive" gump BUILD_INFO
           done
