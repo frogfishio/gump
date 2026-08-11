@@ -1,6 +1,6 @@
 # Captain–Gump bootstrap agreement
 
-> Status: candidate agreement for implementation
+> Status: accepted for joint implementation
 >
 > Scope: zero-to-one bootstrap; stage-2 runtime integration remains separate
 
@@ -83,7 +83,8 @@ Captain consumes that contract to:
 
 Captain does not run or supervise the Gump process. On Linux, systemd does.
 The bootstrap service runs as the unprivileged `gump` account and uses
-`Restart=no`.
+`Restart=no`. Its unit uses `RuntimeDirectory=gump` without preservation so
+systemd removes `/run/gump` after every service exit, including a crash.
 
 ## 4. Activation bundle
 
@@ -118,13 +119,24 @@ under the verified memory-backed runtime directory. It is never written to a
 durable filesystem, journal, process argument, environment variable or
 telemetry. The endpoint private key never leaves the Gump process.
 
-Captain retrieves the bundle through the already authenticated SSH channel,
-stores `activationCode` in Macrun or another explicit local secret provider,
-and removes the secret bytes from its working memory as soon as the secret
-provider accepts them. Captain retains only an opaque `secretRef` in the
-handoff.
+Captain retrieves the bundle through one trusted native bootstrap-collection
+effect. The effect reads and validates the bounded bundle over the already
+authenticated SSH channel, extracts `activationCode` inside the native
+executor boundary, stores it directly in Macrun or another authorized secret
+provider, and zeroizes its transient buffers. It returns only validated public
+activation fields and an opaque `secretRef`.
+
+`activationCode` must never become a Captain source or bytecode value, ordinary
+command/effect output, plan field, receipt, diagnostic, telemetry field or
+replay-log value. The generic SSH effect is not permitted to collect an
+activation bundle because its ordinary result would become replay evidence.
 
 Gump removes `bootstrap.json` when the activation is claimed or expires.
+Before creating a new bundle it rejects any pre-existing activation path,
+including a symlink, instead of reading, replacing or trusting it. Systemd's
+runtime-directory lifecycle removes an unclaimed bundle after every process
+exit; Captain verifies the directory is absent or empty before explicitly
+starting a new bootstrap incarnation.
 
 ## 5. SSH and endpoint identity
 
@@ -161,6 +173,7 @@ handoff contains no secret bytes:
   "sshHostKey": "SHA256:...",
   "endpointIdentity": "SHA256:...",
   "expiresAt": "...",
+  "bindingDigest": "sha256:...",
   "secretRef": "<opaque local secret-provider reference>"
 }
 ```
@@ -168,6 +181,38 @@ handoff contains no secret bytes:
 `secretRef` is meaningful only to the authorized local operator environment.
 Captain must not resolve it again except for an explicit handoff operation, or
 log, transmit or embed it in telemetry.
+
+### 6.1 Secret-to-handoff binding
+
+The trusted collection effect stores the secret together with a binding
+digest. The digest is SHA-256 over the RFC 8785 JSON Canonicalization Scheme
+encoding of this exact handoff projection:
+
+```json
+{
+  "schema": "...",
+  "handoffId": "...",
+  "incarnation": "...",
+  "endpoint": "...",
+  "bootstrapProtocol": "...",
+  "packageVersion": "...",
+  "machineIdentity": "...",
+  "sshTrustMode": "...",
+  "sshHostKey": "...",
+  "endpointIdentity": "...",
+  "expiresAt": "..."
+}
+```
+
+`secretRef` and `bindingDigest` are excluded from their own digest. Captain
+places the resulting digest in the public handoff and in the secret provider's
+protected metadata for the activation secret.
+
+Secret resolution is an authorization-checked operation: the Gump CLI presents
+the handoff and expected digest, the provider recomputes or validates the
+binding, and resolution fails closed on any mismatch. This prevents alteration
+of the secret-free handoff from redirecting the activation secret to another
+endpoint or incarnation.
 
 ## 7. Claim, retry and initialization
 
@@ -178,9 +223,10 @@ available -> claimed(session, transcript) -> consumed
                                       \----> expired
 ```
 
-The Gump CLI consumes the handoff, resolves the activation secret locally and
-pins the endpoint identity. Through the restricted `gump.bootstrap/1` network
-API it then:
+The Gump CLI validates the handoff digest, requests bound secret resolution
+and pins the endpoint identity. It must finish TLS identity verification before
+the resolved secret may be released to the bootstrap protocol. Through the
+restricted `gump.bootstrap/1` network API it then:
 
 - atomically claims or resumes the bootstrap session;
 - initializes a new cluster or enrols into an existing one;
@@ -238,13 +284,16 @@ fencing.
 
 1. Freeze `gump.bootstrap-activation/1`, `gump.bootstrap-handoff/1` and
    `gump.bootstrap/1`.
-2. Implement Gump's uninitialized state, activation generation, protected
-   tmpfs bundle and restricted bootstrap network API.
-3. Build Captain's SSH trust modes, package installation, bundle collection,
-   endpoint verification and handoff output.
-4. Add a fake end-to-end acceptance test across Captain and Gump.
-5. Run the complete handoff against one disposable DigitalOcean Droplet.
-6. Repeat with Gump's first published APT/RPM package.
+2. Implement Gump's uninitialized state, activation generation, exclusive
+   tmpfs bundle, crash cleanup and restricted bootstrap network API.
+3. Build Captain's SSH trust modes, package installation and trusted native
+   bootstrap-collection effect.
+4. Implement canonical binding digests and authorization-checked bound secret
+   resolution in the shared secret-provider contract.
+5. Add a fake end-to-end acceptance test proving that secret bytes never enter
+   Captain artifacts, outputs, receipts or replay logs.
+6. Run the complete handoff against one disposable DigitalOcean Droplet.
+7. Repeat with Gump's first published APT/RPM package.
 
 Gump's signed APT/DNF publication machinery already exists and awaits the
 first release.
