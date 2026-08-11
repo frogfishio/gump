@@ -101,3 +101,40 @@ Packages are written beneath `dist/packages/deb/` and `dist/packages/rpm/`.
 They install only `/usr/bin/gump` and package documentation: they do not create
 an account, configuration, directories, sockets, or services, and they never
 start Gump. Captain owns those host-specific effects.
+
+## Install a published release
+
+Published releases are available directly from
+[GitHub Releases](https://github.com/frogfishio/gump/releases). Package-manager
+repositories contain the current stable release; GitHub retains the historical
+release assets.
+
+On Debian or Ubuntu, install the repository key and source once:
+
+```sh
+curl -fsSL https://frogfishio.github.io/gump/packages/gump-archive-keyring.gpg \
+  | sudo tee /usr/share/keyrings/gump-archive-keyring.gpg >/dev/null
+echo "deb [signed-by=/usr/share/keyrings/gump-archive-keyring.gpg] https://frogfishio.github.io/gump/packages/apt stable main" \
+  | sudo tee /etc/apt/sources.list.d/gump.list >/dev/null
+sudo apt-get update
+sudo apt-get install gump
+```
+
+On Fedora or another DNF-based system:
+
+```sh
+sudo dnf config-manager addrepo \
+  --from-repofile=https://frogfishio.github.io/gump/packages/gump.repo
+sudo dnf install gump
+```
+
+On an Apple Silicon Mac:
+
+```sh
+brew install frogfishio/tap/gump
+```
+
+Intel macOS is not currently a published target.
+
+Release construction and one-time repository setup are documented in
+[`docs/RELEASING.md`](docs/RELEASING.md).

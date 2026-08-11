@@ -13,6 +13,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: gump-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -Dwarnings
@@ -52,6 +56,19 @@ jobs:
         # Includes ticket ownership on missing/blocked (GUMP-N003). Strict is release-only.
         run: cargo run -p gump-gates --bin check-traceability
 
+      - name: Validate release tag and version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          expected="v$(tr -d '[:space:]' < VERSION)"
+          test "$GITHUB_REF_NAME" = "$expected" || {
+            echo "release tag $GITHUB_REF_NAME does not match VERSION ($expected)" >&2
+            exit 1
+          }
+
+      - name: Traceability strict release gate
+        if: startsWith(github.ref, 'refs/tags/')
+        run: cargo run -p gump-gates --bin check-traceability -- --strict
+
       - name: Prove missing requirements fail strict CI gate (W04)
         # Self-test only — not a completion signal (must keep failing while ledger open).
         run: cargo run -p gump-gates --bin check-traceability -- --prove-missing
@@ -80,7 +97,7 @@ jobs:
             -e MINIO_ROOT_USER=gump \
             -e MINIO_ROOT_PASSWORD=gumpsecret \
             minio/minio:RELEASE.2025-04-22T22-12-26Z server /data --console-address ":9001"
-          for i in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             if curl -sf http://127.0.0.1:9000/minio/health/live >/dev/null; then
               echo "MinIO healthy"
               exit 0
@@ -176,7 +193,8 @@ jobs:
         run: |
           chmod 0755 "dist/bin/$TARGET/gump"
           version="$(tr -d '[:space:]' < VERSION)+build${GUMP_BUILD}"
-          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          export SOURCE_DATE_EPOCH
           make deb TARGET="$TARGET" DEB_VERSION="$version"
 
       - name: Inspect, install, and smoke-test package
@@ -251,7 +269,8 @@ jobs:
           TARGET: ${{ matrix.target }}
         run: |
           chmod 0755 "dist/bin/$TARGET/gump"
-          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          export SOURCE_DATE_EPOCH
           make rpm \
             TARGET="$TARGET" \
             RPM_VERSION="$(tr -d '[:space:]' < VERSION)" \
@@ -299,3 +318,191 @@ jobs:
             dist/packages/rpm/*.sha256
           if-no-files-found: error
           retention-days: 14
+
+  prepare-release:
+    name: prepare-signed-release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [check, s3-minio, dist, deb, rpm]
+    runs-on: ubuntu-22.04
+    env:
+      GUMP_PACKAGE_SIGNING_KEY: ${{ secrets.GUMP_PACKAGE_SIGNING_KEY }}
+      GUMP_PACKAGE_SIGNING_PASSPHRASE: ${{ secrets.GUMP_PACKAGE_SIGNING_PASSPHRASE }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install repository tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y apt-utils createrepo-c dpkg-dev rpm
+
+      - name: Download validated build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: incoming
+
+      - name: Import CI signing subkey
+        run: |
+          test -n "$GUMP_PACKAGE_SIGNING_KEY"
+          test -n "$GUMP_PACKAGE_SIGNING_PASSPHRASE"
+          GNUPGHOME="$RUNNER_TEMP/gump-gnupg"
+          export GNUPGHOME
+          echo "GNUPGHOME=$GNUPGHOME" >> "$GITHUB_ENV"
+          install -d -m 0700 "$GNUPGHOME"
+          printf '%s' "$GUMP_PACKAGE_SIGNING_KEY" | gpg --batch --import
+          expected=$(tr -d '[:space:]' < packaging/repository/SIGNING_KEY)
+          actual=$(gpg --batch --with-colons --list-secret-keys | awk -F: '$1 == "fpr" { print $10; exit }')
+          test "$actual" = "$expected"
+
+      - name: Sign RPM packages
+        run: |
+          chmod 0755 packaging/rpm/sign-rpms.sh
+          fingerprint=$(tr -d '[:space:]' < packaging/repository/SIGNING_KEY)
+          packaging/rpm/sign-rpms.sh "$fingerprint" incoming
+
+      - name: Assemble release assets
+        run: |
+          install -d release-assets
+          version=$(tr -d '[:space:]' < VERSION)
+          for target in \
+            aarch64-apple-darwin \
+            x86_64-unknown-linux-gnu \
+            aarch64-unknown-linux-gnu
+          do
+            source="incoming/gump-$target"
+            test -x "$source/gump"
+            archive="release-assets/gump-$target.tar.gz"
+            tar -C "$source" -czf "$archive" gump BUILD_INFO
+          done
+          find incoming -type f \( -name '*.deb' -o -name '*.rpm' \) \
+            -exec cp {} release-assets/ \;
+          cp LICENSE NOTICE release-assets/
+          printf '%s\n' "$version" > release-assets/VERSION
+          (
+            cd release-assets
+            sha256sum -- ./*
+          ) > release-SHA256SUMS
+          mv release-SHA256SUMS release-assets/SHA256SUMS
+
+      - name: Build signed APT and RPM repositories
+        run: |
+          chmod 0755 packaging/repository/build-repositories.sh
+          fingerprint=$(tr -d '[:space:]' < packaging/repository/SIGNING_KEY)
+          packaging/repository/build-repositories.sh \
+            --deb-dir incoming \
+            --rpm-dir incoming \
+            --output site/packages \
+            --signing-key "$fingerprint"
+          touch site/.nojekyll
+
+      - name: Render Homebrew formula
+        run: |
+          chmod 0755 packaging/homebrew/render-formula.sh
+          version=$(tr -d '[:space:]' < VERSION)
+          checksum=$(sha256sum release-assets/gump-aarch64-apple-darwin.tar.gz | awk '{print $1}')
+          packaging/homebrew/render-formula.sh \
+            "$version" "$GITHUB_REF_NAME" "$checksum" tap/Formula/gump.rb
+
+      - name: Upload release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: gump-release-assets
+          path: release-assets/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload Homebrew formula
+        uses: actions/upload-artifact@v4
+        with:
+          name: gump-homebrew-formula
+          path: tap/Formula/gump.rb
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload package repository for Pages
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: site
+
+  publish-release:
+    name: publish-github-release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: prepare-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: gump-release-assets
+          path: release-assets
+
+      - name: Attest release provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: release-assets/*
+
+      - name: Publish immutable release candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" release-assets/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" release-assets/* \
+              --verify-tag \
+              --title "Gump ${GITHUB_REF_NAME#v}" \
+              --generate-notes
+          fi
+
+  publish-package-repositories:
+    name: publish-apt-rpm-repositories
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [prepare-release, publish-release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy signed repositories
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+  publish-homebrew:
+    name: publish-homebrew-formula
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [prepare-release, publish-release]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download generated formula
+        uses: actions/download-artifact@v4
+        with:
+          name: gump-homebrew-formula
+          path: generated
+
+      - name: Check out Frogfish Homebrew tap
+        uses: actions/checkout@v4
+        with:
+          repository: frogfishio/homebrew-tap
+          ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+          path: homebrew-tap
+
+      - name: Publish formula
+        run: |
+          install -d homebrew-tap/Formula
+          install -m 0644 generated/gump.rb homebrew-tap/Formula/gump.rb
+          cd homebrew-tap
+          if test -z "$(git status --porcelain -- Formula/gump.rb)"; then
+            echo "Homebrew formula is already current"
+            exit 0
+          fi
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add Formula/gump.rb
+          git commit -m "gump ${GITHUB_REF_NAME}"
+          git push
