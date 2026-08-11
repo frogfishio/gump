@@ -2,6 +2,16 @@
 
 Gump is a zero-footprint workload placer and supervisor for one server or many. Start with one disposable beta server to test the real packaged workload, then join servers to add capacity and replicate cluster memory without changing the application model. Nodes retain only transient application materializations, while S3 holds immutable sealed Capsules. Gump runs independently and is designed to pair exceptionally well with Kismet when Kismet is present.
 
+Gump is authored by Alexander R. Croft and licensed under
+`AGPL-3.0-or-later`. Commercial licensing is available at
+[frogfish.io](https://frogfish.io). See [NOTICE](NOTICE) and [LICENSE](LICENSE).
+
+## Feedback and contributions
+
+Bug reports and suggestions are welcome through GitHub Issues. Gump does not
+accept external code, documentation, or other contributed material, including
+pull requests. See [CONTRIBUTING.md](CONTRIBUTING.md) for the complete policy.
+
 - [v1 implementation pack](docs/v1/README.md) — normative engineering handoff, formats, protocols, security, tests, and delivery backlog
 - [Project seed](SEED.md)
 - [System design](docs/SYSTEM_DESIGN.md)
@@ -54,6 +64,15 @@ Build every currently supported raw executable with:
 make dist
 ```
 
+`make dist` increments the root `BUILD` counter once, then embeds
+`VERSION+build-BUILD` into every target. Use `make bump` for a patch release,
+or `make bump PART=minor|major` for an intentional larger version change.
+`gump --version` reports the embedded identity and `gump --copyright` reports
+the licensing notice. CI uses GitHub's monotonic run number as `GUMP_BUILD`, so
+every architecture and package from one workflow has one identity without
+creating competing commits from matrix jobs; the Actions run permanently
+records that build number.
+
 Build output is isolated from deployment under `dist/bin/<rust-target>/gump`.
 The initial target set is `aarch64-apple-darwin`,
 `x86_64-unknown-linux-gnu`, and `aarch64-unknown-linux-gnu`; deployment tooling
@@ -67,15 +86,15 @@ Linux assets can be wrapped in an intentionally inert Debian package on a
 Debian-family host:
 
 ```sh
-make deb TARGET=x86_64-unknown-linux-gnu DEB_VERSION=0.1.0
-make deb TARGET=aarch64-unknown-linux-gnu DEB_VERSION=0.1.0
+make deb TARGET=x86_64-unknown-linux-gnu
+make deb TARGET=aarch64-unknown-linux-gnu
 ```
 
 RPM-family packages use the same existing Linux assets:
 
 ```sh
-make rpm TARGET=x86_64-unknown-linux-gnu RPM_VERSION=0.1.0 RPM_RELEASE=1
-make rpm TARGET=aarch64-unknown-linux-gnu RPM_VERSION=0.1.0 RPM_RELEASE=1
+make rpm TARGET=x86_64-unknown-linux-gnu
+make rpm TARGET=aarch64-unknown-linux-gnu
 ```
 
 Packages are written beneath `dist/packages/deb/` and `dist/packages/rpm/`.

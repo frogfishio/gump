@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Alexander R. Croft
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! `gump` process entry — CLI + composed server roles (GUMP-N004 / C08).
 
 use std::collections::BTreeSet;

@@ -5,7 +5,8 @@ drop-in crate. It collects the hardened parts of Gump's Capsule-to-S3 path so
 the Crisptastic team can reuse, reshape, or discard them without rediscovering
 the same failure modes.
 
-The copied sources retain Gump's MIT OR Apache-2.0 licensing. See `LICENSE`.
+The copied sources retain Gump's `AGPL-3.0-or-later` licensing. A commercial
+license is available at https://frogfish.io. See `LICENSE`.
 
 ## What is worth reusing
 
@@ -65,4 +66,3 @@ storage, not the inner Capsule dialect or its cryptography.
 
 See `SOURCE_MAP.md` for the copied files, why each is present, and the expected
 adaptation.
-

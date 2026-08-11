@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Alexander R. Croft
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Local CLI verbs shared with the composed `gump` binary (GUMP-N004 / N006).
 
 use std::env;
@@ -42,6 +45,8 @@ enum Command {
         cluster_key_id: String,
         signing_key: SigningKeyBytes,
     },
+    Version,
+    Copyright,
     Help,
 }
 
@@ -59,6 +64,12 @@ pub fn try_dispatch_cli(args: &[String]) -> Option<Result<ExitCode, String>> {
     }
     if args.iter().any(|a| a == "-h" || a == "--help") {
         return Some(Ok(print_help_ok()));
+    }
+    if args.len() == 1 && matches!(args[0].as_str(), "-V" | "--version") {
+        return Some(dispatch_cli(args));
+    }
+    if args.len() == 1 && matches!(args[0].as_str(), "--copyright" | "--coopyrigght") {
+        return Some(dispatch_cli(args));
     }
     let verb = args[0].as_str();
     if !matches!(
@@ -88,6 +99,16 @@ pub fn dispatch_cli(args: &[String]) -> Result<ExitCode, String> {
     let cmd = parse_args(args)?;
     match cmd {
         Command::Help => Ok(print_help_ok()),
+        Command::Version => {
+            println!("{}", gump_types::product::version_string());
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Copyright => {
+            for line in gump_types::product::copyright_lines() {
+                println!("{line}");
+            }
+            Ok(ExitCode::SUCCESS)
+        }
         Command::Run {
             manifest,
             workspace,
@@ -186,6 +207,8 @@ fn parse_args(args: &[String]) -> Result<Command, String> {
     let mut iter = args.iter();
     let verb = iter.next().ok_or("missing command")?;
     match verb.as_str() {
+        "-V" | "--version" if args.len() == 1 => Ok(Command::Version),
+        "--copyright" | "--coopyrigght" if args.len() == 1 => Ok(Command::Copyright),
         "run" | "test" => parse_local_parity(verb, iter),
         "status" => parse_api_simple(iter, LocalRequest::Status),
         "explain" => {
@@ -907,6 +930,9 @@ pub fn print_help() {
 gump — Capsule placer/supervisor (CLI + server roles)
 
 Usage:
+  gump --help
+  gump --version
+  gump --copyright
   gump run [--manifest PATH] [--workspace DIR]
   gump test --sealed [--manifest PATH] [--workspace DIR]
   gump capsule build --output PATH --cluster-id UUID --cluster-public-key HEX
@@ -936,6 +962,9 @@ Telemetry is memory-only recent-window state; it is not a durable log.
 Human format never prints recovery secrets or Capsule ciphertext.
 Inventory/inspect never activate Capsules. Reintroduce creates fresh intent only
 (GUMP-N016); finite work requires --new-execution or --resume-from.
+
+Version format is VERSION+build-BUILD. Licensing is AGPL-3.0-or-later;
+commercial licensing is available at https://frogfish.io.
 "
     );
 }
@@ -1002,7 +1031,7 @@ mod tests {
     use std::os::unix::net::UnixStream;
     use std::process::ExitCode;
 
-    use super::{read_secret_fd, response_exit_code};
+    use super::{Command, parse_args, read_secret_fd, response_exit_code};
     use crate::local_api::{ErrorBody, LocalResponse};
 
     #[test]
@@ -1026,5 +1055,22 @@ mod tests {
             response_exit_code(&LocalResponse::Status(crate::local_api::sample_status())),
             ExitCode::SUCCESS
         );
+    }
+
+    #[test]
+    fn global_product_information_flags_parse_exactly() {
+        assert!(matches!(
+            parse_args(&["--version".into()]).unwrap(),
+            Command::Version
+        ));
+        assert!(matches!(
+            parse_args(&["--copyright".into()]).unwrap(),
+            Command::Copyright
+        ));
+        assert!(matches!(
+            parse_args(&["--coopyrigght".into()]).unwrap(),
+            Command::Copyright
+        ));
+        assert!(parse_args(&["--version".into(), "extra".into()]).is_err());
     }
 }

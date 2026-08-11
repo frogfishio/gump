@@ -18,6 +18,7 @@ mod id;
 pub mod inherited_fd;
 pub mod policy;
 pub mod process;
+pub mod product;
 mod secret;
 pub mod sim;
 

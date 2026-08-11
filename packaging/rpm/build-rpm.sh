@@ -1,4 +1,6 @@
 #!/bin/sh
+# SPDX-FileCopyrightText: 2026 Alexander R. Croft
+# SPDX-License-Identifier: AGPL-3.0-or-later
 set -eu
 
 usage() {
@@ -91,6 +93,7 @@ install -d "$top_dir/BUILD" "$top_dir/BUILDROOT" "$top_dir/RPMS"
 install -d "$top_dir/SOURCES" "$top_dir/SPECS" "$top_dir/SRPMS"
 install -m 0755 "$binary" "$top_dir/SOURCES/gump"
 install -m 0644 "$repo_root/LICENSE" "$top_dir/SOURCES/LICENSE"
+install -m 0644 "$repo_root/NOTICE" "$top_dir/SOURCES/NOTICE"
 install -m 0644 "$script_dir/README.rpm" "$top_dir/SOURCES/README.rpm"
 
 cat >"$top_dir/SPECS/gump.spec" <<EOF
@@ -100,12 +103,13 @@ Name:           gump
 Version:        $version
 Release:        $release
 Summary:        Zero-footprint cluster application deployment runtime
-License:        AGPL-3.0-only
+License:        AGPL-3.0-or-later
 URL:            https://github.com/frogfishio/gump
 BuildArch:      $architecture
 Source0:        gump
 Source1:        LICENSE
-Source2:        README.rpm
+Source2:        NOTICE
+Source3:        README.rpm
 
 %description
 Gump packages, places, supervises, and discovers arbitrary workloads across a
@@ -119,11 +123,13 @@ configuration and service lifecycle.
 %install
 install -Dpm 0755 %{SOURCE0} %{buildroot}%{_bindir}/gump
 install -Dpm 0644 %{SOURCE1} %{buildroot}%{_licensedir}/gump/LICENSE
-install -Dpm 0644 %{SOURCE2} %{buildroot}%{_docdir}/gump/README.rpm
+install -Dpm 0644 %{SOURCE2} %{buildroot}%{_docdir}/gump/NOTICE
+install -Dpm 0644 %{SOURCE3} %{buildroot}%{_docdir}/gump/README.rpm
 
 %files
 %{_bindir}/gump
 %license %{_licensedir}/gump/LICENSE
+%doc %{_docdir}/gump/NOTICE
 %doc %{_docdir}/gump/README.rpm
 EOF
 

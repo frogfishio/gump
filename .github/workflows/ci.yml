@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Alexander R. Croft
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 name: CI
 
 on:
@@ -13,6 +16,9 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -Dwarnings
+  # One monotonic identity shared by every architecture and package in this run.
+  # GitHub permanently records this counter; local `make dist` uses BUILD instead.
+  GUMP_BUILD: ${{ github.run_number }}
 
 jobs:
   check:
@@ -32,6 +38,9 @@ jobs:
 
       - name: Format
         run: cargo fmt --all -- --check
+
+      - name: Release and licensing metadata
+        run: make check-release-metadata
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
@@ -122,6 +131,10 @@ jobs:
       - name: Smoke-test and verify asset
         run: |
           "dist/bin/${{ matrix.target }}/gump" --help
+          expected="$(tr -d '[:space:]' < VERSION)+build-${GUMP_BUILD}"
+          test "$("dist/bin/${{ matrix.target }}/gump" --version)" = "$expected"
+          test "$(cat "dist/bin/${{ matrix.target }}/BUILD_INFO")" = "$expected"
+          test "$("dist/bin/${{ matrix.target }}/gump" --copyright | wc -l | tr -d ' ')" = 2
           file "dist/bin/${{ matrix.target }}/gump"
           cd "dist/bin/${{ matrix.target }}"
           shasum -a 256 -c SHA256SUMS
@@ -162,7 +175,7 @@ jobs:
           TARGET: ${{ matrix.target }}
         run: |
           chmod 0755 "dist/bin/$TARGET/gump"
-          version="0.1.0~git${GITHUB_RUN_NUMBER}.${GITHUB_SHA::8}"
+          version="$(tr -d '[:space:]' < VERSION)+build${GUMP_BUILD}"
           export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
           make deb TARGET="$TARGET" DEB_VERSION="$version"
 
@@ -180,6 +193,10 @@ jobs:
           expected=$(sha256sum "dist/bin/$TARGET/gump" | awk '{print $1}')
           sudo apt-get install -y "./$package"
           /usr/bin/gump --help
+          test "$(/usr/bin/gump --version)" = "$(tr -d '[:space:]' < VERSION)+build-${GUMP_BUILD}"
+          test "$(/usr/bin/gump --copyright | wc -l | tr -d ' ')" = 2
+          test -f /usr/share/doc/gump/LICENSE
+          test -f /usr/share/doc/gump/NOTICE
           test "$(dpkg-query -W -f='${Status}' gump)" = "install ok installed"
           actual=$(sha256sum /usr/bin/gump | awk '{print $1}')
           test "$actual" = "$expected"
@@ -234,12 +251,11 @@ jobs:
           TARGET: ${{ matrix.target }}
         run: |
           chmod 0755 "dist/bin/$TARGET/gump"
-          short_sha=$(printf '%.8s' "$GITHUB_SHA")
           export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
           make rpm \
             TARGET="$TARGET" \
-            RPM_VERSION=0.1.0 \
-            RPM_RELEASE="0.git${GITHUB_RUN_NUMBER}.${short_sha}"
+            RPM_VERSION="$(tr -d '[:space:]' < VERSION)" \
+            RPM_RELEASE="build${GUMP_BUILD}"
 
       - name: Inspect, install, and smoke-test package
         env:
@@ -253,10 +269,15 @@ jobs:
           rpm -qRp "$package"
           test "$(rpm -qp --qf '%{ARCH}' "$package")" = "$ARCHITECTURE"
           test "$(rpm -qp --qf '%{NAME}' "$package")" = gump
+          test "$(rpm -qp --qf '%{LICENSE}' "$package")" = AGPL-3.0-or-later
           test -z "$(rpm -qp --scripts "$package")"
           expected=$(sha256sum "dist/bin/$TARGET/gump" | awk '{print $1}')
           rpm -Uvh "$package"
           /usr/bin/gump --help
+          test "$(/usr/bin/gump --version)" = "$(tr -d '[:space:]' < VERSION)+build-${GUMP_BUILD}"
+          test "$(/usr/bin/gump --copyright | wc -l | tr -d ' ')" = 2
+          test -f /usr/share/licenses/gump/LICENSE
+          test -f /usr/share/doc/gump/NOTICE
           test "$(rpm -q --qf '%{NAME}' gump)" = gump
           actual=$(sha256sum /usr/bin/gump | awk '{print $1}')
           test "$actual" = "$expected"

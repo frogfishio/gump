@@ -1,6 +1,10 @@
 Gump RPM
 ========
 
+Copyright (C) 2026 Alexander R. Croft
+Licensed under AGPL-3.0-or-later. A commercial license is available at
+https://frogfish.io.
+
 This package is intentionally inert. It installs /usr/bin/gump and nothing
 else. It does not create users, directories, configuration, secrets, sockets,
 or services, and it does not start Gump.

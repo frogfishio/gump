@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Alexander R. Croft
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! CLI entry for CI: validate `spec/v1/traceability.tsv`.
 //!
 //! Usage:
@@ -20,6 +23,32 @@ fn workspace_root() -> PathBuf {
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
+    if args.iter().any(|arg| arg == "-h" || arg == "--help") {
+        println!(
+            "check-traceability — validate the Gump v1 traceability ledger\n\n\
+             Usage:\n  check-traceability [--strict | --prove-missing]\n  \
+             check-traceability --help\n  check-traceability --version\n  \
+             check-traceability --copyright"
+        );
+        return ExitCode::SUCCESS;
+    }
+    if args.len() == 1 && matches!(args[0].as_str(), "-V" | "--version") {
+        println!("{}", gump_types::product::version_string());
+        return ExitCode::SUCCESS;
+    }
+    if args.len() == 1 && matches!(args[0].as_str(), "--copyright" | "--coopyrigght") {
+        for line in gump_types::product::copyright_lines() {
+            println!("{line}");
+        }
+        return ExitCode::SUCCESS;
+    }
+    if let Some(unknown) = args
+        .iter()
+        .find(|arg| !matches!(arg.as_str(), "--strict" | "--prove-missing"))
+    {
+        eprintln!("check-traceability: unknown argument {unknown:?}; try --help");
+        return ExitCode::from(2);
+    }
     let strict = args.iter().any(|a| a == "--strict");
     let prove_missing = args.iter().any(|a| a == "--prove-missing");
     let path = workspace_root().join("spec/v1/traceability.tsv");
