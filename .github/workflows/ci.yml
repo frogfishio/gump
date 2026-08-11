@@ -29,7 +29,7 @@ jobs:
     name: build-test-gates
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install Rust toolchain (MSRV)
         uses: dtolnay/rust-toolchain@master
@@ -80,7 +80,7 @@ jobs:
     name: s3-minio-rejected-safely
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install Rust toolchain (MSRV)
         uses: dtolnay/rust-toolchain@master
@@ -135,7 +135,7 @@ jobs:
             target: aarch64-unknown-linux-gnu
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -157,7 +157,7 @@ jobs:
           shasum -a 256 -c SHA256SUMS
 
       - name: Upload distribution asset
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: gump-${{ matrix.target }}
           path: dist/bin/${{ matrix.target }}/
@@ -179,10 +179,10 @@ jobs:
             architecture: arm64
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Download native Gump asset
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: gump-${{ matrix.target }}
           path: dist/bin/${{ matrix.target }}
@@ -228,7 +228,7 @@ jobs:
           sha256sum -c ./*.sha256
 
       - name: Upload Debian package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: gump-deb-${{ matrix.architecture }}
           path: |
@@ -256,10 +256,13 @@ jobs:
       - name: Install RPM build tools
         run: dnf -y install git make rpm-build file findutils tar gzip
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+
+      - name: Trust the checked-out workspace in the build container
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - name: Download native Gump asset
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: gump-${{ matrix.target }}
           path: dist/bin/${{ matrix.target }}
@@ -310,7 +313,7 @@ jobs:
           sha256sum -c ./*.sha256
 
       - name: Upload RPM package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: gump-rpm-${{ matrix.architecture }}
           path: |
@@ -328,7 +331,7 @@ jobs:
       GUMP_PACKAGE_SIGNING_KEY: ${{ secrets.GUMP_PACKAGE_SIGNING_KEY }}
       GUMP_PACKAGE_SIGNING_PASSPHRASE: ${{ secrets.GUMP_PACKAGE_SIGNING_PASSPHRASE }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install repository tools
         run: |
@@ -336,7 +339,7 @@ jobs:
           sudo apt-get install -y apt-utils createrepo-c dpkg-dev rpm
 
       - name: Download validated build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: incoming
 
@@ -403,7 +406,7 @@ jobs:
             "$version" "$GITHUB_REF_NAME" "$checksum" tap/Formula/gump.rb
 
       - name: Upload release assets
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: gump-release-assets
           path: release-assets/
@@ -411,7 +414,7 @@ jobs:
           retention-days: 14
 
       - name: Upload Homebrew formula
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: gump-homebrew-formula
           path: tap/Formula/gump.rb
@@ -419,7 +422,7 @@ jobs:
           retention-days: 14
 
       - name: Upload package repository for Pages
-        uses: actions/upload-pages-artifact@v4
+        uses: actions/upload-pages-artifact@v5
         with:
           path: site
 
@@ -433,7 +436,7 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: gump-release-assets
           path: release-assets
@@ -471,7 +474,7 @@ jobs:
     steps:
       - name: Deploy signed repositories
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
 
   publish-homebrew:
     name: publish-homebrew-formula
@@ -480,13 +483,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download generated formula
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: gump-homebrew-formula
           path: generated
 
       - name: Check out Frogfish Homebrew tap
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: frogfishio/homebrew-tap
           ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
