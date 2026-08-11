@@ -1,0 +1,10 @@
+Gump for Debian
+===============
+
+This package is intentionally inert. It installs /usr/bin/gump and nothing
+else. It does not create users, directories, configuration, secrets, sockets,
+or services, and it does not start Gump.
+
+Captain is responsible for configuring the host and installing Gump as a
+service with the cluster-specific identity, credentials, limits, and bootstrap
+parameters.

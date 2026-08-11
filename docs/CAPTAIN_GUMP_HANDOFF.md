@@ -137,7 +137,7 @@ Captain local executor
 -> creates or adopts one server
 -> enters the server over SSH
 -> installs a pinned signed Gump DEB/RPM
--> installs the unprivileged account and dormant service
+-> creates the unprivileged account, directories, and dormant service
 -> generates or receives initial cluster authority locally
 -> stores recovery material in Macrun/Captain secret storage
 -> streams one-use startup parameters to Gump without remote secret files

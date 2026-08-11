@@ -62,7 +62,7 @@ manually create one ordinary server
 A provisional developer experience is:
 
 ```bash
-gump bootstrap ssh root@203.0.113.10 --init
+captain run cluster-program.capb
 gump deploy autoscaler.capsule
 gump capacity set \
   --servers 3 \
@@ -82,11 +82,12 @@ enrolment, capability validation, workload placement, and voter promotion. A
 request for three servers is not complete merely because three provider
 resources exist.
 
-### 2.1 SSH bootstrap command
+### 2.1 Captain SSH bootstrap frontier
 
-`gump bootstrap ssh` is the productized zero-to-one path. It installs the same
-Gump binary and service contract used by Terraform/Ansible rather than creating
-a second kind of cluster.
+Captain's SSH frontier is the productized zero-to-one path. It installs the
+same Gump package and creates the same service contract used by other managed
+installation paths rather than creating a second kind of cluster. The package
+itself remains inert: it contains the executable, not host policy.
 
 The command should:
 
@@ -94,8 +95,9 @@ The command should:
 2. Inspect operating system and architecture.
 3. Select the correct pinned distribution artifact.
 4. Verify its release signature and digest.
-5. Create the unprivileged `gump` account and constrained directories.
-6. Install the binary and dormant bootstrap/service units idempotently.
+5. Install the inert Gump package.
+6. Create the unprivileged `gump` account, constrained directories, and
+   dormant bootstrap/service units idempotently.
 7. Validate executable-cache and transient-runtime mount properties.
 8. Apply an explicitly requested narrow host/provider firewall policy.
 9. Start the memory-only bootstrap socket.
@@ -105,28 +107,22 @@ The command should:
     evidence.
 13. Remove transient bootstrap material and close inherited descriptors.
 
-The intended command family is:
-
-```bash
-gump bootstrap ssh root@host --plan
-gump bootstrap ssh root@host --init
-gump bootstrap ssh root@host --join seed
-gump bootstrap ssh root@host --verify
-```
-
-It uses the user's existing SSH agent/key and privilege path. Passwords,
-provider credentials, recovery secrets, and bootstrap parameters are never
+The Captain frontier uses the user's existing SSH agent/key and privilege
+path. Passwords, provider credentials, recovery secrets, and bootstrap
+parameters are never
 interpolated into the remote command line. The operation is idempotent and
 reports every durable host change before applying it.
 
-This is not `curl | sh`. The local trusted Gump client chooses and verifies an
-exact artifact, performs bounded preflight, and installs a known service shape.
+This is not `curl | sh`. The local trusted Captain executor chooses and verifies
+an exact artifact, performs bounded preflight, and installs a known service
+shape.
 
 ### 2.2 Reboot and zero-footprint truth
 
-The installed binary, unprivileged account, directories, and dormant service
-unit survive reboot. Live Gump state, plaintext secrets, unseal authority, and
-bootstrap parameters deliberately do not.
+The package-installed binary and Captain-created unprivileged account,
+directories, and dormant service unit survive reboot. Live Gump state,
+plaintext secrets, unseal authority, and bootstrap parameters deliberately do
+not.
 
 - Before initialization, reboot leaves the dormant bootstrap socket waiting.
 - Rebooting the sole initialized server loses its live cluster memory and
@@ -150,7 +146,7 @@ infrastructure-managed:
 Terraform -> Ansible -> dormant Gump service -> streamed startup parameters
 
 developer golden path:
-SSH -> gump bootstrap -> dormant Gump service -> streamed startup parameters
+Captain -> SSH -> dormant Gump service -> streamed startup parameters
 ```
 
 They converge on identical binaries, units, bootstrap framing, server

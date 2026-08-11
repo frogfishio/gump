@@ -62,3 +62,15 @@ on a native runner and retains the executable plus `SHA256SUMS` as separate
 workflow artifacts. CI uses `make dist-native TARGET=<rust-target>`; local
 cross-building remains an optional developer convenience and is not part of
 deployment.
+
+Linux assets can be wrapped in an intentionally inert Debian package on a
+Debian-family host:
+
+```sh
+make deb TARGET=x86_64-unknown-linux-gnu DEB_VERSION=0.1.0
+```
+
+The package is written beneath `dist/packages/deb/`. It installs only
+`/usr/bin/gump` and package documentation: it does not create an account,
+configuration, directories, sockets, or services, and it never starts Gump.
+Captain owns those host-specific effects.
