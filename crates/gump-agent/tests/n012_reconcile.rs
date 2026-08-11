@@ -90,10 +90,11 @@ fn finite_native_reaches_terminal_and_cleans_up() {
     );
     let desired = vec![p];
     exec.reconcile(&desired, 0).unwrap();
-    assert_eq!(exec.live_count(), 1);
 
     wait_gone(&mut exec, &desired, 100);
     assert_eq!(exec.live_count(), 0);
+    assert_eq!(exec.completed_count(), 1);
+    assert_eq!(exec.completion_events(), vec![id]);
     assert!(!exec.attempt_root_exists(id));
 }
 
