@@ -29,7 +29,7 @@ pub use ingress::{
 };
 pub use object::{
     ByteRange, FakeObjectStore, META_BLAKE3, ObjectEvidence, ObjectKey, ObjectStore,
-    ObjectStoreError, ObjectStoreErrorKind, RuntimeObjectStore, S3Config, S3ObjectStore, UploadId,
-    UploadProgress, final_capsule_key, is_final_capsule_key, parse_final_capsule_key,
-    quarantine_key,
+    ObjectStoreError, ObjectStoreErrorKind, RuntimeObjectStore, S3Config, S3ObjectStore,
+    S3ReadStats, UploadId, UploadProgress, final_capsule_key, is_final_capsule_key,
+    parse_final_capsule_key, quarantine_key,
 };

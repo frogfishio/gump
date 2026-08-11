@@ -68,9 +68,17 @@ Debian-family host:
 
 ```sh
 make deb TARGET=x86_64-unknown-linux-gnu DEB_VERSION=0.1.0
+make deb TARGET=aarch64-unknown-linux-gnu DEB_VERSION=0.1.0
 ```
 
-The package is written beneath `dist/packages/deb/`. It installs only
-`/usr/bin/gump` and package documentation: it does not create an account,
-configuration, directories, sockets, or services, and it never starts Gump.
-Captain owns those host-specific effects.
+RPM-family packages use the same existing Linux assets:
+
+```sh
+make rpm TARGET=x86_64-unknown-linux-gnu RPM_VERSION=0.1.0 RPM_RELEASE=1
+make rpm TARGET=aarch64-unknown-linux-gnu RPM_VERSION=0.1.0 RPM_RELEASE=1
+```
+
+Packages are written beneath `dist/packages/deb/` and `dist/packages/rpm/`.
+They install only `/usr/bin/gump` and package documentation: they do not create
+an account, configuration, directories, sockets, or services, and they never
+start Gump. Captain owns those host-specific effects.

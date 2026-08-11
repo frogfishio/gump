@@ -10,6 +10,8 @@ use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use rusty_s3::actions::{
@@ -34,6 +36,37 @@ const SIGN_TTL: Duration = Duration::from_secs(600);
 const MULTIPART_THRESHOLD: u64 = 8 * 1024 * 1024;
 const MULTIPART_PART_SIZE: u64 = 8 * 1024 * 1024;
 const MAX_RETRIES: u32 = 5;
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct S3ReadStats {
+    pub head_requests: u64,
+    pub full_get_requests: u64,
+    pub ranged_get_requests: u64,
+    pub bytes_read: u64,
+}
+
+#[derive(Debug, Default)]
+struct S3ReadCounters {
+    head_requests: AtomicU64,
+    full_get_requests: AtomicU64,
+    ranged_get_requests: AtomicU64,
+    bytes_read: AtomicU64,
+}
+
+struct CountingReader<R> {
+    inner: R,
+    counters: Arc<S3ReadCounters>,
+}
+
+impl<R: Read> Read for CountingReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let read = self.inner.read(buf)?;
+        self.counters
+            .bytes_read
+            .fetch_add(read as u64, Ordering::Relaxed);
+        Ok(read)
+    }
+}
 
 /// S3 connector config. Not `Clone`: secrets must not widen via accidental copies (STL-13).
 #[derive(Debug)]
@@ -116,6 +149,7 @@ pub struct S3ObjectStore {
     next_upload: u64,
     /// Private directory for quarantine spill files (mode 0700 on Unix).
     spill_root: PathBuf,
+    read_counters: Arc<S3ReadCounters>,
 }
 
 impl S3ObjectStore {
@@ -159,13 +193,31 @@ impl S3ObjectStore {
             uploads: BTreeMap::new(),
             next_upload: 0,
             spill_root,
+            read_counters: Arc::new(S3ReadCounters::default()),
         })
+    }
+
+    pub fn read_stats(&self) -> S3ReadStats {
+        S3ReadStats {
+            head_requests: self.read_counters.head_requests.load(Ordering::Relaxed),
+            full_get_requests: self.read_counters.full_get_requests.load(Ordering::Relaxed),
+            ranged_get_requests: self
+                .read_counters
+                .ranged_get_requests
+                .load(Ordering::Relaxed),
+            bytes_read: self.read_counters.bytes_read.load(Ordering::Relaxed),
+        }
     }
 
     fn head_meta(&self, key: &str) -> Result<(u64, [u8; 32]), ObjectStoreError> {
         let action = self.bucket.head_object(Some(&self.credentials), key);
         let url = action.sign(SIGN_TTL);
-        let resp = with_retry(|| map_ureq(self.agent.head(url.as_str()).call().map_err(UreqErr)))?;
+        let resp = with_retry(|| {
+            self.read_counters
+                .head_requests
+                .fetch_add(1, Ordering::Relaxed);
+            map_ureq(self.agent.head(url.as_str()).call().map_err(UreqErr))
+        })?;
         let length = resp
             .header("content-length")
             .and_then(|s| s.parse().ok())
@@ -531,6 +583,15 @@ impl ObjectStore for S3ObjectStore {
         }
         let url = action.sign(SIGN_TTL);
         let resp = with_retry(|| {
+            if range_header.is_some() {
+                self.read_counters
+                    .ranged_get_requests
+                    .fetch_add(1, Ordering::Relaxed);
+            } else {
+                self.read_counters
+                    .full_get_requests
+                    .fetch_add(1, Ordering::Relaxed);
+            }
             let mut req = self.agent.get(url.as_str());
             if let Some(ref h) = range_header {
                 req = req.set("range", h);
@@ -538,7 +599,10 @@ impl ObjectStore for S3ObjectStore {
             map_ureq(req.call().map_err(UreqErr))
         })?;
         // Prefer the HTTP body reader directly (no shared-/tmp spill; STL-13).
-        Ok(Box::new(resp.into_reader()))
+        Ok(Box::new(CountingReader {
+            inner: resp.into_reader(),
+            counters: Arc::clone(&self.read_counters),
+        }))
     }
 
     fn copy_if_absent(

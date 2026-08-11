@@ -11,8 +11,11 @@ use gump_connectors::{FakeObjectStore, RuntimeObjectStore};
 use gump_crypto::{
     RecoverySecret, SignerEnrollment, SignerTrustPolicy, generate_signing_key, verifying_key,
 };
+use gump_memory::{RaftCommand, RaftResponse};
 use gump_server::compose::{InitOptions, ProductRuntime};
-use gump_server::deploy_txn::{DeployTxnOutcome, DeployTxnRequest, run_verified_deploy_txn};
+use gump_server::deploy_txn::{
+    DeployTxnOutcome, DeployTxnRequest, DesiredCapsuleBindingV1, run_verified_deploy_txn,
+};
 use gump_types::{CapsuleId, ClusterId};
 use rand_core::{TryCryptoRng, TryRng};
 
@@ -198,6 +201,49 @@ filter = "app/*"
         )
         .unwrap();
     assert_eq!(status.placements, 1);
+    let reads_after_first_reconcile = {
+        let store = runtime
+            .local_api
+            .object_store
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap();
+        match &*store {
+            RuntimeObjectStore::Memory(store) => store.read_call_counts(),
+            RuntimeObjectStore::S3(_) => unreachable!("test runtime uses memory object store"),
+        }
+    };
+    let unchanged = runtime
+        .execution
+        .as_ref()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .reconcile(
+            runtime.local_api.memory_cluster.as_ref().unwrap(),
+            runtime.local_api.object_store.as_ref().unwrap(),
+            11,
+        )
+        .unwrap();
+    assert_eq!(unchanged.placements, 1);
+    let reads_after_unchanged_reconcile = {
+        let store = runtime
+            .local_api
+            .object_store
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap();
+        match &*store {
+            RuntimeObjectStore::Memory(store) => store.read_call_counts(),
+            RuntimeObjectStore::S3(_) => unreachable!("test runtime uses memory object store"),
+        }
+    };
+    assert_eq!(
+        reads_after_unchanged_reconcile, reads_after_first_reconcile,
+        "unchanged reconciliation must perform zero object-store reads"
+    );
     let mut observed = false;
     for _ in 0..40 {
         let telemetry = runtime
@@ -233,5 +279,83 @@ filter = "app/*"
         run_count.lines().count(),
         1,
         "finite intent ran more than once"
+    );
+
+    let missing_capsule = CapsuleId::new();
+    let missing_digest = [0xabu8; 32];
+    let missing_payload = serde_json::to_vec(&DesiredCapsuleBindingV1 {
+        schema: "gump.desired-capsule/1".into(),
+        operation_id: "missing-capsule-backoff".into(),
+        capsule_id: missing_capsule.to_hyphenated(),
+    })
+    .unwrap();
+    assert!(matches!(
+        runtime
+            .local_api
+            .memory_cluster
+            .as_ref()
+            .unwrap()
+            .client_write(RaftCommand::PutDesired {
+                namespace: "ci".into(),
+                app: "runtime-composition".into(),
+                expected_generation: 1,
+                payload: missing_payload,
+                content_digest: missing_digest,
+            })
+            .unwrap(),
+        RaftResponse::Applied(_)
+    ));
+    let execution = runtime.execution.as_ref().unwrap();
+    assert!(
+        execution
+            .lock()
+            .unwrap()
+            .reconcile(
+                runtime.local_api.memory_cluster.as_ref().unwrap(),
+                runtime.local_api.object_store.as_ref().unwrap(),
+                10_000,
+            )
+            .is_err()
+    );
+    let reads_after_failed_fetch = {
+        let store = runtime
+            .local_api
+            .object_store
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap();
+        match &*store {
+            RuntimeObjectStore::Memory(store) => store.read_call_counts(),
+            RuntimeObjectStore::S3(_) => unreachable!("test runtime uses memory object store"),
+        }
+    };
+    assert!(
+        execution
+            .lock()
+            .unwrap()
+            .reconcile(
+                runtime.local_api.memory_cluster.as_ref().unwrap(),
+                runtime.local_api.object_store.as_ref().unwrap(),
+                10_001,
+            )
+            .is_err()
+    );
+    let reads_during_backoff = {
+        let store = runtime
+            .local_api
+            .object_store
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap();
+        match &*store {
+            RuntimeObjectStore::Memory(store) => store.read_call_counts(),
+            RuntimeObjectStore::S3(_) => unreachable!("test runtime uses memory object store"),
+        }
+    };
+    assert_eq!(
+        reads_during_backoff, reads_after_failed_fetch,
+        "failed Capsule fetches must not retry on every 250 ms reconciliation"
     );
 }

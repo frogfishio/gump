@@ -235,6 +235,19 @@ length evidence, TLS, bounded retry, and least-privilege credentials. Promotion
 must not overwrite a different object. Inventory is an operator read operation,
 not a recovery or reconciliation input.
 
+Object storage is not part of the steady-state reconciliation loop. Verified
+release metadata is cached in memory by `(capsule_id, content_digest)` for the
+life of the desired generation. An unchanged reconciliation performs zero
+object-store operations. Application-archive retrieval occurs only after the
+local node owns a placement and only while its reconstructible release root is
+absent. Failed reads use exponential backoff capped at one minute; a 250 ms
+reconciliation interval must never become a 250 ms remote retry interval.
+
+The S3 connector accounts for HEAD requests, full GET requests, ranged GET
+requests, and bytes consumed from response bodies. These counters are exposed
+in runtime observation and are required production evidence, not debug-only
+instrumentation.
+
 ## 14. Telemetry capture and wire profile
 
 Each attempt has authoritative source fields:

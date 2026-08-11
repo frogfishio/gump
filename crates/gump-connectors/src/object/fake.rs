@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use gump_types::{CapsuleId, ClusterId};
 
@@ -48,6 +49,8 @@ pub struct FakeObjectStore {
     objects: BTreeMap<ObjectKey, StoredObject>,
     uploads: BTreeMap<UploadId, OpenUpload>,
     next_upload: u64,
+    head_calls: AtomicU64,
+    get_reader_calls: AtomicU64,
     pub faults: FakeFaults,
 }
 
@@ -68,6 +71,8 @@ impl FakeObjectStore {
             objects: BTreeMap::new(),
             uploads: BTreeMap::new(),
             next_upload: 0,
+            head_calls: AtomicU64::new(0),
+            get_reader_calls: AtomicU64::new(0),
             faults: FakeFaults::default(),
         }
     }
@@ -78,6 +83,15 @@ impl FakeObjectStore {
 
     pub fn open_upload_count(&self) -> usize {
         self.uploads.len()
+    }
+
+    /// Read-side call accounting for regression tests. A steady-state
+    /// reconciliation must not consult the object store.
+    pub fn read_call_counts(&self) -> (u64, u64) {
+        (
+            self.head_calls.load(Ordering::Relaxed),
+            self.get_reader_calls.load(Ordering::Relaxed),
+        )
     }
 
     /// Test helper: assert the store has no workload/desired-state keys.
@@ -259,6 +273,7 @@ impl ObjectStore for FakeObjectStore {
     }
 
     fn head(&self, key: &ObjectKey) -> Result<ObjectEvidence, ObjectStoreError> {
+        self.head_calls.fetch_add(1, Ordering::Relaxed);
         if self.faults.fail_next_head {
             return Err(ObjectStoreError::new(
                 ObjectStoreErrorKind::FaultInjected,
@@ -280,6 +295,7 @@ impl ObjectStore for FakeObjectStore {
         key: &ObjectKey,
         range: Option<ByteRange>,
     ) -> Result<Box<dyn Read + '_>, ObjectStoreError> {
+        self.get_reader_calls.fetch_add(1, Ordering::Relaxed);
         let obj = self.objects.get(key).ok_or_else(|| {
             ObjectStoreError::new(ObjectStoreErrorKind::NotFound, "object not found")
         })?;

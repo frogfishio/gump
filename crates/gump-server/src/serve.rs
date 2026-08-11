@@ -356,7 +356,7 @@ fn handle_observe(
         subject,
         state: state.into(),
         detail: format!(
-            "cluster={} voters={} leader={leader:?} desired={} local_placements={} ready={} completed_units={} hiccup_presence={} ringtail_active={} ringtail_accepted={} ringtail_failed={} ringtail_dropped={} last_error={}",
+            "cluster={} voters={} leader={leader:?} desired={} local_placements={} ready={} completed_units={} hiccup_presence={} ringtail_active={} ringtail_accepted={} ringtail_failed={} ringtail_dropped={} s3_head_requests={} s3_full_get_requests={} s3_ranged_get_requests={} s3_bytes_read={} last_error={}",
             daemon.cluster_id,
             memory_voters,
             status.desired,
@@ -368,6 +368,10 @@ fn handle_observe(
             status.ringtail_accepted,
             status.ringtail_failed,
             status.ringtail_dropped,
+            status.s3_head_requests,
+            status.s3_full_get_requests,
+            status.s3_ranged_get_requests,
+            status.s3_bytes_read,
             status.last_error.as_deref().unwrap_or("none")
         ),
     }

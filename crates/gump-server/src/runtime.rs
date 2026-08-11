@@ -24,7 +24,7 @@ use gump_driver::{
 use gump_memory::{DesiredSnapshotEntry, MemoryCluster, RaftCommand, RaftResponse};
 use gump_protocol::pb::{
     CheckKind as PbCheckKind, CheckSpecV1, DriverKind as PbDriverKind, InjectionKind,
-    KeyEnvelopeV1, ProtectedConfigV1, ReleaseMetadataV1, WorkloadLifetime,
+    KeyEnvelopeV1, ProtectedConfigV1, ReleaseMetadataV1, RuntimeVariableV1, WorkloadLifetime,
 };
 use gump_scheduler::{
     CapabilityReport, NodeResources, PlacementController, PlacementOutcome, ProtectionLevel,
@@ -40,6 +40,8 @@ use crate::deploy_txn::DesiredCapsuleBindingV1;
 use crate::ringtail_relay::{RelayTarget, RingtailRelay};
 
 const RECONCILE_FENCE: u64 = 1;
+const RELEASE_FETCH_INITIAL_BACKOFF_MS: u64 = 1_000;
+const RELEASE_FETCH_MAX_BACKOFF_MS: u64 = 60_000;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeStatus {
@@ -53,6 +55,10 @@ pub struct RuntimeStatus {
     pub ringtail_accepted: u64,
     pub ringtail_failed: u64,
     pub ringtail_dropped: u64,
+    pub s3_head_requests: u64,
+    pub s3_full_get_requests: u64,
+    pub s3_ranged_get_requests: u64,
+    pub s3_bytes_read: u64,
 }
 
 struct SecretBinding {
@@ -62,6 +68,8 @@ struct SecretBinding {
     node_id: u64,
     controller_epoch: u64,
     placement_fence: u64,
+    capsule_meta: GumpCapsuleMeta,
+    runtime_variables: BTreeMap<String, RuntimeVariableV1>,
     telemetry_sink: Option<TelemetrySinkContract>,
     telemetry_token: Option<Secret<Vec<u8>>>,
 }
@@ -70,6 +78,19 @@ struct SecretBinding {
 struct TelemetrySinkContract {
     port: u16,
     path: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct ReleaseIdentity {
+    capsule_id: CapsuleId,
+    content_digest: [u8; 32],
+}
+
+#[derive(Clone, Debug)]
+struct ReleaseFetchFailure {
+    attempts: u32,
+    retry_after_ms: u64,
+    error: String,
 }
 
 /// One node's live execution controller. No field is durable cluster state.
@@ -84,6 +105,8 @@ pub struct RuntimeCoordinator {
     script: EffectExecutor<ScriptDriver>,
     secret_bindings: Arc<Mutex<BTreeMap<AttemptId, SecretBinding>>>,
     ringtail_relay: RingtailRelay,
+    release_cache: BTreeMap<ReleaseIdentity, LoadedRelease>,
+    release_failures: BTreeMap<ReleaseIdentity, ReleaseFetchFailure>,
     known_units: BTreeSet<UnitId>,
     status: RuntimeStatus,
 }
@@ -152,6 +175,8 @@ impl RuntimeCoordinator {
             script,
             secret_bindings: bindings,
             ringtail_relay,
+            release_cache: BTreeMap::new(),
+            release_failures: BTreeMap::new(),
             known_units: BTreeSet::new(),
             status: RuntimeStatus {
                 desired: 0,
@@ -164,6 +189,10 @@ impl RuntimeCoordinator {
                 ringtail_accepted: 0,
                 ringtail_failed: 0,
                 ringtail_dropped: 0,
+                s3_head_requests: 0,
+                s3_full_get_requests: 0,
+                s3_ranged_get_requests: 0,
+                s3_bytes_read: 0,
             },
         })
     }
@@ -172,12 +201,94 @@ impl RuntimeCoordinator {
         self.status.clone()
     }
 
+    fn load_release_cached(
+        &mut self,
+        identity: ReleaseIdentity,
+        desired: &DesiredSnapshotEntry,
+        store: &Arc<Mutex<RuntimeObjectStore>>,
+        now_ms: u64,
+    ) -> Result<LoadedRelease, String> {
+        if let Some(failure) = self.release_failures.get(&identity) {
+            if now_ms < failure.retry_after_ms {
+                return Err(format!(
+                    "Capsule {} fetch deferred until {} after {} failed attempt(s): {}",
+                    identity.capsule_id, failure.retry_after_ms, failure.attempts, failure.error
+                ));
+            }
+        }
+        if let Some(loaded) = self.release_cache.get(&identity) {
+            return Ok(loaded.clone());
+        }
+
+        match load_release(
+            self.cluster_id,
+            identity.capsule_id,
+            desired,
+            &self.state_root,
+            store,
+        ) {
+            Ok(loaded) => {
+                self.release_failures.remove(&identity);
+                self.release_cache.insert(identity, loaded.clone());
+                Ok(loaded)
+            }
+            Err(error) => {
+                self.record_release_failure(identity, now_ms, &error);
+                Err(error)
+            }
+        }
+    }
+
+    fn ensure_release_materialized(
+        &mut self,
+        identity: ReleaseIdentity,
+        loaded: &LoadedRelease,
+        store: &Arc<Mutex<RuntimeObjectStore>>,
+        now_ms: u64,
+    ) -> Result<(), String> {
+        if loaded.release_root.is_dir() {
+            self.release_failures.remove(&identity);
+            return Ok(());
+        }
+        match materialize_release(loaded, &self.state_root, store) {
+            Ok(()) => {
+                self.release_failures.remove(&identity);
+                Ok(())
+            }
+            Err(error) => {
+                self.record_release_failure(identity, now_ms, &error);
+                Err(error)
+            }
+        }
+    }
+
+    fn record_release_failure(&mut self, identity: ReleaseIdentity, now_ms: u64, error: &str) {
+        let attempts = self
+            .release_failures
+            .get(&identity)
+            .map(|failure| failure.attempts.saturating_add(1))
+            .unwrap_or(1);
+        let exponent = attempts.saturating_sub(1).min(6);
+        let delay = RELEASE_FETCH_INITIAL_BACKOFF_MS
+            .saturating_mul(1u64 << exponent)
+            .min(RELEASE_FETCH_MAX_BACKOFF_MS);
+        self.release_failures.insert(
+            identity,
+            ReleaseFetchFailure {
+                attempts,
+                retry_after_ms: now_ms.saturating_add(delay),
+                error: error.to_string(),
+            },
+        );
+    }
+
     pub fn reconcile(
         &mut self,
         cluster: &MemoryCluster,
         store: &Arc<Mutex<RuntimeObjectStore>>,
         now_ms: u64,
     ) -> Result<RuntimeStatus, String> {
+        self.refresh_s3_stats(store);
         let desired = cluster.observed_desired_snapshot();
         let voters = cluster.voter_ids();
         let local_memory_id = self.memory_node_id;
@@ -185,6 +296,7 @@ impl RuntimeCoordinator {
         let mut script = Vec::new();
         let mut current_units = BTreeSet::new();
         let mut current_attempts = BTreeSet::new();
+        let mut current_releases = BTreeSet::new();
         let mut completion_targets = BTreeMap::new();
         let mut completed = 0usize;
 
@@ -206,7 +318,12 @@ impl RuntimeCoordinator {
                 .capsule_id
                 .parse()
                 .map_err(|_| "desired capsule_id is not UUIDv7".to_string())?;
-            let loaded = load_release(self.cluster_id, capsule_id, entry, &self.state_root, store)?;
+            let identity = ReleaseIdentity {
+                capsule_id,
+                content_digest: entry.content_digest,
+            };
+            current_releases.insert(identity);
+            let loaded = self.load_release_cached(identity, entry, store, now_ms)?;
             let units = if loaded.all_nodes {
                 u32::try_from(voters.len()).unwrap_or(u32::MAX)
             } else {
@@ -236,6 +353,7 @@ impl RuntimeCoordinator {
                 {
                     continue;
                 }
+                self.ensure_release_materialized(identity, &loaded, store, now_ms)?;
                 current_units.insert(unit_id);
                 if !self.known_units.contains(&unit_id) {
                     let outcome = self.scheduler.place(&WorkloadRequirements {
@@ -285,6 +403,8 @@ impl RuntimeCoordinator {
                         node_id: self.memory_node_id,
                         controller_epoch: RECONCILE_FENCE,
                         placement_fence: RECONCILE_FENCE,
+                        capsule_meta: loaded.capsule_meta.clone(),
+                        runtime_variables: loaded.runtime_variables.clone(),
                         telemetry_sink: loaded.telemetry_sink.clone(),
                         telemetry_token: None,
                     });
@@ -338,6 +458,10 @@ impl RuntimeCoordinator {
             .lock()
             .map_err(|_| "secret binding lock poisoned".to_string())?
             .retain(|attempt, _| current_attempts.contains(attempt));
+        self.release_cache
+            .retain(|identity, _| current_releases.contains(identity));
+        self.release_failures
+            .retain(|identity, _| current_releases.contains(identity));
         let native_reports = self
             .native
             .reconcile(&native, now_ms)
@@ -381,6 +505,7 @@ impl RuntimeCoordinator {
             }
         }
         let relay = self.ringtail_relay.stats();
+        self.refresh_s3_stats(store);
         let ready = native_reports
             .iter()
             .chain(&script_reports)
@@ -403,12 +528,26 @@ impl RuntimeCoordinator {
             ringtail_accepted: relay.accepted,
             ringtail_failed: relay.failed,
             ringtail_dropped: relay.dropped,
+            s3_head_requests: self.status.s3_head_requests,
+            s3_full_get_requests: self.status.s3_full_get_requests,
+            s3_ranged_get_requests: self.status.s3_ranged_get_requests,
+            s3_bytes_read: self.status.s3_bytes_read,
         };
         Ok(self.status.clone())
     }
 
     pub fn note_error(&mut self, error: String) {
         self.status.last_error = Some(error);
+    }
+
+    fn refresh_s3_stats(&mut self, store: &Arc<Mutex<RuntimeObjectStore>>) {
+        let Some(stats) = store.lock().ok().and_then(|store| store.s3_read_stats()) else {
+            return;
+        };
+        self.status.s3_head_requests = stats.head_requests;
+        self.status.s3_full_get_requests = stats.full_get_requests;
+        self.status.s3_ranged_get_requests = stats.ranged_get_requests;
+        self.status.s3_bytes_read = stats.bytes_read;
     }
 
     fn refresh_ringtail_relay(&self) {
@@ -447,7 +586,12 @@ impl RuntimeCoordinator {
     }
 }
 
+#[derive(Clone)]
 struct LoadedRelease {
+    cluster_id: ClusterId,
+    capsule_id: CapsuleId,
+    capsule_meta: GumpCapsuleMeta,
+    runtime_variables: BTreeMap<String, RuntimeVariableV1>,
     workload_id: WorkloadId,
     namespace: String,
     app_id: String,
@@ -493,6 +637,12 @@ fn load_release(
     let public = read_segment(&*guard, &key, &meta, SegmentType::PublicMetadata)?;
     let release = ReleaseMetadataV1::decode(public.as_slice())
         .map_err(|e| format!("decode ReleaseMetadataV1: {e}"))?;
+    let runtime_variables = release
+        .runtime_variables
+        .iter()
+        .cloned()
+        .map(|variable| (variable.logical_name.clone(), variable))
+        .collect();
     let manifest = release
         .normalized_manifest
         .ok_or("Capsule lacks normalized manifest")?;
@@ -512,21 +662,6 @@ fn load_release(
         _ => return Err("runtime driver is unspecified".into()),
     };
     let release_root = state_root.join("apps").join(capsule_id.to_hyphenated());
-    if !release_root.is_dir() {
-        let d = descriptor(&meta, SegmentType::ApplicationArchive)?;
-        let start = meta.inner_file_offset.saturating_add(d.offset);
-        let archive = guard
-            .get_reader(
-                &key,
-                Some(ByteRange {
-                    start,
-                    end: Some(start.saturating_add(d.stored_length)),
-                }),
-            )
-            .map_err(|e| e.to_string())?;
-        materialize_application_archive(state_root, capsule_id, archive, &ExtractLimits::default())
-            .map_err(|e| format!("materialize Capsule: {e}"))?;
-    }
     let resources = manifest.resources.unwrap_or_default();
     let required_enforced = resources.capabilities.clone();
     let lifecycle_finite =
@@ -611,6 +746,10 @@ fn load_release(
         .map(|d| d.coverage == gump_protocol::pb::CoverageKind::AllNodes as i32)
         .unwrap_or(false);
     Ok(LoadedRelease {
+        cluster_id,
+        capsule_id,
+        capsule_meta: meta,
+        runtime_variables,
         workload_id,
         namespace: app.namespace,
         app_id: app.app_id,
@@ -659,6 +798,42 @@ fn load_release(
     })
 }
 
+fn materialize_release(
+    loaded: &LoadedRelease,
+    state_root: &Path,
+    store: &Arc<Mutex<RuntimeObjectStore>>,
+) -> Result<(), String> {
+    if loaded.release_root.is_dir() {
+        return Ok(());
+    }
+    let key = final_capsule_key(loaded.cluster_id, loaded.capsule_id).map_err(|e| e.to_string())?;
+    let descriptor = descriptor(&loaded.capsule_meta, SegmentType::ApplicationArchive)?;
+    let start = loaded
+        .capsule_meta
+        .inner_file_offset
+        .saturating_add(descriptor.offset);
+    let guard = store
+        .lock()
+        .map_err(|_| "object store lock poisoned".to_string())?;
+    let archive = guard
+        .get_reader(
+            &key,
+            Some(ByteRange {
+                start,
+                end: Some(start.saturating_add(descriptor.stored_length)),
+            }),
+        )
+        .map_err(|e| e.to_string())?;
+    materialize_application_archive(
+        state_root,
+        loaded.capsule_id,
+        archive,
+        &ExtractLimits::default(),
+    )
+    .map(|_| ())
+    .map_err(|e| format!("materialize Capsule: {e}"))
+}
+
 fn secret_provider(
     cluster_id: ClusterId,
     store: Arc<Mutex<RuntimeObjectStore>>,
@@ -676,11 +851,8 @@ fn secret_provider(
         let store = store
             .lock()
             .map_err(|_| "object store lock poisoned".to_string())?;
-        let meta =
-            StreamingCapsuleReader::new(store.get_reader(&key, None).map_err(|e| e.to_string())?)
-                .verify()
-                .map_err(|e| e.to_string())?;
-        let public = read_segment(&*store, &key, &meta, SegmentType::PublicMetadata)?;
+        let meta = binding.capsule_meta.clone();
+        let vars = binding.runtime_variables.clone();
         let protected = read_segment(&*store, &key, &meta, SegmentType::ProtectedConfig)?;
         let envelope = KeyEnvelopeV1::decode(
             read_segment(&*store, &key, &meta, SegmentType::KeyEnvelope)?.as_slice(),
@@ -721,12 +893,6 @@ fn secret_provider(
             open_protected(dek.expose(), &nonce, &aad, &protected).map_err(|e| e.to_string())?;
         let config =
             ProtectedConfigV1::decode(plaintext.expose().as_slice()).map_err(|e| e.to_string())?;
-        let release = ReleaseMetadataV1::decode(public.as_slice()).map_err(|e| e.to_string())?;
-        let vars: BTreeMap<_, _> = release
-            .runtime_variables
-            .into_iter()
-            .map(|v| (v.logical_name.clone(), v))
-            .collect();
         let mut values = Vec::new();
         for value in config.values.into_iter().filter(|v| v.present) {
             let contract = vars

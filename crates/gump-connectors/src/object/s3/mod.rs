@@ -6,4 +6,4 @@
 
 mod client;
 
-pub use client::{META_BLAKE3, S3Config, S3ObjectStore};
+pub use client::{META_BLAKE3, S3Config, S3ObjectStore, S3ReadStats};

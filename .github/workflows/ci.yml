@@ -169,6 +169,7 @@ jobs:
       - name: Inspect, install, and smoke-test package
         env:
           ARCHITECTURE: ${{ matrix.architecture }}
+          TARGET: ${{ matrix.target }}
         run: |
           package=$(find dist/packages/deb -name "gump_*_${ARCHITECTURE}.deb" -print -quit)
           test -n "$package"
@@ -176,9 +177,12 @@ jobs:
           dpkg-deb --contents "$package"
           test "$(dpkg-deb --field "$package" Architecture)" = "$ARCHITECTURE"
           test "$(dpkg-deb --field "$package" Package)" = gump
+          expected=$(sha256sum "dist/bin/$TARGET/gump" | awk '{print $1}')
           sudo apt-get install -y "./$package"
           /usr/bin/gump --help
           test "$(dpkg-query -W -f='${Status}' gump)" = "install ok installed"
+          actual=$(sha256sum /usr/bin/gump | awk '{print $1}')
+          test "$actual" = "$expected"
           test ! -e /usr/lib/systemd/system/gump.service
           test ! -e /etc/gump
           test ! -e /var/lib/gump
@@ -195,5 +199,82 @@ jobs:
           path: |
             dist/packages/deb/*.deb
             dist/packages/deb/*.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  rpm:
+    name: rpm-${{ matrix.architecture }}
+    needs: dist
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            architecture: x86_64
+          - runner: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            architecture: aarch64
+    runs-on: ${{ matrix.runner }}
+    container: fedora:43
+    steps:
+      - name: Install RPM build tools
+        run: dnf -y install git make rpm-build file findutils tar gzip
+
+      - uses: actions/checkout@v4
+
+      - name: Download native Gump asset
+        uses: actions/download-artifact@v4
+        with:
+          name: gump-${{ matrix.target }}
+          path: dist/bin/${{ matrix.target }}
+
+      - name: Build RPM package
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          chmod 0755 "dist/bin/$TARGET/gump"
+          short_sha=$(printf '%.8s' "$GITHUB_SHA")
+          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          make rpm \
+            TARGET="$TARGET" \
+            RPM_VERSION=0.1.0 \
+            RPM_RELEASE="0.git${GITHUB_RUN_NUMBER}.${short_sha}"
+
+      - name: Inspect, install, and smoke-test package
+        env:
+          ARCHITECTURE: ${{ matrix.architecture }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          package=$(find dist/packages/rpm -name "gump-*.$ARCHITECTURE.rpm" -print -quit)
+          test -n "$package"
+          rpm -qip "$package"
+          rpm -qlp "$package"
+          rpm -qRp "$package"
+          test "$(rpm -qp --qf '%{ARCH}' "$package")" = "$ARCHITECTURE"
+          test "$(rpm -qp --qf '%{NAME}' "$package")" = gump
+          test -z "$(rpm -qp --scripts "$package")"
+          expected=$(sha256sum "dist/bin/$TARGET/gump" | awk '{print $1}')
+          rpm -Uvh "$package"
+          /usr/bin/gump --help
+          test "$(rpm -q --qf '%{NAME}' gump)" = gump
+          actual=$(sha256sum /usr/bin/gump | awk '{print $1}')
+          test "$actual" = "$expected"
+          test ! -e /usr/lib/systemd/system/gump.service
+          test ! -e /etc/gump
+          test ! -e /var/lib/gump
+
+      - name: Verify package checksum
+        run: |
+          cd dist/packages/rpm
+          sha256sum -c ./*.sha256
+
+      - name: Upload RPM package
+        uses: actions/upload-artifact@v4
+        with:
+          name: gump-rpm-${{ matrix.architecture }}
+          path: |
+            dist/packages/rpm/*.rpm
+            dist/packages/rpm/*.sha256
           if-no-files-found: error
           retention-days: 14

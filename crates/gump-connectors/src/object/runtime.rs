@@ -23,6 +23,13 @@ impl RuntimeObjectStore {
             Self::S3(_) => "s3",
         }
     }
+
+    pub fn s3_read_stats(&self) -> Option<super::S3ReadStats> {
+        match self {
+            Self::Memory(_) => None,
+            Self::S3(store) => Some(store.read_stats()),
+        }
+    }
 }
 
 macro_rules! with_store {
