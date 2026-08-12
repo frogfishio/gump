@@ -1,0 +1,7 @@
+[gump]
+name=Gump stable packages
+baseurl=https://frogfishio.github.io/gump/packages/rpm/$basearch
+enabled=1
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=https://frogfishio.github.io/gump/packages/gump-signing-key.asc

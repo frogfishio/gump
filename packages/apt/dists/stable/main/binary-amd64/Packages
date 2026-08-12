@@ -1,0 +1,19 @@
+Package: gump
+Version: 0.1.0+build98
+Architecture: amd64
+Maintainer: Frogfish <info@frogfish.io>
+Installed-Size: 18820
+Depends: libc6 (>= 2.35), libgcc-s1
+Filename: pool/main/g/gump/gump_0.1.0+build98_amd64.deb
+Size: 5558342
+MD5sum: 0a2d54ffd643439a722660e1e2f5bec6
+SHA1: e9016a9021568861c87fb5670a4177b51a0630d0
+SHA256: 34c2f64674924026785228783b805fb09181fe2c9f42264f4fd886f41987852d
+Section: admin
+Priority: optional
+Homepage: https://github.com/frogfishio/gump
+Description: zero-footprint cluster application deployment runtime
+ Gump packages, places, supervises, and discovers arbitrary workloads across a
+ cluster. This package installs only the Gump executable; Captain owns host
+ configuration and service lifecycle.
+
