@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 pub mod bootstrap;
+pub mod captain_control;
 pub mod frame;
 pub mod goldens;
 pub mod negotiate;

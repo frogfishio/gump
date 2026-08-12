@@ -97,6 +97,19 @@ impl RamStateMachine {
     pub async fn cluster_state(&self) -> ClusterState {
         self.inner.read().await.sm.cluster.clone()
     }
+
+    /// Atomically observe the applied log position, membership, and
+    /// application state under one state-machine read lock.
+    pub(crate) async fn control_state(
+        &self,
+    ) -> (u64, StoredMembership<MemoryNodeId, ()>, ClusterState) {
+        let inner = self.inner.read().await;
+        (
+            inner.sm.last_applied_log.map(|log| log.index).unwrap_or(0),
+            inner.sm.last_membership.clone(),
+            inner.sm.cluster.clone(),
+        )
+    }
 }
 
 impl RamStore {

@@ -202,6 +202,7 @@ fn run_server(args: &[String]) -> Result<ExitCode, String> {
 struct ConfiguredReady {
     cluster_id: String,
     node_id: String,
+    daemon: Arc<gump_server::serve::LocalDaemon>,
 }
 
 fn run_bootstrap_server(mut cfg: ServerConfig) -> Result<ExitCode, String> {
@@ -304,6 +305,7 @@ fn run_bootstrap_server(mut cfg: ServerConfig) -> Result<ExitCode, String> {
         Arc::clone(&result),
         ready.cluster_id.clone(),
         ready.node_id.clone(),
+        Arc::clone(&ready.daemon),
     )?;
     std::thread::Builder::new()
         .name("gump-management".into())
@@ -465,11 +467,14 @@ fn run_configured_server(
     let listener = UnixListener::bind(&cfg.socket).map_err(|e| e.to_string())?;
     eprintln!("gump: listening on {}", cfg.socket.display());
 
+    let daemon = Arc::new(runtime.local_api);
+
     if let Some((sender, node_id)) = ready {
         sender
             .send(ConfiguredReady {
                 cluster_id: runtime.cluster_id.to_hyphenated(),
                 node_id,
+                daemon: Arc::clone(&daemon),
             })
             .map_err(|_| "bootstrap initializer stopped before runtime readiness")?;
     }
@@ -485,7 +490,6 @@ fn run_configured_server(
         cancel_watch.store(true, Ordering::SeqCst);
     });
 
-    let daemon = Arc::new(runtime.local_api);
     if let (Some(execution), Some(cluster), Some(store)) = (
         runtime.execution,
         daemon.memory_cluster.clone(),

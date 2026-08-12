@@ -2,16 +2,21 @@
 //! management mTLS proof, secret-material descriptor output, and closure.
 
 use std::fs;
+use std::io::{Read, Write};
+use std::net::TcpStream;
 use std::os::unix::fs::PermissionsExt as _;
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use base64::Engine as _;
 use gump_protocol::bootstrap::{
     ActivationBundle, BOOTSTRAP_PROTOCOL, BootstrapHandoff, HANDOFF_SCHEMA,
 };
 use gump_transport::{NodeRole, TransportIdentity, mint_identity};
 use gump_types::{ClusterId, IncarnationId, NodeId};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName};
 
 struct ChildGuard(Child);
 
@@ -38,6 +43,58 @@ fn hex(bytes: &[u8]) -> String {
         encoded.push(DIGITS[(byte & 0x0f) as usize] as char);
     }
     encoded
+}
+
+fn management_snapshot(endpoint: &str, material: &serde_json::Value) -> serde_json::Value {
+    let decode = |field: &str| {
+        base64::engine::general_purpose::STANDARD
+            .decode(material[field].as_str().unwrap())
+            .unwrap()
+    };
+    let mut roots = rustls::RootCertStore::empty();
+    roots
+        .add(CertificateDer::from(decode("caCertificateDerBase64")))
+        .unwrap();
+    let mut config = rustls::ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_client_auth_cert(
+            vec![CertificateDer::from(decode("clientCertificateDerBase64"))],
+            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(decode("privateKeyPkcs8DerBase64"))),
+        )
+        .unwrap();
+    config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    let address = endpoint.strip_prefix("https://").unwrap();
+    let mut tcp = TcpStream::connect(address).unwrap();
+    tcp.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let mut connection = rustls::ClientConnection::new(
+        Arc::new(config),
+        ServerName::try_from("localhost").unwrap().to_owned(),
+    )
+    .unwrap();
+    let mut stream = rustls::Stream::new(&mut connection, &mut tcp);
+    write!(
+        stream,
+        "GET /v1/captain/snapshot HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+    )
+    .unwrap();
+    stream.flush().unwrap();
+    let mut response = Vec::new();
+    let mut chunk = [0_u8; 4096];
+    loop {
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(read) => response.extend_from_slice(&chunk[..read]),
+            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(error) => panic!("read management snapshot: {error}"),
+        }
+    }
+    let header_end = response
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .unwrap()
+        + 4;
+    assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
+    serde_json::from_slice(&response[header_end..]).unwrap()
 }
 
 #[test]
@@ -173,6 +230,16 @@ fn bootstrap_reaches_real_management_mtls_and_closes() {
             .len()
             > 40
     );
+
+    let snapshot = management_snapshot(&management_endpoint, &management);
+    assert_eq!(snapshot["schema"], "gump.captain-snapshot/1");
+    assert_eq!(snapshot["protocol"], "gump.captain-control/1");
+    assert_eq!(snapshot["clusterIdentity"], cluster_id.to_hyphenated());
+    assert_eq!(snapshot["nodeIdentity"], node_id.to_hyphenated());
+    assert_eq!(snapshot["consistency"], "linearizable");
+    assert_eq!(snapshot["cluster"]["voterCount"], 1);
+    assert_eq!(snapshot["cluster"]["custody"], "unsealed");
+    assert_eq!(snapshot["workloads"], serde_json::json!([]));
 
     server.0.kill().unwrap();
     let _ = server.0.wait();

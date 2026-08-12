@@ -39,6 +39,15 @@ pub struct ClusterStatusSnapshot {
     pub durable_cluster_state: bool,
 }
 
+/// One linearizable committed-state cut for bounded management consumers.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ControlSnapshot {
+    pub status: ClusterStatusSnapshot,
+    pub revision: u64,
+    pub voters: Vec<MemoryNodeId>,
+    pub desired: Vec<DesiredSnapshotEntry>,
+}
+
 /// Process-local OpenRaft node with a dedicated Tokio runtime.
 pub struct MemoryCluster {
     runtime: tokio::runtime::Runtime,
@@ -292,6 +301,32 @@ impl MemoryCluster {
                 controller_epoch: controller.epoch(),
                 controller_holder: controller.holder(),
                 durable_cluster_state: false,
+            })
+        })
+    }
+
+    /// Linearizable cluster facts and desired identities from one applied-state
+    /// cut. Opaque desired payloads remain internal to the caller.
+    pub fn control_snapshot(&self) -> Result<ControlSnapshot, String> {
+        self.runtime.block_on(async {
+            bounded_linearizable(&self.raft).await?;
+            let metrics = self.raft.metrics().borrow().clone();
+            let (revision, membership, cluster) = self.sm.control_state().await;
+            let mut voters: Vec<_> = membership.membership().voter_ids().collect();
+            voters.sort_unstable();
+            let controller = cluster.controller();
+            Ok(ControlSnapshot {
+                status: ClusterStatusSnapshot {
+                    node_id: self.node_id,
+                    current_leader: metrics.current_leader,
+                    voter_count: voters.len() as u32,
+                    controller_epoch: controller.epoch(),
+                    controller_holder: controller.holder(),
+                    durable_cluster_state: false,
+                },
+                revision,
+                voters,
+                desired: cluster.desired_snapshot(),
             })
         })
     }
@@ -842,6 +877,34 @@ mod tests {
             .client_write(RaftCommand::Record(Command::AdvanceTime { now_ms: 42 }))
             .expect("write");
         assert!(matches!(resp, RaftResponse::Applied(_)));
+
+        cluster.shutdown().expect("shutdown");
+    }
+
+    #[test]
+    fn control_snapshot_is_one_linearizable_committed_cut() {
+        let cluster = MemoryCluster::bootstrap_one_voter(1, 7).expect("bootstrap");
+        let response = cluster
+            .client_write(RaftCommand::PutDesired {
+                namespace: "default".into(),
+                app: "demo".into(),
+                expected_generation: 0,
+                payload: b"opaque declaration".to_vec(),
+                content_digest: [0x5a; 32],
+            })
+            .expect("put desired");
+        assert!(matches!(response, RaftResponse::Applied(_)));
+
+        let snapshot = cluster.control_snapshot().expect("control snapshot");
+        assert!(snapshot.revision > 0);
+        assert_eq!(snapshot.voters, vec![1]);
+        assert_eq!(snapshot.status.current_leader, Some(1));
+        assert_eq!(snapshot.status.controller_holder, Some(7));
+        assert_eq!(snapshot.desired.len(), 1);
+        assert_eq!(snapshot.desired[0].namespace, "default");
+        assert_eq!(snapshot.desired[0].app, "demo");
+        assert_eq!(snapshot.desired[0].generation, 1);
+        assert_eq!(snapshot.desired[0].content_digest, [0x5a; 32]);
 
         cluster.shutdown().expect("shutdown");
     }

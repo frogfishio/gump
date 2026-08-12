@@ -1,6 +1,7 @@
 # Captain–Gump runtime control boundary
 
-> Status: accepted architectural boundary; `/1` wire contract not yet frozen
+> Status: accepted architectural boundary; bounded `GetSnapshot` wire slice
+> frozen in `gump.captain-control/1`; later operations remain architectural
 >
 > Scope: how an in-cluster Captain workload communicates with Gump and what
 > authority it does—and does not—receive
@@ -118,6 +119,11 @@ All messages, pages, watches and deadlines are bounded. A compacted watch tells
 Captain to obtain a fresh snapshot. Captain reconstructs its view from Gump's
 current state and provider observations; it does not require a durable local
 database.
+
+The normative first wire slice is
+[`CAPTAIN_GUMP_CONTROL_V1.md`](CAPTAIN_GUMP_CONTROL_V1.md). It freezes only
+`GetSnapshot`. The names and shapes of the remaining operations above are not
+yet a compatibility promise.
 
 ## 5. Effect grants
 

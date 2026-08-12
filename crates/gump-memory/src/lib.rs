@@ -21,7 +21,7 @@ pub use authority::{
     EffectReject, FenceToken,
 };
 pub use cluster_net::{ClusterJoinConfig, ClusterNetworkConfig};
-pub use cluster_node::{ClusterStatusSnapshot, MemoryCluster};
+pub use cluster_node::{ClusterStatusSnapshot, ControlSnapshot, MemoryCluster};
 pub use cluster_state::{
     ApplyOutcome, ClusterState, DESIRED_MAX_ENTRIES, DESIRED_MAX_PAYLOAD_BYTES,
     DESIRED_MAX_TOTAL_BYTES, DesiredSnapshotEntry, FINITE_COMPLETION_MAX_ENTRIES,
