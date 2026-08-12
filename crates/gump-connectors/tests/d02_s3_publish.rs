@@ -11,15 +11,16 @@
 //!   (used by the CI `s3-minio` job / STL-25)
 //!
 //! When unset, tests skip (CI stays green without MinIO).
-//! CI: `.github/workflows/ci.yml` uses MinIO as a negative compatibility fixture:
-//! MinIO must be rejected when it ignores destination `If-None-Match` on
-//! `CopyObject`. The full suite is for endpoints that pass that capability probe.
+//! CI: `.github/workflows/ci.yml` uses MinIO to prove provider-neutral strategy
+//! selection: conditional CopyObject may be unavailable while conditional
+//! PutObject still provides safe immutable publication.
 
 use std::io::Read;
 use std::time::Duration;
 
 use gump_connectors::{
-    ByteRange, ObjectStore, ObjectStoreErrorKind, S3Config, S3ObjectStore, final_capsule_key,
+    ByteRange, ObjectStore, ObjectStoreErrorKind, S3Config, S3ObjectStore, S3PublishStrategy,
+    final_capsule_key,
 };
 use gump_types::{CapsuleId, ClusterId};
 use rusty_s3::actions::{CreateBucket, S3Action as _};
@@ -124,9 +125,11 @@ fn open_store() -> Option<S3ObjectStore> {
     }
 }
 
-/// STL-19 negative-provider evidence. This is deliberately separate from the
-/// publish tests: an endpoint that ignores the destination precondition must
-/// never be made usable merely to exercise the rest of the connector.
+/// STL-19 provider-neutral evidence: MinIO ignores the CopyObject destination
+/// condition but safely supports conditional PutObject. The historical test
+/// symbol is retained because the release workflow invokes it by exact name;
+/// the endpoint is rejected *for conditional copy* and admitted through the
+/// independently probed fallback.
 #[test]
 fn s3_rejects_endpoint_without_conditional_copy() {
     let Some(cfg) = live_config() else {
@@ -144,13 +147,27 @@ fn s3_rejects_endpoint_without_conditional_copy() {
         return;
     }
 
-    let err = S3ObjectStore::new(cfg)
-        .expect_err("fixture unexpectedly supports conditional CopyObject; run the full D02 suite");
-    assert_eq!(err.kind(), ObjectStoreErrorKind::InvalidArgument);
-    assert!(
-        err.message().contains("If-None-Match"),
-        "unexpected capability error: {err}"
-    );
+    let mut store =
+        S3ObjectStore::new(cfg).expect("endpoint must expose one safe publication strategy");
+    assert_eq!(store.publish_strategy(), S3PublishStrategy::ConditionalPut);
+
+    // Prove the selected strategy, not only the constructor probe.
+    let (cluster, capsule) = ids(0x21);
+    let body = b"minio-conditional-put-publication";
+    let digest = digest(body);
+    let final_key = final_capsule_key(cluster, capsule).unwrap();
+    scrub_key(&mut store, &final_key);
+    let upload = store
+        .begin_quarantine(cluster, capsule, body.len() as u64)
+        .unwrap();
+    store.write(upload, body).unwrap();
+    let quarantine = store.finish_quarantine(upload, digest).unwrap();
+    let published = store
+        .publish_if_absent(&quarantine.key, &final_key, digest, body.len() as u64)
+        .unwrap();
+    assert_eq!(store.head(&final_key).unwrap(), published);
+    scrub_key(&mut store, &final_key);
+    scrub_key(&mut store, &quarantine.key);
 }
 
 fn scrub_key(store: &mut S3ObjectStore, key: &gump_connectors::ObjectKey) {
@@ -167,7 +184,7 @@ fn s3_config_rejects_partial_static_creds() {
         secret_access_key: None,
         session_token: None,
         force_path_style: true,
-        require_conditional_copy: false,
+        require_safe_publication: false,
     };
     let err = S3ObjectStore::new(cfg).unwrap_err();
     assert_eq!(err.kind(), ObjectStoreErrorKind::InvalidArgument);

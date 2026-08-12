@@ -2,8 +2,8 @@
 //!
 //! Wraps `aws-sdk-s3` (SigV4, TLS, credential chain, retries, multipart) behind
 //! [`crate::object::ObjectStore`]. User metadata `gump-blake3` carries digest
-//! evidence; promote uses conditional server-side `CopyObject`.
+//! evidence; publication uses a capability-selected conditional copy or put.
 
 mod client;
 
-pub use client::{META_BLAKE3, S3Config, S3ObjectStore, S3ReadStats};
+pub use client::{META_BLAKE3, S3Config, S3ObjectStore, S3PublishStrategy, S3ReadStats};

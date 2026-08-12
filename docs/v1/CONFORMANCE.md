@@ -125,7 +125,9 @@ Required adversarial cases include:
 - symlink races during capture, extraction, execution, cleanup, and orphan scan;
 - core dump, `/proc`, ptrace, swap, environment, and inherited descriptor checks
   for every advertised isolation profile;
-- S3 same-key/different-digest conflict and quarantine/final-key confusion;
+- S3 same-key/different-digest conflict, quarantine/final-key confusion, safe
+  conditional-copy/conditional-put selection, and rejection when both
+  destination conditions are ignored;
 - resource exhaustion across frames, watches, leases, operations, reasons,
   telemetry topics, processes, file descriptors, and archive entries.
 - forged Hiccup declaration, request token, sender identity, attempt, IP,

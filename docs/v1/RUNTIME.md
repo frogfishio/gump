@@ -232,8 +232,13 @@ abort(Upload) -> Outcome
 
 The S3 connector never sees runtime plaintext. It uses exact keys, checksum and
 length evidence, TLS, bounded retry, and least-privilege credentials. Promotion
-must not overwrite a different object. Inventory is an operator read operation,
-not a recovery or reconciliation input.
+must not overwrite a different object. At construction it selects a safe
+provider-neutral publication primitive: conditioned in-store copy when
+available, otherwise conditioned upload of the verified spill. A resumed
+publication may reconstruct that spill from quarantine and reverify its full
+length and digest; the ordinary path performs no S3 download. Every apparent
+success or precondition conflict is resolved by HEAD-verifying the final object.
+Inventory is an operator read operation, not a recovery or reconciliation input.
 
 Object storage is not part of the steady-state reconciliation loop. Verified
 release metadata is cached in memory by `(capsule_id, content_digest)` for the

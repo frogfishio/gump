@@ -1,10 +1,10 @@
 //! `ObjectStore` backed by `rusty-s3` (SigV4) + `ureq` (TLS, pooling, retries).
 //!
 //! Authority: DECISIONS D008 / RUNTIME §13 / STL-07. Quarantine streams to a
-//! spill file then PUT (multipart above 8 MiB); promote uses server-side
-//! `CopyObject` via `x-amz-copy-source` with `If-None-Match: *`.
-//! Construction probes that the endpoint honors conditional copy (STL-19) and
-//! rejects providers that ignore the precondition.
+//! spill file then PUT (multipart above 8 MiB). Publication capability is
+//! selected at construction: conditional server-side `CopyObject` when safe,
+//! otherwise conditional `PutObject` of the already verified spill bytes.
+//! Endpoints that provide neither primitive are rejected (STL-19).
 
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
@@ -45,6 +45,13 @@ pub struct S3ReadStats {
     pub bytes_read: u64,
 }
 
+/// Immutable-publication primitive selected by an endpoint capability probe.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum S3PublishStrategy {
+    ConditionalCopy,
+    ConditionalPut,
+}
+
 #[derive(Debug, Default)]
 struct S3ReadCounters {
     head_requests: AtomicU64,
@@ -82,9 +89,9 @@ pub struct S3Config {
     pub session_token: Option<Secret<String>>,
     /// Path-style addressing (required for most MinIO / local endpoints).
     pub force_path_style: bool,
-    /// When true (default), reject endpoints that ignore `If-None-Match` on
-    /// `CopyObject` (D008 / STL-19). Disable only for offline unit tests.
-    pub require_conditional_copy: bool,
+    /// When true (default), require a probed safe conditional publication
+    /// primitive (D008 / STL-19). Disable only for offline unit tests.
+    pub require_safe_publication: bool,
 }
 
 impl S3Config {
@@ -98,7 +105,7 @@ impl S3Config {
             secret_access_key: None,
             session_token: None,
             force_path_style: true,
-            require_conditional_copy: true,
+            require_safe_publication: true,
         }
     }
 
@@ -118,7 +125,7 @@ impl S3Config {
             secret_access_key: Some(Secret::new(secret_access_key.into())),
             session_token: None,
             force_path_style: true,
-            require_conditional_copy: true,
+            require_safe_publication: true,
         }
     }
 }
@@ -130,6 +137,20 @@ struct OpenUpload {
     path: PathBuf,
     file: File,
     quarantine: ObjectKey,
+}
+
+#[derive(Debug)]
+struct FinishedSpill {
+    path: PathBuf,
+    file: File,
+    length: u64,
+    digest: [u8; 32],
+}
+
+impl Drop for FinishedSpill {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
 }
 
 impl Drop for OpenUpload {
@@ -146,7 +167,9 @@ pub struct S3ObjectStore {
     bucket_name: String,
     credentials: Credentials,
     uploads: BTreeMap<UploadId, OpenUpload>,
+    finished_spills: BTreeMap<ObjectKey, FinishedSpill>,
     next_upload: u64,
+    publish_strategy: S3PublishStrategy,
     /// Private directory for quarantine spill files (mode 0700 on Unix).
     spill_root: PathBuf,
     read_counters: Arc<S3ReadCounters>,
@@ -181,9 +204,11 @@ impl S3ObjectStore {
             )
         })?;
         let agent = Agent::new();
-        if config.require_conditional_copy {
-            probe_conditional_copy(&agent, &bucket, &bucket_name, &credentials)?;
-        }
+        let publish_strategy = if config.require_safe_publication {
+            probe_publication_strategy(&agent, &bucket, &bucket_name, &credentials)?
+        } else {
+            S3PublishStrategy::ConditionalCopy
+        };
         let spill_root = create_spill_root()?;
         Ok(Self {
             agent,
@@ -191,7 +216,9 @@ impl S3ObjectStore {
             bucket_name,
             credentials,
             uploads: BTreeMap::new(),
+            finished_spills: BTreeMap::new(),
             next_upload: 0,
+            publish_strategy,
             spill_root,
             read_counters: Arc::new(S3ReadCounters::default()),
         })
@@ -207,6 +234,10 @@ impl S3ObjectStore {
                 .load(Ordering::Relaxed),
             bytes_read: self.read_counters.bytes_read.load(Ordering::Relaxed),
         }
+    }
+
+    pub fn publish_strategy(&self) -> S3PublishStrategy {
+        self.publish_strategy
     }
 
     fn head_meta(&self, key: &str) -> Result<(u64, [u8; 32]), ObjectStoreError> {
@@ -251,6 +282,70 @@ impl S3ObjectStore {
         } else {
             self.put_single(key, file, digest_hex, len)
         }
+    }
+
+    /// Reconstruct a verified local spill only when publication resumes after
+    /// the process-local verified spill has been lost. The ordinary
+    /// quarantine→publish path performs no S3 download.
+    fn download_verified_spill(
+        &self,
+        source: &ObjectKey,
+        expected_digest: [u8; 32],
+        expected_len: u64,
+    ) -> Result<FinishedSpill, ObjectStoreError> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(1);
+
+        let name = format!("resume-{:x}.capsule", SEQ.fetch_add(1, Ordering::Relaxed));
+        let (path, mut file) = open_exclusive_spill(&self.spill_root, &name)?;
+        let result = (|| {
+            let mut reader = self.get_reader(source, None)?;
+            let mut hasher = blake3::Hasher::new();
+            let mut written = 0u64;
+            let mut buf = [0u8; 64 * 1024];
+            loop {
+                let read = reader.read(&mut buf).map_err(|e| {
+                    ObjectStoreError::new(ObjectStoreErrorKind::FaultInjected, e.to_string())
+                })?;
+                if read == 0 {
+                    break;
+                }
+                written = written.saturating_add(read as u64);
+                if written > expected_len {
+                    return Err(ObjectStoreError::new(
+                        ObjectStoreErrorKind::PreconditionFailed,
+                        "quarantine body exceeds expected publication length",
+                    ));
+                }
+                hasher.update(&buf[..read]);
+                file.write_all(&buf[..read]).map_err(|e| {
+                    ObjectStoreError::new(ObjectStoreErrorKind::FaultInjected, e.to_string())
+                })?;
+            }
+            if written != expected_len || *hasher.finalize().as_bytes() != expected_digest {
+                return Err(ObjectStoreError::new(
+                    ObjectStoreErrorKind::PreconditionFailed,
+                    "downloaded quarantine evidence does not match publish args",
+                ));
+            }
+            file.flush().map_err(|e| {
+                ObjectStoreError::new(ObjectStoreErrorKind::FaultInjected, e.to_string())
+            })?;
+            file.seek(SeekFrom::Start(0)).map_err(|e| {
+                ObjectStoreError::new(ObjectStoreErrorKind::FaultInjected, e.to_string())
+            })?;
+            Ok(())
+        })();
+        if let Err(error) = result {
+            let _ = fs::remove_file(&path);
+            return Err(error);
+        }
+        Ok(FinishedSpill {
+            path,
+            file,
+            length: expected_len,
+            digest: expected_digest,
+        })
     }
 
     /// Upload from an already-open FD (STL-24): never re-open the verified body by pathname.
@@ -521,8 +616,18 @@ impl ObjectStore for S3ObjectStore {
             &hex,
             entry.expected_len,
         );
-        let _ = std::fs::remove_file(&entry.path);
         put?;
+        self.finished_spills.insert(
+            entry.quarantine.clone(),
+            FinishedSpill {
+                path: entry.path.clone(),
+                file: entry.file.try_clone().map_err(|e| {
+                    ObjectStoreError::new(ObjectStoreErrorKind::FaultInjected, e.to_string())
+                })?,
+                length: entry.expected_len,
+                digest,
+            },
+        );
         Ok(ObjectEvidence {
             key: entry.quarantine.clone(),
             length: entry.expected_len,
@@ -620,9 +725,14 @@ impl ObjectStore for S3ObjectStore {
             ));
         }
 
+        // Publication is the last consumer of the process-local verified spill.
+        // Removing it here guarantees cleanup on idempotent success, conflict,
+        // or a failed publication attempt.
+        let mut staged_spill = self.finished_spills.remove(source);
+
         // Fast path when destination already exists. This is not a substitute for
-        // conditional copy — absent destinations always go through If-None-Match
-        // CopyObject (capability validated at construction; STL-19 / D008).
+        // conditional publication: absent destinations always go through the
+        // capability-selected write-if-absent primitive (STL-19 / D008).
         match self.head_meta(dest.as_str()) {
             Ok((existing_len, existing_digest)) => {
                 if existing_digest == digest && existing_len == len {
@@ -641,22 +751,52 @@ impl ObjectStore for S3ObjectStore {
             Err(e) => return Err(e),
         }
 
-        let result = copy_object_if_none_match(
-            &self.agent,
-            &self.bucket,
-            &self.bucket_name,
-            &self.credentials,
-            source.as_str(),
-            dest.as_str(),
-        );
+        let result = match self.publish_strategy {
+            S3PublishStrategy::ConditionalCopy => copy_object_if_none_match(
+                &self.agent,
+                &self.bucket,
+                &self.bucket_name,
+                &self.credentials,
+                source.as_str(),
+                dest.as_str(),
+            ),
+            S3PublishStrategy::ConditionalPut => {
+                let mut spill = match staged_spill.take() {
+                    Some(spill) if spill.length == len && spill.digest == digest => spill,
+                    Some(_) | None => self.download_verified_spill(source, digest, len)?,
+                };
+                put_object_file_if_none_match(
+                    &self.agent,
+                    &self.bucket,
+                    &self.credentials,
+                    dest.as_str(),
+                    &mut spill.file,
+                    &bytes_to_hex(&digest),
+                    len,
+                )
+            }
+        };
         match result {
-            Ok(()) => Ok(ObjectEvidence {
-                key: dest.clone(),
-                length: len,
-                digest,
-            }),
+            Ok(()) => {
+                // Success is not trusted until the authoritative destination is
+                // HEAD-verified.
+                let (existing_len, existing_digest) = self.head_meta(dest.as_str())?;
+                if existing_digest == digest && existing_len == len {
+                    Ok(ObjectEvidence {
+                        key: dest.clone(),
+                        length: len,
+                        digest,
+                    })
+                } else {
+                    Err(ObjectStoreError::new(
+                        ObjectStoreErrorKind::Conflict,
+                        "final key occupied by different object",
+                    ))
+                }
+            }
             Err(e) if e.kind() == ObjectStoreErrorKind::Conflict => {
-                // Lost a race: another writer landed first under If-None-Match.
+                // A conflict can be an idempotent retry after the first response
+                // was lost, or a concurrent matching writer.
                 let (existing_len, existing_digest) = self.head_meta(dest.as_str())?;
                 if existing_digest == digest && existing_len == len {
                     Ok(ObjectEvidence {
@@ -676,6 +816,7 @@ impl ObjectStore for S3ObjectStore {
     }
 
     fn delete(&mut self, key: &ObjectKey) -> Result<(), ObjectStoreError> {
+        self.finished_spills.remove(key);
         let action = self
             .bucket
             .delete_object(Some(&self.credentials), key.as_str());
@@ -731,6 +872,7 @@ impl ObjectStore for S3ObjectStore {
 impl Drop for S3ObjectStore {
     fn drop(&mut self) {
         self.uploads.clear();
+        self.finished_spills.clear();
         let _ = fs::remove_dir_all(&self.spill_root);
     }
 }
@@ -758,6 +900,99 @@ fn put_object_bytes(
         )
         .map(|_| ())
     })
+}
+
+/// Single-request immutable PutObject. This is the provider-neutral fallback
+/// when server-side CopyObject does not honor destination preconditions.
+fn put_object_file_if_none_match(
+    agent: &Agent,
+    bucket: &Bucket,
+    credentials: &Credentials,
+    key: &str,
+    file: &mut File,
+    digest_hex: &str,
+    len: u64,
+) -> Result<(), ObjectStoreError> {
+    let mut action = bucket.put_object(Some(credentials), key);
+    action.headers_mut().insert(META_HEADER, digest_hex);
+    action.headers_mut().insert("if-none-match", "*");
+    let url = action.sign(SIGN_TTL);
+    with_retry(|| {
+        file.seek(SeekFrom::Start(0)).map_err(|e| {
+            ObjectStoreError::new(ObjectStoreErrorKind::FaultInjected, e.to_string())
+        })?;
+        let clone = file.try_clone().map_err(|e| {
+            ObjectStoreError::new(ObjectStoreErrorKind::FaultInjected, e.to_string())
+        })?;
+        let response = agent
+            .put(url.as_str())
+            .set(META_HEADER, digest_hex)
+            .set("if-none-match", "*")
+            .set("content-length", &len.to_string())
+            .send(clone)
+            .map_err(UreqErr);
+        match response {
+            Ok(response) if (200..300).contains(&response.status()) => Ok(()),
+            Ok(response) if response.status() == 409 || response.status() == 412 => Err(
+                ObjectStoreError::new(ObjectStoreErrorKind::Conflict, "precondition failed"),
+            ),
+            Ok(response) => Err(http_status_err(response)),
+            Err(UreqErr(ureq::Error::Status(code, _))) if code == 409 || code == 412 => Err(
+                ObjectStoreError::new(ObjectStoreErrorKind::Conflict, "precondition failed"),
+            ),
+            Err(error) => map_ureq(Err(error)),
+        }
+    })
+}
+
+fn put_object_bytes_if_none_match(
+    agent: &Agent,
+    bucket: &Bucket,
+    credentials: &Credentials,
+    key: &str,
+    body: &[u8],
+    digest_hex: &str,
+) -> Result<(), ObjectStoreError> {
+    let mut action = bucket.put_object(Some(credentials), key);
+    action.headers_mut().insert(META_HEADER, digest_hex);
+    action.headers_mut().insert("if-none-match", "*");
+    let url = action.sign(SIGN_TTL);
+    let response = agent
+        .put(url.as_str())
+        .set(META_HEADER, digest_hex)
+        .set("if-none-match", "*")
+        .set("content-length", &body.len().to_string())
+        .send(body)
+        .map_err(UreqErr);
+    match response {
+        Ok(response) if (200..300).contains(&response.status()) => Ok(()),
+        Ok(response) if response.status() == 409 || response.status() == 412 => Err(
+            ObjectStoreError::new(ObjectStoreErrorKind::Conflict, "precondition failed"),
+        ),
+        Ok(response) => Err(http_status_err(response)),
+        Err(UreqErr(ureq::Error::Status(code, _))) if code == 409 || code == 412 => Err(
+            ObjectStoreError::new(ObjectStoreErrorKind::Conflict, "precondition failed"),
+        ),
+        Err(error) => map_ureq(Err(error)),
+    }
+}
+
+fn get_object_bytes(
+    agent: &Agent,
+    bucket: &Bucket,
+    credentials: &Credentials,
+    key: &str,
+) -> Result<Vec<u8>, ObjectStoreError> {
+    let action = bucket.get_object(Some(credentials), key);
+    let url = action.sign(SIGN_TTL);
+    let response = map_ureq(agent.get(url.as_str()).call().map_err(UreqErr))?;
+    let mut body = Vec::new();
+    response
+        .into_reader()
+        .take(1024)
+        .read_to_end(&mut body)
+        .map_err(|e| ObjectStoreError::new(ObjectStoreErrorKind::FaultInjected, e.to_string()))?;
+    Ok(body)
 }
 
 fn delete_object_key(
@@ -814,40 +1049,111 @@ fn copy_object_if_none_match(
     })
 }
 
-/// Reject endpoints that ignore `If-None-Match` on CopyObject (STL-19).
-///
-/// Probe: PUT src + dest, then CopyObject src→dest with `If-None-Match: *`.
-/// A conforming server must return 412/409 because dest already exists.
-fn probe_conditional_copy(
+/// Select an independently verified immutable-publication primitive (STL-19).
+/// Conditional CopyObject is preferred because it stays within the provider.
+/// Conditional PutObject is the safe fallback for S3-compatible endpoints such
+/// as DigitalOcean Spaces that do not condition destination CopyObject.
+fn probe_publication_strategy(
     agent: &Agent,
     bucket: &Bucket,
     bucket_name: &str,
     credentials: &Credentials,
-) -> Result<(), ObjectStoreError> {
+) -> Result<S3PublishStrategy, ObjectStoreError> {
     let token = random_spill_token(0);
     let src = format!(".gump-cap-probe/{token}/src");
     let dst = format!(".gump-cap-probe/{token}/dst");
-    let body = b"gump-conditional-copy-probe-v1";
-    let digest_hex = bytes_to_hex(blake3::hash(body).as_bytes());
+    let put_dst = format!(".gump-cap-probe/{token}/put-dst");
+    let source_body = b"gump-publication-source-v2";
+    let occupied_body = b"gump-publication-occupied-v2";
+    let source_digest = bytes_to_hex(blake3::hash(source_body).as_bytes());
+    let occupied_digest = bytes_to_hex(blake3::hash(occupied_body).as_bytes());
 
     let outcome = (|| {
-        put_object_bytes(agent, bucket, credentials, &src, body, &digest_hex)?;
-        put_object_bytes(agent, bucket, credentials, &dst, body, &digest_hex)?;
-        match copy_object_if_none_match(agent, bucket, bucket_name, credentials, &src, &dst) {
-            Err(e) if e.kind() == ObjectStoreErrorKind::Conflict => Ok(()),
-            Ok(()) => Err(ObjectStoreError::new(
-                ObjectStoreErrorKind::InvalidArgument,
-                "S3 endpoint ignores If-None-Match on CopyObject; conditional promote is unsafe (D008/STL-19)",
-            )),
-            Err(e) => Err(ObjectStoreError::new(
-                ObjectStoreErrorKind::InvalidArgument,
-                format!("S3 conditional-copy capability probe failed: {e}"),
-            )),
+        put_object_bytes(
+            agent,
+            bucket,
+            credentials,
+            &src,
+            source_body,
+            &source_digest,
+        )?;
+        put_object_bytes(
+            agent,
+            bucket,
+            credentials,
+            &dst,
+            occupied_body,
+            &occupied_digest,
+        )?;
+
+        if let Err(error) =
+            copy_object_if_none_match(agent, bucket, bucket_name, credentials, &src, &dst)
+        {
+            if error.kind() == ObjectStoreErrorKind::Conflict
+                && get_object_bytes(agent, bucket, credentials, &dst)? == occupied_body
+            {
+                return Ok(S3PublishStrategy::ConditionalCopy);
+            }
         }
+
+        // CopyObject was unsupported or ignored its destination condition. A
+        // conditioned PutObject is safe only if an occupied key is unchanged.
+        put_object_bytes(
+            agent,
+            bucket,
+            credentials,
+            &put_dst,
+            occupied_body,
+            &occupied_digest,
+        )?;
+        match put_object_bytes_if_none_match(
+            agent,
+            bucket,
+            credentials,
+            &put_dst,
+            source_body,
+            &source_digest,
+        ) {
+            Err(error)
+                if error.kind() == ObjectStoreErrorKind::Conflict
+                    && get_object_bytes(agent, bucket, credentials, &put_dst)? == occupied_body => {
+            }
+            Ok(()) => {
+                return Err(ObjectStoreError::new(
+                    ObjectStoreErrorKind::InvalidArgument,
+                    "S3 endpoint ignores If-None-Match on CopyObject and PutObject; immutable publication is unsafe (D008/STL-19)",
+                ));
+            }
+            Err(error) => {
+                return Err(ObjectStoreError::new(
+                    ObjectStoreErrorKind::InvalidArgument,
+                    format!("S3 conditional publication capability probe failed: {error}"),
+                ));
+            }
+        }
+
+        // Also prove the conditional PutObject absent-key success path.
+        let _ = delete_object_key(agent, bucket, credentials, &put_dst);
+        put_object_bytes_if_none_match(
+            agent,
+            bucket,
+            credentials,
+            &put_dst,
+            source_body,
+            &source_digest,
+        )?;
+        if get_object_bytes(agent, bucket, credentials, &put_dst)? != source_body {
+            return Err(ObjectStoreError::new(
+                ObjectStoreErrorKind::InvalidArgument,
+                "S3 conditional PutObject probe did not preserve submitted bytes (D008/STL-19)",
+            ));
+        }
+        Ok(S3PublishStrategy::ConditionalPut)
     })();
 
     let _ = delete_object_key(agent, bucket, credentials, &src);
     let _ = delete_object_key(agent, bucket, credentials, &dst);
+    let _ = delete_object_key(agent, bucket, credentials, &put_dst);
     outcome
 }
 
@@ -1243,7 +1549,7 @@ mod stl13_tests {
             secret,
         );
         // Offline Debug/spill tests must not contact an endpoint (STL-19 probe).
-        cfg.require_conditional_copy = false;
+        cfg.require_safe_publication = false;
         cfg
     }
 
@@ -1411,6 +1717,7 @@ mod stl24_tests {
 #[cfg(test)]
 mod stl19_tests {
     use super::*;
+    use std::collections::BTreeMap;
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::sync::Arc;
@@ -1432,7 +1739,7 @@ mod stl19_tests {
         0
     }
 
-    fn read_request(stream: &mut impl Read) -> Option<String> {
+    fn read_request(stream: &mut impl Read) -> Option<(String, Vec<u8>)> {
         let mut data = Vec::new();
         let mut chunk = [0u8; 2048];
         loop {
@@ -1454,7 +1761,7 @@ mod stl19_tests {
                     data.extend_from_slice(&chunk[..n]);
                     remaining = remaining.saturating_sub(n);
                 }
-                return Some(headers);
+                return Some((headers, data[end..end + need].to_vec()));
             }
             if data.len() > 64 * 1024 {
                 return None;
@@ -1463,19 +1770,75 @@ mod stl19_tests {
         None
     }
 
-    fn respond(stream: &mut impl Write, status_line: &str) {
-        let body = format!("{status_line}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
-        let _ = stream.write_all(body.as_bytes());
+    fn respond(stream: &mut impl Write, status_line: &str, body: &[u8]) {
+        respond_with_headers(stream, status_line, &[], body);
+    }
+
+    fn respond_with_headers(
+        stream: &mut impl Write,
+        status_line: &str,
+        extra_headers: &[(&str, String)],
+        body: &[u8],
+    ) {
+        let mut rendered_extra = String::new();
+        for (name, value) in extra_headers {
+            rendered_extra.push_str(name);
+            rendered_extra.push_str(": ");
+            rendered_extra.push_str(value);
+            rendered_extra.push_str("\r\n");
+        }
+        let headers = format!(
+            "{status_line}\r\nContent-Length: {}\r\n{}Connection: close\r\n\r\n",
+            body.len(),
+            rendered_extra,
+        );
+        let _ = stream.write_all(headers.as_bytes());
+        let _ = stream.write_all(body);
         let _ = stream.flush();
     }
 
-    /// Minimal path-style S3 stub: PUTs succeed; CopyObject honors or ignores If-None-Match.
-    fn spawn_mock(honor_if_none_match: bool) -> (String, Arc<AtomicBool>, thread::JoinHandle<()>) {
+    fn request_key(headers: &str) -> String {
+        let target = headers
+            .lines()
+            .next()
+            .and_then(|line| line.split_whitespace().nth(1))
+            .unwrap();
+        target
+            .split('?')
+            .next()
+            .unwrap()
+            .trim_start_matches("/gump/")
+            .to_string()
+    }
+
+    fn copy_source(headers: &str) -> Option<String> {
+        headers.lines().find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("x-amz-copy-source")
+                .then(|| value.trim().trim_start_matches("/gump/").to_string())
+        })
+    }
+
+    fn header_value(headers: &str, wanted: &str) -> Option<String> {
+        headers.lines().find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case(wanted)
+                .then(|| value.trim().to_string())
+        })
+    }
+
+    /// Minimal stateful path-style S3 stub with independently selectable
+    /// CopyObject and PutObject destination preconditions.
+    fn spawn_mock(
+        honor_copy: bool,
+        honor_put: bool,
+    ) -> (String, Arc<AtomicBool>, thread::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let done = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&done);
         let handle = thread::spawn(move || {
+            let mut objects = BTreeMap::<String, (Vec<u8>, String)>::new();
             listener.set_nonblocking(true).ok();
             let deadline = std::time::Instant::now() + Duration::from_secs(10);
             while !flag.load(Ordering::Relaxed) && std::time::Instant::now() < deadline {
@@ -1483,22 +1846,51 @@ mod stl19_tests {
                     Ok((mut stream, _)) => {
                         stream.set_read_timeout(Some(Duration::from_secs(2))).ok();
                         stream.set_write_timeout(Some(Duration::from_secs(2))).ok();
-                        let Some(req) = read_request(&mut stream) else {
+                        let Some((headers, body)) = read_request(&mut stream) else {
                             continue;
                         };
-                        let lower = req.to_ascii_lowercase();
+                        let lower = headers.to_ascii_lowercase();
                         let is_copy = lower.contains("x-amz-copy-source");
                         let has_inm = lower.contains("if-none-match");
-                        if req.starts_with("DELETE") {
-                            respond(&mut stream, "HTTP/1.1 204 No Content");
-                        } else if is_copy && has_inm {
-                            if honor_if_none_match {
-                                respond(&mut stream, "HTTP/1.1 412 Precondition Failed");
+                        let key = request_key(&headers);
+                        if headers.starts_with("DELETE") {
+                            objects.remove(&key);
+                            respond(&mut stream, "HTTP/1.1 204 No Content", b"");
+                        } else if headers.starts_with("GET") {
+                            match objects.get(&key) {
+                                Some((body, _)) => respond(&mut stream, "HTTP/1.1 200 OK", body),
+                                None => respond(&mut stream, "HTTP/1.1 404 Not Found", b""),
+                            }
+                        } else if headers.starts_with("HEAD") {
+                            match objects.get(&key) {
+                                Some((body, digest)) => respond_with_headers(
+                                    &mut stream,
+                                    "HTTP/1.1 200 OK",
+                                    &[(META_HEADER, digest.clone())],
+                                    &vec![0; body.len()],
+                                ),
+                                None => respond(&mut stream, "HTTP/1.1 404 Not Found", b""),
+                            }
+                        } else if headers.starts_with("PUT") && is_copy {
+                            if has_inm && honor_copy && objects.contains_key(&key) {
+                                respond(&mut stream, "HTTP/1.1 412 Precondition Failed", b"");
                             } else {
-                                respond(&mut stream, "HTTP/1.1 200 OK");
+                                let source = copy_source(&headers).unwrap();
+                                let copied = objects.get(&source).cloned().unwrap_or_default();
+                                objects.insert(key, copied);
+                                respond(&mut stream, "HTTP/1.1 200 OK", b"");
+                            }
+                        } else if headers.starts_with("PUT") {
+                            if has_inm && honor_put && objects.contains_key(&key) {
+                                respond(&mut stream, "HTTP/1.1 412 Precondition Failed", b"");
+                            } else {
+                                let digest =
+                                    header_value(&headers, META_HEADER).unwrap_or_default();
+                                objects.insert(key, (body, digest));
+                                respond(&mut stream, "HTTP/1.1 200 OK", b"");
                             }
                         } else {
-                            respond(&mut stream, "HTTP/1.1 200 OK");
+                            respond(&mut stream, "HTTP/1.1 400 Bad Request", b"");
                         }
                     }
                     Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -1521,9 +1913,22 @@ mod stl19_tests {
         )
     }
 
+    fn test_ids(seed: u8) -> (ClusterId, CapsuleId) {
+        let mut cluster = [seed; 16];
+        cluster[6] = (cluster[6] & 0x0f) | 0x70;
+        cluster[8] = (cluster[8] & 0x3f) | 0x80;
+        let mut capsule = [seed.wrapping_add(1); 16];
+        capsule[6] = (capsule[6] & 0x0f) | 0x70;
+        capsule[8] = (capsule[8] & 0x3f) | 0x80;
+        (
+            ClusterId::from_bytes(cluster).unwrap(),
+            CapsuleId::from_bytes(capsule).unwrap(),
+        )
+    }
+
     #[test]
-    fn capability_probe_rejects_server_ignoring_if_none_match() {
-        let (endpoint, done, handle) = spawn_mock(false);
+    fn capability_probe_rejects_server_ignoring_both_preconditions() {
+        let (endpoint, done, handle) = spawn_mock(false, false);
         let err = S3ObjectStore::new(cfg_for(&endpoint)).unwrap_err();
         done.store(true, Ordering::Relaxed);
         let _ = handle.join();
@@ -1536,9 +1941,82 @@ mod stl19_tests {
     }
 
     #[test]
-    fn capability_probe_accepts_server_honoring_if_none_match() {
-        let (endpoint, done, handle) = spawn_mock(true);
+    fn capability_probe_prefers_conditional_copy() {
+        let (endpoint, done, handle) = spawn_mock(true, true);
         let store = S3ObjectStore::new(cfg_for(&endpoint)).expect("probe should pass");
+        assert_eq!(store.publish_strategy(), S3PublishStrategy::ConditionalCopy);
+        drop(store);
+        done.store(true, Ordering::Relaxed);
+        let _ = handle.join();
+    }
+
+    #[test]
+    fn capability_probe_falls_back_to_conditional_put() {
+        let (endpoint, done, handle) = spawn_mock(false, true);
+        let store = S3ObjectStore::new(cfg_for(&endpoint)).expect("probe should pass");
+        assert_eq!(store.publish_strategy(), S3PublishStrategy::ConditionalPut);
+        drop(store);
+        done.store(true, Ordering::Relaxed);
+        let _ = handle.join();
+    }
+
+    #[test]
+    fn conditional_put_publication_is_immutable_and_verified() {
+        let (endpoint, done, handle) = spawn_mock(false, true);
+        let mut store = S3ObjectStore::new(cfg_for(&endpoint)).expect("probe should pass");
+        assert_eq!(store.publish_strategy(), S3PublishStrategy::ConditionalPut);
+
+        let (cluster, capsule) = test_ids(0x41);
+        let body = b"verified-sealed-capsule";
+        let digest = *blake3::hash(body).as_bytes();
+        let upload = store
+            .begin_quarantine(cluster, capsule, body.len() as u64)
+            .unwrap();
+        store.write(upload, body).unwrap();
+        let quarantine = store.finish_quarantine(upload, digest).unwrap();
+        let final_key = crate::object::keys::final_capsule_key(cluster, capsule).unwrap();
+        let published = store
+            .publish_if_absent(&quarantine.key, &final_key, digest, body.len() as u64)
+            .unwrap();
+        assert_eq!(published.digest, digest);
+        assert_eq!(store.head(&final_key).unwrap(), published);
+        assert_eq!(store.read_stats().full_get_requests, 0);
+
+        // A repeated publication of the same identity is idempotent.
+        assert_eq!(
+            store
+                .publish_if_absent(&quarantine.key, &final_key, digest, body.len() as u64)
+                .unwrap(),
+            published
+        );
+
+        drop(store);
+        done.store(true, Ordering::Relaxed);
+        let _ = handle.join();
+    }
+
+    #[test]
+    fn conditional_put_resume_reconstructs_and_reverifies_spill() {
+        let (endpoint, done, handle) = spawn_mock(false, true);
+        let mut store = S3ObjectStore::new(cfg_for(&endpoint)).expect("probe should pass");
+        let (cluster, capsule) = test_ids(0x51);
+        let body = b"sealed-capsule-after-process-loss";
+        let digest = *blake3::hash(body).as_bytes();
+        let upload = store
+            .begin_quarantine(cluster, capsule, body.len() as u64)
+            .unwrap();
+        store.write(upload, body).unwrap();
+        let quarantine = store.finish_quarantine(upload, digest).unwrap();
+
+        // Model a new process: only the remote quarantine object survives.
+        store.finished_spills.clear();
+        let final_key = crate::object::keys::final_capsule_key(cluster, capsule).unwrap();
+        store
+            .publish_if_absent(&quarantine.key, &final_key, digest, body.len() as u64)
+            .unwrap();
+        assert_eq!(store.head(&final_key).unwrap().digest, digest);
+        assert_eq!(store.read_stats().full_get_requests, 1);
+
         drop(store);
         done.store(true, Ordering::Relaxed);
         let _ = handle.join();

@@ -769,7 +769,7 @@ fn build_object_store(
         ))),
         session_token: s3.session_token.take().map(gump_types::Secret::new),
         force_path_style: s3.force_path_style,
-        require_conditional_copy: true,
+        require_safe_publication: true,
     })
     .map_err(|e| format!("initialize S3 Capsule store: {e}"))?;
     Ok(Some(RuntimeObjectStore::S3(store)))

@@ -131,6 +131,12 @@ runtime, deployment, or operational dependency on Kismet.
   `clusters/<cluster-id>/capsules/<capsule-id>.capsule`.
 - Final publication MUST be write-if-absent. A pre-existing object is accepted
   only if length and BLAKE3 digest exactly match.
+- The S3 connector probes immutable-publication capabilities independently. It
+  prefers destination-conditioned `CopyObject`; when that is unavailable it
+  uses `PutObject` with `If-None-Match: *` over the already verified local spill.
+  The final object is HEAD-verified after either success or conflict. Providers
+  supporting neither safe primitive are rejected; there are no provider-name
+  exceptions or unsafe overrides.
 - Quarantine objects are sealed Capsule bytes and are non-authoritative. They
   are deleted after successful promotion or by bounded age cleanup.
 - v1 supports Capsules up to 5 GiB through conditional single-object PUT. The
