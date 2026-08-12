@@ -6,11 +6,13 @@
 //! The `gump` binary in this crate is the process entry point (docs/v1/README.md §5).
 
 pub mod accept;
+pub mod bootstrap;
 pub mod compose;
 pub mod custody;
 pub mod deploy_txn;
 pub mod framing;
 pub mod machine;
+pub mod management_bootstrap;
 pub mod peer;
 pub mod recovery_txn;
 mod ringtail_relay;

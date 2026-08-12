@@ -23,5 +23,14 @@ getrandom = { workspace = true }
 tempfile = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+base64 = "0.22"
+rcgen = { workspace = true }
+rustls = { workspace = true }
+rustls-pki-types = { workspace = true }
+sha2 = "0.11"
+time = { workspace = true }
+url = "2.5"
+x509-parser = { workspace = true }
+zeroize = { workspace = true }
 
 [dev-dependencies]

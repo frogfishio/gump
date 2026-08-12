@@ -69,10 +69,13 @@ package_root="$work_dir/gump"
 install -d "$package_root/DEBIAN"
 install -d "$package_root/usr/bin"
 install -d "$package_root/usr/share/doc/gump"
+install -d "$package_root/usr/share/gump/systemd"
 install -m 0755 "$binary" "$package_root/usr/bin/gump"
 install -m 0644 "$repo_root/LICENSE" "$package_root/usr/share/doc/gump/LICENSE"
 install -m 0644 "$repo_root/NOTICE" "$package_root/usr/share/doc/gump/NOTICE"
 install -m 0644 "$script_dir/README.Debian" "$package_root/usr/share/doc/gump/README.Debian"
+install -m 0644 "$repo_root/packaging/systemd/gump-bootstrap.service" \
+    "$package_root/usr/share/gump/systemd/gump-bootstrap.service"
 cat >"$package_root/usr/share/doc/gump/copyright" <<'EOF'
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: Gump

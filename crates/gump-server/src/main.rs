@@ -13,19 +13,23 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use base64::Engine as _;
 use gump_cli::{print_help, try_dispatch_cli};
 use gump_connectors::{FakeObjectStore, RuntimeObjectStore, S3Config, S3ObjectStore};
 use gump_crypto::{SignerEnrollment, SignerTrustPolicy, VerifyingKeyBytes};
 use gump_memory::{ClusterJoinConfig, ClusterNetworkConfig};
 use gump_server::accept::{AcceptStats, run_accept_loop};
+use gump_server::bootstrap::{BootstrapEndpoint, empty_initialization_result};
 use gump_server::compose::{InitOptions, ProductRuntime};
 use gump_server::harden_daemon_startup;
+use gump_server::management_bootstrap::{ManagementAuthority, ManagementBootstrapEndpoint};
 use gump_server::roles::RoleSet;
 use gump_transport::IdentityMaterial;
 use gump_types::ClusterId;
 use gump_types::{NodeId, Secret};
 use serde::Deserialize;
 use serde::Serialize;
+use zeroize::Zeroize as _;
 
 /// Process-wide cancel for SIGINT/SIGTERM (async-signal-safe store).
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
@@ -180,14 +184,224 @@ fn hex_encode(bytes: &[u8]) -> String {
 }
 
 fn run_server(args: &[String]) -> Result<ExitCode, String> {
-    let cfg = parse_server_args(args)?;
+    let mut cfg = parse_server_args(args)?;
 
     // SECURITY §8 / STL-20: harden before any service work.
     let harden = harden_daemon_startup().map_err(|e| e.to_string())?;
     eprintln!("gump: process harden: {harden}");
 
+    if cfg.mode == ServerMode::Bootstrap {
+        return run_bootstrap_server(cfg);
+    }
+
+    let params = read_server_params(cfg.params_fd.take())?;
+    run_configured_server(cfg, params, None)
+}
+
+#[derive(Debug)]
+struct ConfiguredReady {
+    cluster_id: String,
+    node_id: String,
+}
+
+fn run_bootstrap_server(mut cfg: ServerConfig) -> Result<ExitCode, String> {
+    let bind = cfg
+        .bootstrap_bind
+        .take()
+        .ok_or("bootstrap mode requires --bootstrap-bind")?;
+    let advertised = cfg
+        .advertise_bootstrap
+        .take()
+        .ok_or("bootstrap mode requires --advertise-bootstrap")?;
+    let management_bind = cfg
+        .management_bind
+        .take()
+        .ok_or("bootstrap mode requires --management-bind")?;
+    let management_endpoint = cfg
+        .advertise_management
+        .take()
+        .ok_or("bootstrap mode requires --advertise-management")?;
+    let endpoint = BootstrapEndpoint::bind(
+        &bind,
+        advertised,
+        &cfg.runtime_directory,
+        time::OffsetDateTime::now_utc(),
+        cfg.require_tmpfs,
+    )?;
+    let activation_incarnation = endpoint.activation()?.incarnation.clone();
+    eprintln!(
+        "gump: bootstrap endpoint listening on {}",
+        endpoint.local_address()?
+    );
+    let (claim_tx, claim_rx) = std::sync::mpsc::sync_channel(1);
+    let result = empty_initialization_result();
+    let endpoint_result = Arc::clone(&result);
+    let endpoint_thread = std::thread::Builder::new()
+        .name("gump-bootstrap".into())
+        .spawn(move || endpoint.serve(claim_tx, endpoint_result))
+        .map_err(|e| format!("start bootstrap endpoint: {e}"))?;
+    let mut request = claim_rx
+        .recv()
+        .map_err(|_| "bootstrap endpoint stopped before initialization")?;
+    let node_id = match request
+        .server_parameters
+        .get("cluster_transport")
+        .and_then(|transport| transport.get("certificate_der_hex"))
+        .and_then(serde_json::Value::as_str)
+        .and_then(node_id_from_certificate_hex)
+    {
+        Some(node_id) => node_id,
+        None => {
+            return reject_bootstrap_claim(
+                &result,
+                endpoint_thread,
+                "bootstrap initialization requires valid cluster_transport identity material"
+                    .into(),
+            );
+        }
+    };
+    let params: ServerParams =
+        match serde_json::from_value(std::mem::take(&mut request.server_parameters)) {
+            Ok(parameters) => parameters,
+            Err(error) => {
+                return reject_bootstrap_claim(
+                    &result,
+                    endpoint_thread,
+                    format!("invalid bootstrap server parameters: {error}"),
+                );
+            }
+        };
+    cfg.mode = ServerMode::Init;
+    cfg.params_fd = None;
+    let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
+    let runtime_thread = std::thread::Builder::new()
+        .name("gump-runtime".into())
+        .spawn(move || run_configured_server(cfg, Some(params), Some((ready_tx, node_id))))
+        .map_err(|e| format!("start initialized runtime: {e}"))?;
+    let ready = match ready_rx.recv() {
+        Ok(ready) => ready,
+        Err(_) => {
+            let failure = runtime_thread
+                .join()
+                .map_err(|_| "initialized runtime panicked")?
+                .err()
+                .unwrap_or_else(|| "initialized runtime exited before readiness".into());
+            set_initialization_result(&result, Err(failure))?;
+            endpoint_thread
+                .join()
+                .map_err(|_| "bootstrap endpoint panicked")??;
+            return Ok(ExitCode::from(1));
+        }
+    };
+    let management_authority = ManagementAuthority::generate()?;
+    let management_client_certificate =
+        management_authority.issue_client(&request.management_client_csr_der_base64)?;
+    request.activation_code.zeroize();
+    let management_server = ManagementBootstrapEndpoint::bind(
+        &management_bind,
+        &management_authority,
+        request.session_id.clone(),
+        Arc::clone(&result),
+        ready.cluster_id.clone(),
+        ready.node_id.clone(),
+    )?;
+    std::thread::Builder::new()
+        .name("gump-management".into())
+        .spawn(move || {
+            if let Err(error) = management_server.serve() {
+                eprintln!("gump: management endpoint stopped: {error}");
+            }
+        })
+        .map_err(|e| format!("start management endpoint: {e}"))?;
+    let committed = gump_protocol::bootstrap::BootstrapResult {
+        schema: gump_protocol::bootstrap::RESULT_SCHEMA.into(),
+        status: "committed".into(),
+        cluster_identity: ready.cluster_id,
+        node_identity: ready.node_id,
+        session_id: request.session_id.clone(),
+        committed_incarnation: activation_incarnation,
+        management_endpoint,
+        management_client_identity_ref: request.management_client_identity_ref.clone(),
+        management_ca_certificate_der_base64: base64::engine::general_purpose::STANDARD
+            .encode(management_authority.ca_der()),
+        management_client_certificate_der_base64: base64::engine::general_purpose::STANDARD
+            .encode(management_client_certificate),
+        management_mtls_verified: false,
+        node_admitted: true,
+        activation_consumed: false,
+        bootstrap_closed: false,
+    };
+    set_initialization_result(&result, Ok(committed))?;
+    endpoint_thread
+        .join()
+        .map_err(|_| "bootstrap endpoint panicked")??;
+    runtime_thread
+        .join()
+        .map_err(|_| "initialized runtime panicked")?
+}
+
+fn set_initialization_result(
+    shared: &gump_server::bootstrap::InitializationResult,
+    value: Result<gump_protocol::bootstrap::BootstrapResult, String>,
+) -> Result<(), String> {
+    let (lock, ready) = &**shared;
+    let mut slot = lock.lock().map_err(|_| "bootstrap result poisoned")?;
+    *slot = Some(value);
+    ready.notify_all();
+    Ok(())
+}
+
+fn reject_bootstrap_claim(
+    result: &gump_server::bootstrap::InitializationResult,
+    endpoint: std::thread::JoinHandle<Result<(), String>>,
+    message: String,
+) -> Result<ExitCode, String> {
+    set_initialization_result(result, Err(message.clone()))?;
+    endpoint
+        .join()
+        .map_err(|_| "bootstrap endpoint panicked")??;
+    Err(message)
+}
+
+fn node_id_from_certificate_hex(hex: &str) -> Option<String> {
+    use x509_parser::extensions::{GeneralName, ParsedExtension};
+    use x509_parser::prelude::FromDer as _;
+
+    let bytes = parse_hex_vec(hex, "cluster certificate", 1024 * 1024).ok()?;
+    let (_, certificate) = x509_parser::certificate::X509Certificate::from_der(&bytes).ok()?;
+    let sans = certificate.extensions().iter().find_map(|extension| {
+        match extension.parsed_extension() {
+            ParsedExtension::SubjectAlternativeName(names) => Some(names),
+            _ => None,
+        }
+    })?;
+    sans.general_names.iter().find_map(|name| match name {
+        GeneralName::DNSName(value) => value
+            .strip_prefix("gump.node.")
+            .and_then(|value| value.parse::<NodeId>().ok())
+            .map(|node| node.to_hyphenated()),
+        _ => None,
+    })
+}
+
+fn run_configured_server(
+    cfg: ServerConfig,
+    mut params: Option<ServerParams>,
+    ready: Option<(std::sync::mpsc::SyncSender<ConfiguredReady>, String)>,
+) -> Result<ExitCode, String> {
     let uid = unsafe { libc::geteuid() } as u32;
-    let mut params = read_server_params(cfg.params_fd)?;
+    let bootstrap_initialization = ready.is_some();
+    let recovery = params.as_mut().and_then(|parameters| {
+        parameters.recovery_secret_hex.take().map(|secret| {
+            (
+                secret,
+                parameters
+                    .recovery_key_id
+                    .take()
+                    .unwrap_or_else(|| "cluster-software-1".into()),
+            )
+        })
+    });
     let configured_cluster_id = params
         .as_ref()
         .and_then(|p| p.cluster_id.as_deref())
@@ -217,6 +431,30 @@ fn run_server(args: &[String]) -> Result<ExitCode, String> {
         cfg.state_root.clone(),
         cluster_network,
     )?;
+    if let Some((mut recovery_secret_hex, key_id)) = recovery {
+        let parsed = parse_hex_vec(&recovery_secret_hex, "recovery secret", 32);
+        recovery_secret_hex.zeroize();
+        let mut bytes = parsed?;
+        let mut secret_bytes: [u8; 32] = bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| "recovery secret must be exactly 32 bytes")?;
+        bytes.zeroize();
+        let recovery_secret = gump_crypto::RecoverySecret::from_bytes(secret_bytes);
+        secret_bytes.zeroize();
+        let custody = runtime
+            .local_api
+            .custody
+            .as_ref()
+            .ok_or("recovery secret supplied but custody role is disabled")?;
+        custody
+            .lock()
+            .map_err(|_| "custody lock poisoned")?
+            .activate_software_1of1(&recovery_secret, key_id)
+            .map_err(|e| format!("activate bootstrap custody: {e}"))?;
+    } else if bootstrap_initialization && runtime.local_api.custody.is_some() {
+        return Err("bootstrap initialization requires recovery_secret_hex".into());
+    }
     eprintln!("gump: {}", runtime.status_line());
 
     if let Some(parent) = cfg.socket.parent() {
@@ -226,6 +464,15 @@ fn run_server(args: &[String]) -> Result<ExitCode, String> {
 
     let listener = UnixListener::bind(&cfg.socket).map_err(|e| e.to_string())?;
     eprintln!("gump: listening on {}", cfg.socket.display());
+
+    if let Some((sender, node_id)) = ready {
+        sender
+            .send(ConfiguredReady {
+                cluster_id: runtime.cluster_id.to_hyphenated(),
+                node_id,
+            })
+            .map_err(|_| "bootstrap initializer stopped before runtime readiness")?;
+    }
 
     install_signal_handlers();
 
@@ -273,18 +520,34 @@ fn run_server(args: &[String]) -> Result<ExitCode, String> {
 }
 
 struct ServerConfig {
+    mode: ServerMode,
     socket: PathBuf,
     roles: RoleSet,
     memory_object_store: bool,
     params_fd: Option<i32>,
     state_root: PathBuf,
     join_seed: Option<std::net::SocketAddr>,
+    bootstrap_bind: Option<String>,
+    advertise_bootstrap: Option<String>,
+    runtime_directory: PathBuf,
+    require_tmpfs: bool,
+    management_bind: Option<String>,
+    advertise_management: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ServerMode {
+    Init,
+    Join,
+    Bootstrap,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ServerParams {
     cluster_id: Option<String>,
+    recovery_secret_hex: Option<String>,
+    recovery_key_id: Option<String>,
     s3: Option<S3Params>,
     #[serde(default)]
     release_signers: Vec<ReleaseSignerParams>,
@@ -340,22 +603,64 @@ const fn yes() -> bool {
 
 fn parse_server_args(args: &[String]) -> Result<ServerConfig, String> {
     let mut init = false;
+    let mut bootstrap = false;
     let mut socket = PathBuf::from("/tmp/gump.sock");
     let mut roles = RoleSet::default_init();
     let mut memory_object_store = false;
     let mut params_fd = None;
     let mut state_root = PathBuf::from("/var/lib/gump");
     let mut join_seed = None;
+    let mut bootstrap_bind = None;
+    let mut advertise_bootstrap = None;
+    let mut runtime_directory = PathBuf::from("/run/gump");
+    let mut require_tmpfs = true;
+    let mut management_bind = None;
+    let mut advertise_management = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--init" => init = true,
+            "--bootstrap" => bootstrap = true,
             "--join" => {
                 i += 1;
                 let seed = args.get(i).ok_or("--join needs seed host:port")?;
                 join_seed = Some(seed.parse().map_err(|_| "--join must be an IP:port")?);
             }
             "--memory-object-store" => memory_object_store = true,
+            "--bootstrap-bind" => {
+                i += 1;
+                bootstrap_bind = Some(args.get(i).ok_or("--bootstrap-bind needs IP:port")?.clone());
+            }
+            "--advertise-bootstrap" => {
+                i += 1;
+                advertise_bootstrap = Some(
+                    args.get(i)
+                        .ok_or("--advertise-bootstrap needs an https origin")?
+                        .clone(),
+                );
+            }
+            "--management-bind" => {
+                i += 1;
+                management_bind = Some(
+                    args.get(i)
+                        .ok_or("--management-bind needs IP:port")?
+                        .clone(),
+                );
+            }
+            "--advertise-management" => {
+                i += 1;
+                advertise_management = Some(
+                    args.get(i)
+                        .ok_or("--advertise-management needs an https origin")?
+                        .clone(),
+                );
+            }
+            "--runtime-directory" => {
+                i += 1;
+                runtime_directory =
+                    PathBuf::from(args.get(i).ok_or("--runtime-directory needs a path")?);
+            }
+            "--allow-non-tmpfs-for-test" => require_tmpfs = false,
             "--params-fd" => {
                 i += 1;
                 let raw = args.get(i).ok_or("--params-fd needs a descriptor")?;
@@ -386,19 +691,41 @@ fn parse_server_args(args: &[String]) -> Result<ServerConfig, String> {
         }
         i += 1;
     }
-    if init == join_seed.is_some() {
-        return Err("gump server requires exactly one of --init or --join <seed>".into());
+    let selected = usize::from(init) + usize::from(join_seed.is_some()) + usize::from(bootstrap);
+    if selected != 1 {
+        return Err(
+            "gump server requires exactly one of --init, --join <seed>, or --bootstrap".into(),
+        );
+    }
+    let mode = if bootstrap {
+        ServerMode::Bootstrap
+    } else if init {
+        ServerMode::Init
+    } else {
+        ServerMode::Join
+    };
+    if mode == ServerMode::Bootstrap && params_fd.is_some() {
+        return Err(
+            "bootstrap mode receives initialization only through its pinned endpoint".into(),
+        );
     }
     if memory_object_store && params_fd.is_some() {
         return Err("--memory-object-store and --params-fd are mutually exclusive".into());
     }
     Ok(ServerConfig {
+        mode,
         socket,
         roles,
         memory_object_store,
         params_fd,
         state_root,
         join_seed,
+        bootstrap_bind,
+        advertise_bootstrap,
+        runtime_directory,
+        require_tmpfs,
+        management_bind,
+        advertise_management,
     })
 }
 

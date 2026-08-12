@@ -11,6 +11,12 @@ description = "Protobuf messages, frame limits, goldens, and session negotiation
 [dependencies]
 prost = "0.14"
 bytes = "1.10"
+base64 = "0.22"
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = "0.11"
+time = { workspace = true, features = ["formatting", "parsing"] }
+zeroize = { workspace = true }
 
 [build-dependencies]
 prost-build = "0.14"

@@ -11,6 +11,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use crate::local_api::{LocalClient, LocalRequest, LocalResponse, MachineOutputV1};
+use crate::{BootstrapInitializeOptions, initialize_from_handoff};
 use crate::{LocalRunOptions, LocalRunReport, SealedTestOptions, run_local, run_sealed_test};
 use crate::{build_sealed_capsule_for_cluster_os, local_parity_plan};
 use gump_crypto::{ClusterX25519Public, SigningKeyBytes};
@@ -45,6 +46,7 @@ enum Command {
         cluster_key_id: String,
         signing_key: SigningKeyBytes,
     },
+    BootstrapInitialize(BootstrapInitializeOptions),
     Version,
     Copyright,
     Help,
@@ -88,6 +90,7 @@ pub fn try_dispatch_cli(args: &[String]) -> Option<Result<ExitCode, String>> {
             | "inspect"
             | "reintroduce"
             | "capsule"
+            | "bootstrap"
     ) {
         return None;
     }
@@ -197,6 +200,14 @@ pub fn dispatch_cli(args: &[String]) -> Result<ExitCode, String> {
             );
             Ok(ExitCode::SUCCESS)
         }
+        Command::BootstrapInitialize(options) => {
+            let result = initialize_from_handoff(options)?;
+            println!(
+                "{}",
+                serde_json::to_string(&result).map_err(|e| e.to_string())?
+            );
+            Ok(ExitCode::SUCCESS)
+        }
     }
 }
 
@@ -247,10 +258,72 @@ fn parse_args(args: &[String]) -> Result<Command, String> {
             }
             parse_capsule_build(iter)
         }
+        "bootstrap" => {
+            let action = iter.next().ok_or("bootstrap needs action (initialize)")?;
+            if action != "initialize" {
+                return Err(format!("unknown bootstrap action {action:?}"));
+            }
+            parse_bootstrap_initialize(iter)
+        }
         other => Err(format!(
             "unknown command {other:?}; try gump run|test|status|explain|observe|deploy|inventory|inspect|reintroduce|telemetry|server"
         )),
     }
+}
+
+fn parse_bootstrap_initialize<'a>(
+    mut iter: impl Iterator<Item = &'a String>,
+) -> Result<Command, String> {
+    let mut handoff_fd = None;
+    let mut activation_fd = None;
+    let mut initialization_fd = None;
+    let mut management_output_fd = None;
+    let mut management_identity_ref = None;
+    let mut deadline = Duration::from_secs(60);
+    while let Some(argument) = iter.next() {
+        let destination = match argument.as_str() {
+            "--handoff-fd" => &mut handoff_fd,
+            "--activation-fd" => &mut activation_fd,
+            "--initialization-fd" => &mut initialization_fd,
+            "--management-output-fd" => &mut management_output_fd,
+            "--management-identity-ref" => {
+                management_identity_ref = Some(
+                    iter.next()
+                        .ok_or("--management-identity-ref needs a value")?
+                        .clone(),
+                );
+                continue;
+            }
+            "--deadline-ms" => {
+                let milliseconds = parse_u64(iter.next().ok_or("--deadline-ms needs N")?)?;
+                if milliseconds == 0 || milliseconds > 10 * 60 * 1000 {
+                    return Err("--deadline-ms must be within 1..=600000".into());
+                }
+                deadline = Duration::from_millis(milliseconds);
+                continue;
+            }
+            other => return Err(format!("unknown bootstrap initialize option {other:?}")),
+        };
+        let raw = parse_u64(
+            iter.next()
+                .ok_or_else(|| format!("{argument} needs a descriptor"))?,
+        )?;
+        if !(3..=i32::MAX as u64).contains(&raw) {
+            return Err(format!("{argument} must be an inherited descriptor >= 3"));
+        }
+        *destination = Some(raw as i32);
+    }
+    Ok(Command::BootstrapInitialize(BootstrapInitializeOptions {
+        handoff_fd: handoff_fd.ok_or("bootstrap initialize requires --handoff-fd")?,
+        activation_fd: activation_fd.ok_or("bootstrap initialize requires --activation-fd")?,
+        initialization_fd: initialization_fd
+            .ok_or("bootstrap initialize requires --initialization-fd")?,
+        management_output_fd: management_output_fd
+            .ok_or("bootstrap initialize requires --management-output-fd")?,
+        management_identity_ref: management_identity_ref
+            .ok_or("bootstrap initialize requires --management-identity-ref")?,
+        deadline,
+    }))
 }
 
 fn parse_capsule_build<'a>(mut iter: impl Iterator<Item = &'a String>) -> Result<Command, String> {
@@ -938,7 +1011,12 @@ Usage:
   gump capsule build --output PATH --cluster-id UUID --cluster-public-key HEX
               --cluster-key-id ID --signing-key-fd N [--manifest PATH] [--workspace DIR]
   gump cluster-material --nodes N [--cluster-id UUID]
+  gump bootstrap initialize --handoff-fd N --activation-fd N --initialization-fd N
+              --management-output-fd N --management-identity-ref REF [--deadline-ms N]
   gump server (--init | --join IP:PORT) --params-fd N [--state-root PATH] [--socket PATH] [--role ROLE[,ROLE...]]
+  gump server --bootstrap --bootstrap-bind IP:PORT --advertise-bootstrap HTTPS_ORIGIN
+              --management-bind IP:PORT --advertise-management HTTPS_ORIGIN
+              [--runtime-directory PATH] [--state-root PATH] [--socket PATH]
   gump status [--socket PATH] [--deadline-ms N] [--format machine|human]
   gump explain [--subject NAME] [--socket PATH] [--format machine|human]
   gump observe [--socket PATH] [--subject NAME] [--deadline-ms N] [--format machine|human]

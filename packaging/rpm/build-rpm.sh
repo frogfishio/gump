@@ -95,6 +95,8 @@ install -m 0755 "$binary" "$top_dir/SOURCES/gump"
 install -m 0644 "$repo_root/LICENSE" "$top_dir/SOURCES/LICENSE"
 install -m 0644 "$repo_root/NOTICE" "$top_dir/SOURCES/NOTICE"
 install -m 0644 "$script_dir/README.rpm" "$top_dir/SOURCES/README.rpm"
+install -m 0644 "$repo_root/packaging/systemd/gump-bootstrap.service" \
+    "$top_dir/SOURCES/gump-bootstrap.service"
 
 cat >"$top_dir/SPECS/gump.spec" <<EOF
 %global __os_install_post %{nil}
@@ -110,6 +112,7 @@ Source0:        gump
 Source1:        LICENSE
 Source2:        NOTICE
 Source3:        README.rpm
+Source4:        gump-bootstrap.service
 
 %description
 Gump packages, places, supervises, and discovers arbitrary workloads across a
@@ -125,12 +128,14 @@ install -Dpm 0755 %{SOURCE0} %{buildroot}%{_bindir}/gump
 install -Dpm 0644 %{SOURCE1} %{buildroot}%{_licensedir}/gump/LICENSE
 install -Dpm 0644 %{SOURCE2} %{buildroot}%{_docdir}/gump/NOTICE
 install -Dpm 0644 %{SOURCE3} %{buildroot}%{_docdir}/gump/README.rpm
+install -Dpm 0644 %{SOURCE4} %{buildroot}%{_datadir}/gump/systemd/gump-bootstrap.service
 
 %files
 %{_bindir}/gump
 %license %{_licensedir}/gump/LICENSE
 %doc %{_docdir}/gump/NOTICE
 %doc %{_docdir}/gump/README.rpm
+%{_datadir}/gump/systemd/gump-bootstrap.service
 EOF
 
 if [ -n "${SOURCE_DATE_EPOCH:-}" ]; then

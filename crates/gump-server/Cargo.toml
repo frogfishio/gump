@@ -30,11 +30,19 @@ gump-driver = { workspace = true }
 gump-protocol = { workspace = true }
 gump-hiccup = { workspace = true }
 blake3 = { workspace = true }
+base64 = "0.22"
 prost = "0.14"
 serde = { workspace = true }
 serde_json = { workspace = true }
 libc = "0.2"
 getrandom = { workspace = true }
+rcgen = { workspace = true }
+rustls = { workspace = true }
+rustls-pki-types = { workspace = true }
+sha2 = "0.11"
+time = { workspace = true, features = ["formatting"] }
+x509-parser = { workspace = true }
+zeroize = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

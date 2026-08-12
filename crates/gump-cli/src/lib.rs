@@ -3,6 +3,7 @@
 
 #![forbid(unsafe_code)]
 
+mod bootstrap;
 mod cmd;
 mod error;
 mod local;
@@ -10,6 +11,7 @@ mod local_api;
 mod packaging;
 mod sealed;
 
+pub use bootstrap::{BootstrapInitializeOptions, initialize_from_handoff};
 pub use cmd::{dispatch_cli, print_help, try_dispatch_cli};
 pub use error::{CliError, CliErrorKind};
 pub use local::{LocalParityPlan, LocalRunOptions, LocalRunReport, local_parity_plan, run_local};

@@ -899,6 +899,7 @@ dependencies = [
 name = "gump-cli"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "blake3",
  "getrandom 0.3.4",
  "gump-capsule",
@@ -910,9 +911,17 @@ dependencies = [
  "gump-types",
  "prost",
  "rand_core 0.10.1",
+ "rcgen",
+ "rustls",
+ "rustls-pki-types",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
+ "time",
+ "url",
+ "x509-parser",
+ "zeroize",
 ]
 
 [[package]]
@@ -1020,10 +1029,16 @@ dependencies = [
 name = "gump-protocol"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "bytes",
  "prost",
  "prost-build",
  "protoc-bin-vendored",
+ "serde",
+ "serde_json",
+ "sha2",
+ "time",
+ "zeroize",
 ]
 
 [[package]]
@@ -1037,6 +1052,7 @@ dependencies = [
 name = "gump-server"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "blake3",
  "getrandom 0.3.4",
  "gump-agent",
@@ -1055,9 +1071,16 @@ dependencies = [
  "libc",
  "prost",
  "rand_core 0.10.1",
+ "rcgen",
+ "rustls",
+ "rustls-pki-types",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
+ "time",
+ "x509-parser",
+ "zeroize",
 ]
 
 [[package]]
@@ -2067,6 +2090,7 @@ dependencies = [
  "ring",
  "rustls-pki-types",
  "time",
+ "x509-parser",
  "yasna",
 ]
 
@@ -3167,6 +3191,7 @@ dependencies = [
  "lazy_static",
  "nom",
  "oid-registry",
+ "ring",
  "rusticata-macros",
  "thiserror 1.0.69",
  "time",

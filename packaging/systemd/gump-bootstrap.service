@@ -1,0 +1,30 @@
+[Unit]
+Description=Gump one-use cluster bootstrap
+Documentation=https://github.com/frogfishio/gump/blob/main/docs/CAPTAIN_GUMP_BOOTSTRAP_PROTOCOL.md
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=!/run/gump/bootstrap.json
+
+[Service]
+Type=simple
+User=gump
+Group=gump
+UMask=0077
+RuntimeDirectory=gump
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=no
+EnvironmentFile=/etc/gump/bootstrap.env
+ExecStart=/usr/bin/gump server --bootstrap --bootstrap-bind ${GUMP_BOOTSTRAP_BIND} --advertise-bootstrap ${GUMP_BOOTSTRAP_ENDPOINT} --management-bind ${GUMP_MANAGEMENT_BIND} --advertise-management ${GUMP_MANAGEMENT_ENDPOINT} --runtime-directory /run/gump --state-root /run/gump/state --socket /run/gump/gump.sock
+Restart=no
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+[Install]
+# Deliberately empty: Captain starts this unit explicitly; it is never enabled.

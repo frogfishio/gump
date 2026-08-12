@@ -98,9 +98,10 @@ make rpm TARGET=aarch64-unknown-linux-gnu
 ```
 
 Packages are written beneath `dist/packages/deb/` and `dist/packages/rpm/`.
-They install only `/usr/bin/gump` and package documentation: they do not create
-an account, configuration, directories, sockets, or services, and they never
-start Gump. Captain owns those host-specific effects.
+They install `/usr/bin/gump`, package documentation, and an inactive bootstrap
+unit template beneath `/usr/share/gump/systemd/`. They do not create an
+account, configuration, directories, sockets, or active services, and they
+never start Gump. Captain owns those host-specific effects.
 
 ## Install a published release
 

@@ -1,6 +1,7 @@
 # Captain–Gump bootstrap agreement
 
-> Status: accepted for joint implementation
+> Status: accepted; implemented testing contract is frozen in
+> `CAPTAIN_GUMP_BOOTSTRAP_PROTOCOL.md`
 >
 > Scope: zero-to-one bootstrap; stage-2 runtime integration remains separate
 
@@ -107,7 +108,7 @@ Example:
   "incarnation": "<unique process incarnation>",
   "endpoint": "https://203.0.113.10:7443",
   "bootstrapProtocol": "gump.bootstrap/1",
-  "packageVersion": "0.1.0",
+  "buildIdentity": "0.1.0+build-N",
   "endpointIdentity": "SHA256:...",
   "activationCode": "<random secret>",
   "expiresAt": "..."
@@ -167,7 +168,7 @@ handoff contains no secret bytes:
   "incarnation": "<Gump process incarnation>",
   "endpoint": "https://203.0.113.10:7443",
   "bootstrapProtocol": "gump.bootstrap/1",
-  "packageVersion": "0.1.0",
+  "buildIdentity": "0.1.0+build-N",
   "machineIdentity": "digitalocean/droplet/12345",
   "sshTrustMode": "operator-accepted",
   "sshHostKey": "SHA256:...",
@@ -195,7 +196,7 @@ encoding of this exact handoff projection:
   "incarnation": "...",
   "endpoint": "...",
   "bootstrapProtocol": "...",
-  "packageVersion": "...",
+  "buildIdentity": "...",
   "machineIdentity": "...",
   "sshTrustMode": "...",
   "sshHostKey": "...",

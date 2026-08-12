@@ -12,6 +12,26 @@ pub fn read_bounded(fd: i32, max_bytes: usize) -> io::Result<Vec<u8>> {
     sys::read_bounded(fd, max_bytes)
 }
 
+/// Duplicate `fd` and write the complete bounded value to the duplicate.
+#[cfg(unix)]
+pub fn write_all(fd: i32, bytes: &[u8], max_bytes: usize) -> io::Result<()> {
+    if bytes.len() > max_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "inherited descriptor output exceeds bound",
+        ));
+    }
+    sys::write_all(fd, bytes)
+}
+
+#[cfg(not(unix))]
+pub fn write_all(_fd: i32, _bytes: &[u8], _max_bytes: usize) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "inherited descriptors are unsupported on this platform",
+    ))
+}
+
 #[cfg(not(unix))]
 pub fn read_bounded(_fd: i32, _max_bytes: usize) -> io::Result<Vec<u8>> {
     Err(io::Error::new(
@@ -25,7 +45,7 @@ mod sys {
     #![allow(unsafe_code)]
 
     use std::fs::File;
-    use std::io::{self, Read};
+    use std::io::{self, Read, Write};
     use std::os::fd::FromRawFd;
 
     pub fn read_bounded(fd: i32, max_bytes: usize) -> io::Result<Vec<u8>> {
@@ -41,6 +61,18 @@ mod sys {
         let mut bytes = Vec::with_capacity(max_bytes.min(4096));
         file.take(max_bytes as u64).read_to_end(&mut bytes)?;
         Ok(bytes)
+    }
+
+    pub fn write_all(fd: i32, bytes: &[u8]) -> io::Result<()> {
+        // SAFETY: dup validates the descriptor and returns independent ownership.
+        let duplicate = unsafe { libc::dup(fd) };
+        if duplicate < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: the successful duplicate is uniquely owned here.
+        let mut file = unsafe { File::from_raw_fd(duplicate) };
+        file.write_all(bytes)?;
+        file.flush()
     }
 }
 
