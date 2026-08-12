@@ -1,14 +1,14 @@
 Package: gump
-Version: 0.1.0+build98
+Version: 0.1.0+build107
 Architecture: amd64
 Maintainer: Frogfish <info@frogfish.io>
-Installed-Size: 18820
+Installed-Size: 19752
 Depends: libc6 (>= 2.35), libgcc-s1
-Filename: pool/main/g/gump/gump_0.1.0+build98_amd64.deb
-Size: 5558342
-MD5sum: 0a2d54ffd643439a722660e1e2f5bec6
-SHA1: e9016a9021568861c87fb5670a4177b51a0630d0
-SHA256: 34c2f64674924026785228783b805fb09181fe2c9f42264f4fd886f41987852d
+Filename: pool/main/g/gump/gump_0.1.0+build107_amd64.deb
+Size: 5766352
+MD5sum: 8aa14bb57fc3eca9c9fced5558879f6c
+SHA1: 4dbfe78a264e448d8f6b0fd34d8fd05777c535fd
+SHA256: b99746e0fe6c872e6815d42744082926d39b656f57f38412d3070dc3e06fd141
 Section: admin
 Priority: optional
 Homepage: https://github.com/frogfishio/gump
